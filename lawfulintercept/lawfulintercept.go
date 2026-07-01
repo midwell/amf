@@ -10,6 +10,8 @@ package lawfulintercept
 
 import (
 	"encoding/hex"
+	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -68,13 +70,19 @@ func Init(cfg Config) error {
 		iriCtx: iri.NewContext(),
 		neID:   cfg.NEID,
 	}
+	// Bind the X1 listener synchronously so a bind/permission failure is reported
+	// to the caller — otherwise LI would look enabled (active.Store below) while
+	// no X1 tasking can ever be received.
+	ln, err := net.Listen("tcp", cfg.X1Listen)
+	if err != nil {
+		return fmt.Errorf("lawful interception: X1 listen on %s: %w", cfg.X1Listen, err)
+	}
 	srv := &http.Server{
-		Addr:      cfg.X1Listen,
 		Handler:   x1.NewServer(st, cfg.NEID, x1.OnActivate(sub.reportStartOfInterception)),
 		TLSConfig: mat.ServerTLS(),
 	}
 	// Certificates come from TLSConfig, so the file arguments are empty.
-	go func() { _ = srv.ListenAndServeTLS("", "") }()
+	go func() { _ = srv.ServeTLS(ln, "", "") }()
 	active.Store(sub)
 	return nil
 }
@@ -164,6 +172,7 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 	if !task.WantsProduct(types.ProductIRI) {
 		return
 	}
+	var events []any
 	amfctx.AMF_Self().UePool.Range(func(_, value any) bool {
 		ue, ok := value.(*amfctx.AmfUe)
 		if !ok {
@@ -172,21 +181,25 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 		// The owning NAS goroutine mutates ue.State (a map) and the identifier
 		// fields concurrently; read them under ue.Mutex. An unsynchronised read
 		// here is a data race and can fatally panic on concurrent map iteration.
-		// Build the record under the lock, then deliver outside it — delivery does
-		// blocking network I/O and must not hold the UE lock.
+		// Build the record under the lock; delivery happens later, off the lock.
 		ue.Mutex.Lock()
-		match := registered(ue) && taskTargets(task, ue)
-		var event any
-		if match {
-			event = amfStartOfInterception(ue)
+		if registered(ue) && taskTargets(task, ue) {
+			events = append(events, amfStartOfInterception(ue))
 		}
 		ue.Mutex.Unlock()
-
-		if match {
-			s.deliverIRI([]types.InterceptTask{task}, event)
-		}
 		return true
 	})
+	if len(events) == 0 {
+		return
+	}
+	// Deliver off the X1 request goroutine: delivery does blocking network I/O
+	// (bounded by the X2 client write deadline), and this callback runs
+	// synchronously on the X1 handler — it must not stall X1 provisioning.
+	go func() {
+		for _, ev := range events {
+			s.deliverIRI([]types.InterceptTask{task}, ev)
+		}
+	}()
 }
 
 // deliverIRI encodes event once and delivers it as an X2 xIRI to every task in
