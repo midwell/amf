@@ -213,6 +213,32 @@ func TestRegistered(t *testing.T) {
 	}
 }
 
+func TestIdentifierAssociationMapping(t *testing.T) {
+	amfctx.AMF_Self().ServedGuamiList = []models.Guami{
+		{PlmnId: models.PlmnIdNid{Mcc: "262", Mnc: "01"}, AmfId: "010203"},
+	}
+	t.Cleanup(func() { amfctx.AMF_Self().ServedGuamiList = nil })
+
+	ue := targetUe()
+	ue.Tmsi = 42
+
+	assoc := amfIdentifierAssociation(ue)
+	if supi, ok := assoc.SUPI.(iri.IMSI); !ok || supi != "262019876543210" {
+		t.Errorf("association SUPI = %#v", assoc.SUPI)
+	}
+	if assoc.GUTI.FiveGTMSI != 42 || assoc.GUTI.MCC != "262" {
+		t.Errorf("association GUTI = %+v", assoc.GUTI)
+	}
+
+	deassoc := amfIdentifierDeassociation(ue)
+	if supi, ok := deassoc.SUPI.(iri.IMSI); !ok || supi != "262019876543210" {
+		t.Errorf("deassociation SUPI = %#v", deassoc.SUPI)
+	}
+	if deassoc.GUTI.FiveGTMSI != 42 {
+		t.Errorf("deassociation GUTI = %+v", deassoc.GUTI)
+	}
+}
+
 // TestEncodeAllEvents verifies every AMF xIRI a reporter can produce encodes
 // through the real TS 33.128 context without error — i.e. mandatory members are
 // present and CHOICE arms are registered. This is the correctness check that a
@@ -221,11 +247,13 @@ func TestEncodeAllEvents(t *testing.T) {
 	ue := targetUe()
 	ctx := iri.NewContext()
 	events := map[string]any{
-		"registration":        amfRegistration(ue),
-		"locationUpdate":      amfLocationUpdate(ue),
-		"deregistration":      amfDeregistration(ue, iri.DirNetworkInitiated, iri.AccessThreeGPP),
-		"unsuccessful":        amfUnsuccessfulRegistration(ue, nasMessage.Cause5GMM5GSServicesNotAllowed),
-		"startOfInterception": amfStartOfInterception(ue),
+		"registration":            amfRegistration(ue),
+		"locationUpdate":          amfLocationUpdate(ue),
+		"deregistration":          amfDeregistration(ue, iri.DirNetworkInitiated, iri.AccessThreeGPP),
+		"unsuccessful":            amfUnsuccessfulRegistration(ue, nasMessage.Cause5GMM5GSServicesNotAllowed),
+		"startOfInterception":     amfStartOfInterception(ue),
+		"identifierAssociation":   amfIdentifierAssociation(ue),
+		"identifierDeassociation": amfIdentifierDeassociation(ue),
 	}
 	for name, ev := range events {
 		if _, err := iri.EncodeXIRI(ctx, ev); err != nil {

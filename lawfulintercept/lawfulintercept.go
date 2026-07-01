@@ -126,6 +126,30 @@ func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
 	sub.deliverIRI(sub.matchingTasks(ue), amfUnsuccessfulRegistration(ue, cause))
 }
 
+// ReportIdentifierAssociation emits an AMFIdentifierAssociation xIRI for ue if
+// it matches an active task — the AMF has bound the target's SUPI to a 5G-GUTI
+// (a GUTI carried to the UE in a Registration Accept). No-op and silent when LI
+// is inactive or ue is not a target.
+func ReportIdentifierAssociation(ue *amfctx.AmfUe) {
+	sub := active.Load()
+	if sub == nil || ue == nil {
+		return
+	}
+	sub.deliverIRI(sub.matchingTasks(ue), amfIdentifierAssociation(ue))
+}
+
+// ReportIdentifierDeassociation emits an AMFIdentifierDeassociation xIRI for ue
+// if it matches an active task — the AMF has released the target's SUPI↔5G-GUTI
+// binding (on deregistration). No-op and silent when LI is inactive or ue is
+// not a target.
+func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
+	sub := active.Load()
+	if sub == nil || ue == nil {
+		return
+	}
+	sub.deliverIRI(sub.matchingTasks(ue), amfIdentifierDeassociation(ue))
+}
+
 // reportStartOfInterception runs when a task is newly activated over X1. It
 // scans the AMF UE pool and, for every already-registered UE the task targets,
 // emits an AMFStartOfInterceptionWithRegisteredUE — so a warrant that arrives
@@ -263,6 +287,26 @@ func amfStartOfInterception(ue *amfctx.AmfUe) iri.AMFStartOfInterceptionWithRegi
 		PEI:                peiChoice(ue),
 		GPSI:               gpsiChoice(ue),
 		GUTI:               fiveGGUTI(ue),
+	}
+}
+
+// amfIdentifierAssociation maps an AmfUe to a TS 33.128 AMFIdentifierAssociation
+// record binding the target's SUPI to its assigned 5G-GUTI.
+func amfIdentifierAssociation(ue *amfctx.AmfUe) iri.AMFIdentifierAssociation {
+	return iri.AMFIdentifierAssociation{
+		SUPI: supiChoice(ue),
+		PEI:  peiChoice(ue),
+		GPSI: gpsiChoice(ue),
+		GUTI: fiveGGUTI(ue),
+	}
+}
+
+// amfIdentifierDeassociation maps an AmfUe to a TS 33.128
+// AMFIdentifierDeassociation record releasing the target's SUPI↔5G-GUTI binding.
+func amfIdentifierDeassociation(ue *amfctx.AmfUe) iri.AMFIdentifierDeassociation {
+	return iri.AMFIdentifierDeassociation{
+		SUPI: supiChoice(ue),
+		GUTI: fiveGGUTI(ue),
 	}
 }
 

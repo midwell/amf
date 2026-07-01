@@ -1863,8 +1863,10 @@ func AuthenticationProcedure(ctx ctxt.Context, ue *context.AmfUe, accessType mod
 
 func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe, accessType models.AccessType) (err error) {
 	// Lawful Interception IRI-POI: emit an AMFDeregistration xIRI (network-
-	// initiated) for a tasked target. Silent no-op unless LI is configured.
+	// initiated) for a tasked target, plus an AMFIdentifierDeassociation as the
+	// SUPI↔5G-GUTI binding is released. Silent no-ops unless LI is configured.
 	lawfulintercept.ReportDeregistration(ue, true, accessType)
+	lawfulintercept.ReportIdentifierDeassociation(ue)
 
 	anType := util.AnTypeToNas(accessType)
 	if ue.CmConnect(accessType) && ue.State[accessType].Is(context.Registered) {
@@ -2678,9 +2680,11 @@ func HandleDeregistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType mod
 	ue.GmmLog.Info("Handle Deregistration Request(UE Originating)")
 
 	// Lawful Interception IRI-POI: emit an AMFDeregistration xIRI (UE-initiated)
-	// for a tasked target, before the UE context is torn down. Silent no-op
-	// unless LI is configured.
+	// for a tasked target, before the UE context is torn down, plus an
+	// AMFIdentifierDeassociation as the SUPI↔5G-GUTI binding is released. Silent
+	// no-ops unless LI is configured.
 	lawfulintercept.ReportDeregistration(ue, false, anType)
+	lawfulintercept.ReportIdentifierDeassociation(ue)
 
 	targetDeregistrationAccessType := deregistrationRequest.GetAccessType()
 	ue.SmContextList.Range(func(key, value interface{}) bool {
