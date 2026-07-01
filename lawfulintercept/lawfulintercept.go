@@ -166,8 +166,24 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 	}
 	amfctx.AMF_Self().UePool.Range(func(_, value any) bool {
 		ue, ok := value.(*amfctx.AmfUe)
-		if ok && registered(ue) && taskTargets(task, ue) {
-			s.deliverIRI([]types.InterceptTask{task}, amfStartOfInterception(ue))
+		if !ok {
+			return true
+		}
+		// The owning NAS goroutine mutates ue.State (a map) and the identifier
+		// fields concurrently; read them under ue.Mutex. An unsynchronised read
+		// here is a data race and can fatally panic on concurrent map iteration.
+		// Build the record under the lock, then deliver outside it — delivery does
+		// blocking network I/O and must not hold the UE lock.
+		ue.Mutex.Lock()
+		match := registered(ue) && taskTargets(task, ue)
+		var event any
+		if match {
+			event = amfStartOfInterception(ue)
+		}
+		ue.Mutex.Unlock()
+
+		if match {
+			s.deliverIRI([]types.InterceptTask{task}, event)
 		}
 		return true
 	})

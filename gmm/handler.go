@@ -1862,17 +1862,19 @@ func AuthenticationProcedure(ctx ctxt.Context, ue *context.AmfUe, accessType mod
 }
 
 func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe, accessType models.AccessType) (err error) {
-	// Lawful Interception IRI-POI: emit an AMFDeregistration xIRI (network-
-	// initiated) for a tasked target, plus an AMFIdentifierDeassociation as the
-	// SUPI↔5G-GUTI binding is released. Silent no-ops unless LI is configured.
-	lawfulintercept.ReportDeregistration(ue, true, accessType)
-	lawfulintercept.ReportIdentifierDeassociation(ue)
-
 	anType := util.AnTypeToNas(accessType)
 	if ue.CmConnect(accessType) && ue.State[accessType].Is(context.Registered) {
 		// setting reregistration required flag to true
+		// Reregistration-required: the UE stays attached and re-registers, so this
+		// is NOT a deregistration for LI purposes — emit no dereg/deassociation here.
 		gmm_message.SendDeregistrationRequest(ue.GetRanUe(accessType), anType, true, 0)
 	} else {
+		// Lawful Interception IRI-POI: this branch actually deregisters the UE, so
+		// emit an AMFDeregistration xIRI (network-initiated) and an
+		// AMFIdentifierDeassociation (the SUPI↔5G-GUTI binding is released) for a
+		// tasked target. Silent no-ops unless LI is configured.
+		lawfulintercept.ReportDeregistration(ue, true, accessType)
+		lawfulintercept.ReportIdentifierDeassociation(ue)
 		SetDeregisteredState(ue, anType)
 	}
 	// TODO: Need to implement Nudm_SDM_Unsubscribe
