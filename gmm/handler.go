@@ -23,6 +23,7 @@ import (
 	"github.com/omec-project/amf/consumer"
 	"github.com/omec-project/amf/context"
 	gmm_message "github.com/omec-project/amf/gmm/message"
+	"github.com/omec-project/amf/lawfulintercept"
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/amf/nas/nas_security"
 	ngap_message "github.com/omec-project/amf/ngap/message"
@@ -2558,6 +2559,10 @@ func HandleRegistrationComplete(ctx ctxt.Context, ue *context.AmfUe, accessType 
 	registrationComplete *nasMessage.RegistrationComplete,
 ) error {
 	ue.GmmLog.Info("Handle Registration Complete")
+
+	// Lawful Interception IRI-POI: emit an AMFRegistration xIRI if this UE is a
+	// tasked target. No-op (and silent) unless LI is configured.
+	lawfulintercept.ReportRegistration(ue)
 
 	if ue.T3550 != nil {
 		ue.T3550.Stop()

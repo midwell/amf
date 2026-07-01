@@ -71,6 +71,7 @@ type Configuration struct {
 	NrfUri                          string                    `yaml:"nrfUri,omitempty"`
 	WebuiUri                        string                    `yaml:"webuiUri"`
 	Security                        *Security                 `yaml:"security,omitempty"`
+	Li                              *Li                       `yaml:"li,omitempty"`
 	NetworkName                     NetworkName               `yaml:"networkName,omitempty"`
 	T3502Value                      int                       `yaml:"t3502Value,omitempty"`
 	T3512Value                      int                       `yaml:"t3512Value,omitempty"`
@@ -168,6 +169,17 @@ type Sbi struct {
 type TLS struct {
 	PEM string `yaml:"pem,omitempty"`
 	Key string `yaml:"key,omitempty"`
+}
+
+// Li configures the Lawful Interception IRI-POI. It is opt-in: when absent, LI
+// is disabled and the AMF behaves exactly as before.
+type Li struct {
+	X1Listen string `yaml:"x1Listen"` // address for the X1 provisioning listener
+	MDF2     string `yaml:"mdf2"`     // X2 delivery destination (host:port)
+	NEID     string `yaml:"neId"`     // this network element's identifier
+	Cert     string `yaml:"cert"`     // X0 LI PKI: this NE's certificate
+	Key      string `yaml:"key"`      // its private key
+	CACert   string `yaml:"caCert"`   // the LI CA trust anchor
 }
 
 type Security struct {

@@ -26,6 +26,7 @@ import (
 	"github.com/omec-project/amf/eventexposure"
 	"github.com/omec-project/amf/factory"
 	"github.com/omec-project/amf/httpcallback"
+	"github.com/omec-project/amf/lawfulintercept"
 	"github.com/omec-project/amf/location"
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/amf/metrics"
@@ -166,6 +167,19 @@ func (amf *AMF) Start() {
 
 	self := amfContext.AMF_Self()
 	util.InitAmfContext(self)
+
+	// Lawful Interception: start the IRI-POI (X1 listener + X2 delivery) when
+	// configured. Opt-in — absent config means LI is off and nothing starts.
+	// (An init failure is a deployment/config error; production may route LI
+	// operational logs to a restricted sink per the undetectability requirement.)
+	if li := factory.AmfConfig.Configuration.Li; li != nil {
+		if err = lawfulintercept.Init(lawfulintercept.Config{
+			X1Listen: li.X1Listen, MDF2: li.MDF2, NEID: li.NEID,
+			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
+		}); err != nil {
+			logger.InitLog.Errorf("lawful interception init failed: %v", err)
+		}
+	}
 	if self.EnableDbStore {
 		self.Drsm, err = util.InitDrsm()
 		if err != nil {
