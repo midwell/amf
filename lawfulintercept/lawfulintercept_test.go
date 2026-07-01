@@ -9,8 +9,19 @@ import (
 	amfctx "github.com/omec-project/amf/context"
 	"github.com/omec-project/li/iri"
 	"github.com/omec-project/li/types"
+	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
+	"github.com/omec-project/util/fsm"
 )
+
+// targetUe is a fully-identified UE used across the mapping tests.
+func targetUe() *amfctx.AmfUe {
+	return &amfctx.AmfUe{
+		Supi: "imsi-262019876543210",
+		Pei:  "imeisv-3534250000000151",
+		Gpsi: "msisdn-4915123456789",
+	}
+}
 
 func TestTargetsOf(t *testing.T) {
 	ue := &amfctx.AmfUe{
@@ -86,5 +97,139 @@ func TestParseXID(t *testing.T) {
 	}
 	if got := parseXID("not-a-uuid"); got != ([16]byte{}) {
 		t.Errorf("bad XID = % x, want zero", got)
+	}
+}
+
+func TestRegistrationType(t *testing.T) {
+	cases := map[uint8]iri.AMFRegistrationType{
+		nasMessage.RegistrationType5GSInitialRegistration:          iri.RegTypeInitial,
+		nasMessage.RegistrationType5GSMobilityRegistrationUpdating: iri.RegTypeMobility,
+		nasMessage.RegistrationType5GSPeriodicRegistrationUpdating: iri.RegTypePeriodic,
+		nasMessage.RegistrationType5GSEmergencyRegistration:        iri.RegTypeEmergency,
+		nasMessage.RegistrationType5GSReserved:                     iri.RegTypeInitial, // unknown → initial
+	}
+	for nas, want := range cases {
+		if got := registrationType(&amfctx.AmfUe{RegistrationType5GS: nas}); got != want {
+			t.Errorf("registrationType(%d) = %d, want %d", nas, got, want)
+		}
+	}
+}
+
+// TestRegistrationEventDispatch checks that a mobility registration update maps
+// to an AMFLocationUpdate and every other registration type to AMFRegistration.
+func TestRegistrationEventDispatch(t *testing.T) {
+	ue := targetUe()
+
+	ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
+	if _, ok := registrationEvent(ue).(iri.AMFLocationUpdate); !ok {
+		t.Errorf("mobility update → %T, want AMFLocationUpdate", registrationEvent(ue))
+	}
+
+	for _, rt := range []uint8{
+		nasMessage.RegistrationType5GSInitialRegistration,
+		nasMessage.RegistrationType5GSPeriodicRegistrationUpdating,
+	} {
+		ue.RegistrationType5GS = rt
+		reg, ok := registrationEvent(ue).(iri.AMFRegistration)
+		if !ok {
+			t.Errorf("registration type %d → %T, want AMFRegistration", rt, registrationEvent(ue))
+			continue
+		}
+		if rt == nasMessage.RegistrationType5GSPeriodicRegistrationUpdating && reg.RegistrationType != iri.RegTypePeriodic {
+			t.Errorf("periodic registration → regType %d, want %d", reg.RegistrationType, iri.RegTypePeriodic)
+		}
+	}
+}
+
+func TestDeregistrationMapping(t *testing.T) {
+	ue := targetUe()
+
+	net := amfDeregistration(ue, iri.DirNetworkInitiated, iri.AccessThreeGPP)
+	if net.DeregistrationDirection != iri.DirNetworkInitiated || net.AccessType != iri.AccessThreeGPP {
+		t.Errorf("network dereg = dir %d access %d", net.DeregistrationDirection, net.AccessType)
+	}
+	if supi, ok := net.SUPI.(iri.IMSI); !ok || supi != "262019876543210" {
+		t.Errorf("dereg SUPI = %#v", net.SUPI)
+	}
+
+	ue2 := amfDeregistration(ue, iri.DirUEInitiated, iri.AccessNonThreeGPP)
+	if ue2.DeregistrationDirection != iri.DirUEInitiated || ue2.AccessType != iri.AccessNonThreeGPP {
+		t.Errorf("ue dereg = dir %d access %d", ue2.DeregistrationDirection, ue2.AccessType)
+	}
+}
+
+func TestUnsuccessfulRegistrationMapping(t *testing.T) {
+	rec := amfUnsuccessfulRegistration(targetUe(), nasMessage.Cause5GMM5GSServicesNotAllowed)
+	if rec.FailedProcedureType != iri.FailedRegistration {
+		t.Errorf("failedProcedureType = %d, want FailedRegistration", rec.FailedProcedureType)
+	}
+	cause, ok := rec.FailureCause.(iri.FiveGMMCause)
+	if !ok || cause != iri.FiveGMMCause(nasMessage.Cause5GMM5GSServicesNotAllowed) {
+		t.Errorf("failureCause = %#v, want 5GMM %d", rec.FailureCause, nasMessage.Cause5GMM5GSServicesNotAllowed)
+	}
+}
+
+func TestAccessTypeMapping(t *testing.T) {
+	if accessType(models.ACCESSTYPE__3_GPP_ACCESS) != iri.AccessThreeGPP {
+		t.Error("3GPP access mismapped")
+	}
+	if accessType(models.ACCESSTYPE_NON_3_GPP_ACCESS) != iri.AccessNonThreeGPP {
+		t.Error("non-3GPP access mismapped")
+	}
+}
+
+func TestTaskTargets(t *testing.T) {
+	ue := targetUe()
+	hit := types.InterceptTask{Target: types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}}
+	miss := types.InterceptTask{Target: types.TargetIdentifier{Type: types.TargetSUPI, Value: "000000000000000"}}
+	if !taskTargets(hit, ue) {
+		t.Error("matching SUPI task not recognised")
+	}
+	if taskTargets(miss, ue) {
+		t.Error("non-matching task falsely recognised")
+	}
+}
+
+func TestRegistered(t *testing.T) {
+	dereg := &amfctx.AmfUe{State: map[models.AccessType]*fsm.State{
+		models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(amfctx.Deregistered),
+		models.ACCESSTYPE_NON_3_GPP_ACCESS: fsm.NewState(amfctx.Deregistered),
+	}}
+	if registered(dereg) {
+		t.Error("deregistered UE reported as registered")
+	}
+
+	reg := &amfctx.AmfUe{State: map[models.AccessType]*fsm.State{
+		models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(amfctx.Registered),
+		models.ACCESSTYPE_NON_3_GPP_ACCESS: fsm.NewState(amfctx.Deregistered),
+	}}
+	if !registered(reg) {
+		t.Error("registered UE (on 3GPP access) not recognised")
+	}
+
+	// A UE with no State map must not panic and is not registered.
+	if registered(&amfctx.AmfUe{}) {
+		t.Error("UE with nil State reported as registered")
+	}
+}
+
+// TestEncodeAllEvents verifies every AMF xIRI a reporter can produce encodes
+// through the real TS 33.128 context without error — i.e. mandatory members are
+// present and CHOICE arms are registered. This is the correctness check that a
+// pure-mapping test cannot give.
+func TestEncodeAllEvents(t *testing.T) {
+	ue := targetUe()
+	ctx := iri.NewContext()
+	events := map[string]any{
+		"registration":        amfRegistration(ue),
+		"locationUpdate":      amfLocationUpdate(ue),
+		"deregistration":      amfDeregistration(ue, iri.DirNetworkInitiated, iri.AccessThreeGPP),
+		"unsuccessful":        amfUnsuccessfulRegistration(ue, nasMessage.Cause5GMM5GSServicesNotAllowed),
+		"startOfInterception": amfStartOfInterception(ue),
+	}
+	for name, ev := range events {
+		if _, err := iri.EncodeXIRI(ctx, ev); err != nil {
+			t.Errorf("encode %s: %v", name, err)
+		}
 	}
 }

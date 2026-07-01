@@ -1862,6 +1862,10 @@ func AuthenticationProcedure(ctx ctxt.Context, ue *context.AmfUe, accessType mod
 }
 
 func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe, accessType models.AccessType) (err error) {
+	// Lawful Interception IRI-POI: emit an AMFDeregistration xIRI (network-
+	// initiated) for a tasked target. Silent no-op unless LI is configured.
+	lawfulintercept.ReportDeregistration(ue, true, accessType)
+
 	anType := util.AnTypeToNas(accessType)
 	if ue.CmConnect(accessType) && ue.State[accessType].Is(context.Registered) {
 		// setting reregistration required flag to true
@@ -2672,6 +2676,11 @@ func HandleDeregistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType mod
 	deregistrationRequest *nasMessage.DeregistrationRequestUEOriginatingDeregistration,
 ) error {
 	ue.GmmLog.Info("Handle Deregistration Request(UE Originating)")
+
+	// Lawful Interception IRI-POI: emit an AMFDeregistration xIRI (UE-initiated)
+	// for a tasked target, before the UE context is torn down. Silent no-op
+	// unless LI is configured.
+	lawfulintercept.ReportDeregistration(ue, false, anType)
 
 	targetDeregistrationAccessType := deregistrationRequest.GetAccessType()
 	ue.SmContextList.Range(func(key, value interface{}) bool {

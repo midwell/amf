@@ -11,6 +11,7 @@ package lawfulintercept
 import (
 	"encoding/hex"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -22,6 +23,8 @@ import (
 	"github.com/omec-project/li/types"
 	"github.com/omec-project/li/x1"
 	"github.com/omec-project/li/x2x3"
+	"github.com/omec-project/nas/v2/nasMessage"
+	"github.com/omec-project/openapi/v2/models"
 )
 
 // Config configures the AMF LI IRI-POI. Init is only called when LI is enabled.
@@ -61,7 +64,7 @@ func Init(cfg Config) error {
 	}
 	srv := &http.Server{
 		Addr:      cfg.X1Listen,
-		Handler:   x1.NewServer(st, cfg.NEID),
+		Handler:   x1.NewServer(st, cfg.NEID, x1.OnActivate(sub.reportStartOfInterception)),
 		TLSConfig: mat.ServerTLS(),
 	}
 	// Certificates come from TLSConfig, so the file arguments are empty.
@@ -70,23 +73,84 @@ func Init(cfg Config) error {
 	return nil
 }
 
-// ReportRegistration emits an AMFRegistration xIRI for ue if it matches an
-// active interception task. It is a no-op when LI is inactive or ue is not a
-// target, and never logs anything that would reveal interception.
+// ReportRegistration emits a registration xIRI for ue if it matches an active
+// interception task. A mobility registration update — the UE informing the
+// network it has moved while staying registered — is reported as an
+// AMFLocationUpdate; every other registration type is an AMFRegistration. It is
+// a no-op when LI is inactive or ue is not a target, and never logs anything
+// that would reveal interception.
 func ReportRegistration(ue *amfctx.AmfUe) {
 	sub := active.Load()
 	if sub == nil || ue == nil {
 		return
 	}
-	sub.reportRegistration(ue)
+	sub.deliverIRI(sub.matchingTasks(ue), registrationEvent(ue))
 }
 
-func (s *subsystem) reportRegistration(ue *amfctx.AmfUe) {
-	tasks := s.matchingTasks(ue)
+// registrationEvent picks the xIRI for a completed registration: a mobility
+// registration update is an AMFLocationUpdate (the UE reporting movement while
+// staying registered); any other type is an AMFRegistration.
+func registrationEvent(ue *amfctx.AmfUe) any {
+	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
+		return amfLocationUpdate(ue)
+	}
+	return amfRegistration(ue)
+}
+
+// ReportDeregistration emits an AMFDeregistration xIRI for ue if it matches an
+// active task. networkInitiated distinguishes a network-ordered deregistration
+// from a UE-originating one; access is the access type being deregistered.
+// No-op and silent when LI is inactive or ue is not a target.
+func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access models.AccessType) {
+	sub := active.Load()
+	if sub == nil || ue == nil {
+		return
+	}
+	dir := iri.DirUEInitiated
+	if networkInitiated {
+		dir = iri.DirNetworkInitiated
+	}
+	sub.deliverIRI(sub.matchingTasks(ue), amfDeregistration(ue, dir, accessType(access)))
+}
+
+// ReportRegistrationReject emits an AMFUnsuccessfulProcedure xIRI (failed
+// procedure = registration) for ue if it matches an active task; cause is the
+// 5GMM reject cause. At reject time ue may be only partially identified — if no
+// target identifier is yet known it matches no task and nothing is emitted.
+// No-op and silent when LI is inactive.
+func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
+	sub := active.Load()
+	if sub == nil || ue == nil {
+		return
+	}
+	sub.deliverIRI(sub.matchingTasks(ue), amfUnsuccessfulRegistration(ue, cause))
+}
+
+// reportStartOfInterception runs when a task is newly activated over X1. It
+// scans the AMF UE pool and, for every already-registered UE the task targets,
+// emits an AMFStartOfInterceptionWithRegisteredUE — so a warrant that arrives
+// after the UE is already on the network still produces an initial record.
+func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
+	if !task.WantsProduct(types.ProductIRI) {
+		return
+	}
+	amfctx.AMF_Self().UePool.Range(func(_, value any) bool {
+		ue, ok := value.(*amfctx.AmfUe)
+		if ok && registered(ue) && taskTargets(task, ue) {
+			s.deliverIRI([]types.InterceptTask{task}, amfStartOfInterception(ue))
+		}
+		return true
+	})
+}
+
+// deliverIRI encodes event once and delivers it as an X2 xIRI to every task in
+// tasks that wants IRI product. It is silent on any error (encoding or
+// delivery) so that interception can never be inferred from AMF behaviour.
+func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
 	if len(tasks) == 0 {
 		return
 	}
-	payload, err := iri.EncodeXIRI(s.iriCtx, amfRegistration(ue))
+	payload, err := iri.EncodeXIRI(s.iriCtx, event)
 	if err != nil {
 		return
 	}
@@ -136,29 +200,140 @@ func targetsOf(ue *amfctx.AmfUe) []types.TargetIdentifier {
 	return ids
 }
 
-// amfRegistration maps an AmfUe to a TS 33.128 AMFRegistration record.
-// registrationType/result default to Initial / 3GPP-access for now; the exact
-// type from the NAS 5GS registration request is a follow-up.
+// amfRegistration maps an AmfUe to a TS 33.128 AMFRegistration record. The
+// registration type is taken from the NAS 5GS registration request; the result
+// defaults to 3GPP-access.
 func amfRegistration(ue *amfctx.AmfUe) iri.AMFRegistration {
-	reg := iri.AMFRegistration{
-		RegistrationType:   iri.RegTypeInitial,
+	return iri.AMFRegistration{
+		RegistrationType:   registrationType(ue),
 		RegistrationResult: iri.RegResult3GPPAccess,
+		SUPI:               supiChoice(ue),
+		PEI:                peiChoice(ue),
+		GPSI:               gpsiChoice(ue),
 		GUTI:               fiveGGUTI(ue),
 	}
+}
+
+// amfLocationUpdate maps an AmfUe to a TS 33.128 AMFLocationUpdate record,
+// emitted when a mobility registration update tells the AMF the UE has moved.
+// The Location subtree is kept minimal (see li/iri.Location); the detailed
+// cell/TAI encoding is a later increment.
+func amfLocationUpdate(ue *amfctx.AmfUe) iri.AMFLocationUpdate {
+	return iri.AMFLocationUpdate{
+		SUPI:     supiChoice(ue),
+		PEI:      peiChoice(ue),
+		GPSI:     gpsiChoice(ue),
+		GUTI:     fiveGGUTI(ue),
+		Location: iri.Location{LocationInfo: iri.LocationInfo{CurrentLocation: true}},
+	}
+}
+
+// amfDeregistration maps an AmfUe to a TS 33.128 AMFDeregistration record.
+func amfDeregistration(ue *amfctx.AmfUe, dir iri.AMFDirection, access iri.AccessType) iri.AMFDeregistration {
+	return iri.AMFDeregistration{
+		DeregistrationDirection: dir,
+		AccessType:              access,
+		SUPI:                    supiChoice(ue),
+		PEI:                     peiChoice(ue),
+		GPSI:                    gpsiChoice(ue),
+		GUTI:                    fiveGGUTI(ue),
+	}
+}
+
+// amfUnsuccessfulRegistration maps a rejected registration to a TS 33.128
+// AMFUnsuccessfulProcedure record with a 5GMM failure cause.
+func amfUnsuccessfulRegistration(ue *amfctx.AmfUe, cause uint8) iri.AMFUnsuccessfulProcedure {
+	return iri.AMFUnsuccessfulProcedure{
+		FailedProcedureType: iri.FailedRegistration,
+		FailureCause:        iri.FiveGMMCause(cause),
+		SUPI:                supiChoice(ue),
+		PEI:                 peiChoice(ue),
+		GPSI:                gpsiChoice(ue),
+		GUTI:                fiveGGUTI(ue),
+	}
+}
+
+// amfStartOfInterception maps an already-registered AmfUe to a TS 33.128
+// AMFStartOfInterceptionWithRegisteredUE record.
+func amfStartOfInterception(ue *amfctx.AmfUe) iri.AMFStartOfInterceptionWithRegisteredUE {
+	return iri.AMFStartOfInterceptionWithRegisteredUE{
+		RegistrationResult: iri.RegResult3GPPAccess,
+		RegistrationType:   registrationType(ue),
+		SUPI:               supiChoice(ue),
+		PEI:                peiChoice(ue),
+		GPSI:               gpsiChoice(ue),
+		GUTI:               fiveGGUTI(ue),
+	}
+}
+
+// supiChoice returns ue's SUPI as the iri "supi" CHOICE arm (IMSI or NAI), or
+// nil when the AMF holds no SUPI in a form we can map. A nil in a mandatory SUPI
+// field makes encoding fail, which deliverIRI swallows silently.
+func supiChoice(ue *amfctx.AmfUe) any {
 	if v, ok := strings.CutPrefix(ue.Supi, "imsi-"); ok {
-		reg.SUPI = iri.IMSI(v)
-	} else if v, ok := strings.CutPrefix(ue.Supi, "nai-"); ok {
-		reg.SUPI = iri.NAI(v)
+		return iri.IMSI(v)
 	}
+	if v, ok := strings.CutPrefix(ue.Supi, "nai-"); ok {
+		return iri.NAI(v)
+	}
+	return nil
+}
+
+// peiChoice returns ue's PEI as the iri "pei" CHOICE arm (IMEI or IMEISV), or
+// nil (an absent optional).
+func peiChoice(ue *amfctx.AmfUe) any {
 	if v, ok := strings.CutPrefix(ue.Pei, "imeisv-"); ok {
-		reg.PEI = iri.IMEISV(v)
-	} else if v, ok := strings.CutPrefix(ue.Pei, "imei-"); ok {
-		reg.PEI = iri.IMEI(v)
+		return iri.IMEISV(v)
 	}
+	if v, ok := strings.CutPrefix(ue.Pei, "imei-"); ok {
+		return iri.IMEI(v)
+	}
+	return nil
+}
+
+// gpsiChoice returns ue's GPSI as the iri "gpsi" CHOICE arm (MSISDN), or nil.
+func gpsiChoice(ue *amfctx.AmfUe) any {
 	if v, ok := strings.CutPrefix(ue.Gpsi, "msisdn-"); ok {
-		reg.GPSI = iri.MSISDN(v)
+		return iri.MSISDN(v)
 	}
-	return reg
+	return nil
+}
+
+// registrationType maps the NAS 5GS registration type to the TS 33.128 value.
+func registrationType(ue *amfctx.AmfUe) iri.AMFRegistrationType {
+	switch ue.RegistrationType5GS {
+	case nasMessage.RegistrationType5GSMobilityRegistrationUpdating:
+		return iri.RegTypeMobility
+	case nasMessage.RegistrationType5GSPeriodicRegistrationUpdating:
+		return iri.RegTypePeriodic
+	case nasMessage.RegistrationType5GSEmergencyRegistration:
+		return iri.RegTypeEmergency
+	default:
+		return iri.RegTypeInitial
+	}
+}
+
+// accessType maps a 3GPP access type to the TS 33.128 enumeration.
+func accessType(a models.AccessType) iri.AccessType {
+	if a == models.ACCESSTYPE_NON_3_GPP_ACCESS {
+		return iri.AccessNonThreeGPP
+	}
+	return iri.AccessThreeGPP
+}
+
+// registered reports whether ue is in the Registered state on any access.
+func registered(ue *amfctx.AmfUe) bool {
+	for _, st := range ue.State {
+		if st != nil && st.Is(amfctx.Registered) {
+			return true
+		}
+	}
+	return false
+}
+
+// taskTargets reports whether task's target matches any of ue's identifiers.
+func taskTargets(task types.InterceptTask, ue *amfctx.AmfUe) bool {
+	return slices.Contains(targetsOf(ue), task.Target)
 }
 
 // fiveGGUTI builds the 5G-GUTI from the AMF's served GUAMI and ue's 5G-TMSI.

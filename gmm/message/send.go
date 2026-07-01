@@ -8,6 +8,7 @@ package message
 
 import (
 	"github.com/omec-project/amf/context"
+	"github.com/omec-project/amf/lawfulintercept"
 	"github.com/omec-project/amf/logger"
 	ngap_message "github.com/omec-project/amf/ngap/message"
 	"github.com/omec-project/amf/producer/callback"
@@ -238,6 +239,13 @@ func SendRegistrationReject(ue *context.RanUe, cause5GMM uint8, eapMessage strin
 		return
 	}
 	amfUe.GmmLog.Infoln("send Registration Reject")
+
+	// Lawful Interception IRI-POI: this is the single choke point for every
+	// registration rejection, so emit an AMFUnsuccessfulProcedure xIRI here for a
+	// tasked target. Silent no-op unless LI is configured (and unless the UE is
+	// identified enough to match a task). Sent before the reject NAS is built so
+	// interception timing is independent of downlink transport.
+	lawfulintercept.ReportRegistrationReject(amfUe, cause5GMM)
 
 	nasMsg, err := BuildRegistrationReject(amfUe, cause5GMM, eapMessage)
 	if err != nil {
