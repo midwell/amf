@@ -1285,6 +1285,16 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 	amfSelf.AllocateRegistrationArea(ue, anType)
 	assignLadnInfo(ue, registrationRequest, anType)
 
+	// Lawful Interception IRI-POI: a mobility registration update means the target
+	// moved while staying registered — emit an AMFLocationUpdate. This path does
+	// not reach HandleRegistrationComplete (no new 5G-GUTI is assigned, so the UE
+	// sends no Registration Complete), so the registration-complete tap never fires
+	// for it. Periodic updates are keepalives with no location change and are not
+	// reported. Silent no-op unless LI is configured.
+	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
+		lawfulintercept.ReportRegistration(ue)
+	}
+
 	// TODO: GUTI reassignment if need (based on operator poilcy)
 	// TODO: T3512/Non3GPP de-registration timer reassignment if need (based on operator policy)
 
