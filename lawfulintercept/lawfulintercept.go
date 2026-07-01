@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	amfctx "github.com/omec-project/amf/context"
 	liasn1 "github.com/omec-project/li/asn1"
@@ -37,6 +38,10 @@ type Config struct {
 	Cert     string // X0-pre-provisioned LI PKI: this NE's certificate
 	Key      string //                            its private key
 	CACert   string //                            the LI CA trust anchor
+
+	AdmfURL          string        // ADMF X1 endpoint for NE-initiated issue reports (empty = disabled)
+	AdmfID           string        // the responsible ADMF's identifier (for reports)
+	KeepaliveTimeout time.Duration // purge tasking if no X1 message within this (0 = disabled)
 }
 
 // sender delivers an xIRI/xCC PDU to an MDF. *x2x3.Client satisfies it; tests
@@ -46,10 +51,11 @@ type sender interface {
 }
 
 type subsystem struct {
-	store  *store.Store
-	client sender
-	iriCtx *liasn1.Context
-	neID   string
+	store    *store.Store
+	client   sender
+	iriCtx   *liasn1.Context
+	neID     string
+	reporter *x1.Reporter // nil when NE-initiated reporting is not configured
 }
 
 // active holds the running subsystem, or nil when LI is not configured.
@@ -70,19 +76,29 @@ func Init(cfg Config) error {
 		iriCtx: iri.NewContext(),
 		neID:   cfg.NEID,
 	}
+	if cfg.AdmfURL != "" {
+		sub.reporter = x1.NewReporter(cfg.AdmfURL, cfg.AdmfID, cfg.NEID, mat.ClientTLS())
+	}
+	x1srv := x1.NewServer(st, cfg.NEID, x1.OnActivate(sub.reportStartOfInterception))
 	// Bind the X1 listener synchronously so a bind/permission failure is reported
 	// to the caller — otherwise LI would look enabled (active.Store below) while
 	// no X1 tasking can ever be received.
 	ln, err := net.Listen("tcp", cfg.X1Listen)
 	if err != nil {
+		// Surface the failure to the ADMF over X1 too (an operational fault, not a
+		// per-target signal), best-effort.
+		if sub.reporter != nil {
+			_ = sub.reporter.ReportNEIssue(x1.NEIssueX1ListenFailed, "X1 listener bind failed")
+		}
 		return fmt.Errorf("lawful interception: X1 listen on %s: %w", cfg.X1Listen, err)
 	}
-	srv := &http.Server{
-		Handler:   x1.NewServer(st, cfg.NEID, x1.OnActivate(sub.reportStartOfInterception)),
-		TLSConfig: mat.ServerTLS(),
-	}
+	srv := &http.Server{Handler: x1srv, TLSConfig: mat.ServerTLS()}
 	// Certificates come from TLSConfig, so the file arguments are empty.
 	go func() { _ = srv.ServeTLS(ln, "", "") }()
+	// Keepalive fail-safe: purge tasking if the ADMF goes silent (TS 103 221-1).
+	if cfg.KeepaliveTimeout > 0 {
+		go x1srv.WatchKeepalive(cfg.KeepaliveTimeout)
+	}
 	active.Store(sub)
 	return nil
 }
@@ -217,13 +233,17 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
 		if !t.WantsProduct(types.ProductIRI) {
 			continue
 		}
-		_ = s.client.Send(&x2x3.PDU{
+		if err := s.client.Send(&x2x3.PDU{
 			Type:          x2x3.PDUTypeX2,
 			PayloadFormat: x2x3.PayloadFormat3GPP33128,
 			Direction:     x2x3.DirectionNotApplicable,
 			XID:           parseXID(t.XID),
 			Payload:       payload,
-		})
+		}); err != nil && s.reporter != nil {
+			// MDF delivery failed — surface it to the ADMF over X1 (throttled,
+			// NE-level, no target id), never to general logs.
+			_ = s.reporter.ReportNEIssue(x1.NEIssueMDFUnreachable, "MDF2 X2 delivery failed")
+		}
 	}
 }
 

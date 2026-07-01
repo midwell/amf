@@ -173,9 +173,11 @@ func (amf *AMF) Start() {
 	// (An init failure is a deployment/config error; production may route LI
 	// operational logs to a restricted sink per the undetectability requirement.)
 	if li := factory.AmfConfig.Configuration.Li; li != nil {
+		kaTimeout, _ := time.ParseDuration(li.KeepaliveTimeout)
 		if err = lawfulintercept.Init(lawfulintercept.Config{
 			X1Listen: li.X1Listen, MDF2: li.MDF2, NEID: li.NEID,
 			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
+			AdmfURL: li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: kaTimeout,
 		}); err != nil {
 			logger.InitLog.Errorf("lawful interception init failed: %v", err)
 		}
