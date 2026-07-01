@@ -8,11 +8,22 @@ import (
 
 	amfctx "github.com/omec-project/amf/context"
 	"github.com/omec-project/li/iri"
+	"github.com/omec-project/li/store"
 	"github.com/omec-project/li/types"
+	"github.com/omec-project/li/x2x3"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/fsm"
 )
+
+// captureSender records the xIRI PDUs delivered, standing in for the X2 client
+// so tests can assert per-warrant delivery isolation.
+type captureSender struct{ pdus []*x2x3.PDU }
+
+func (c *captureSender) Send(p *x2x3.PDU) error {
+	c.pdus = append(c.pdus, p)
+	return nil
+}
 
 // targetUe is a fully-identified UE used across the mapping tests.
 func targetUe() *amfctx.AmfUe {
@@ -236,6 +247,42 @@ func TestIdentifierAssociationMapping(t *testing.T) {
 	}
 	if deassoc.GUTI.FiveGTMSI != 42 {
 		t.Errorf("deassociation GUTI = %+v", deassoc.GUTI)
+	}
+}
+
+// TestDeliveryIsolation checks multi-agency isolation: two agencies tasking the
+// same target each receive exactly their own xIRI tagged with their own XID
+// (no cross-delivery), and a CC-only warrant never leaks into IRI (X2) delivery.
+func TestDeliveryIsolation(t *testing.T) {
+	const (
+		xidA  = "aaaaaaaa-0000-0000-0000-000000000001"
+		xidB  = "bbbbbbbb-0000-0000-0000-000000000002"
+		xidCC = "cccccccc-0000-0000-0000-000000000003"
+	)
+	target := types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}
+	st := store.New()
+	st.Activate(types.InterceptTask{XID: xidA, Target: target, Products: []types.ProductType{types.ProductIRI}, State: types.TaskActive})
+	st.Activate(types.InterceptTask{XID: xidB, Target: target, Products: []types.ProductType{types.ProductIRI}, State: types.TaskActive})
+	st.Activate(types.InterceptTask{XID: xidCC, Target: target, Products: []types.ProductType{types.ProductCC}, State: types.TaskActive})
+
+	cap := &captureSender{}
+	active.Store(&subsystem{store: st, client: cap, iriCtx: iri.NewContext()})
+	t.Cleanup(func() { active.Store(nil) })
+
+	ReportRegistration(targetUe())
+
+	if len(cap.pdus) != 2 {
+		t.Fatalf("delivered %d xIRI PDUs, want 2 (the two IRI agencies; CC-only excluded)", len(cap.pdus))
+	}
+	count := map[[16]byte]int{}
+	for _, p := range cap.pdus {
+		count[p.XID]++
+	}
+	if count[parseXID(xidA)] != 1 || count[parseXID(xidB)] != 1 {
+		t.Errorf("each IRI agency must receive its own xIRI exactly once; XID counts = %v", count)
+	}
+	if count[parseXID(xidCC)] != 0 {
+		t.Error("CC-only warrant leaked into IRI (X2) delivery")
 	}
 }
 
