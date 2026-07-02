@@ -70,14 +70,31 @@ func Init(cfg Config) error {
 		return err
 	}
 	st := store.New()
-	sub := &subsystem{
-		store:  st,
-		client: x2x3.NewClient(cfg.MDF2, mat.ClientTLS()),
-		iriCtx: iri.NewContext(),
-		neID:   cfg.NEID,
-	}
+	var reporter *x1.Reporter
 	if cfg.AdmfURL != "" {
-		sub.reporter = x1.NewReporter(cfg.AdmfURL, cfg.AdmfID, cfg.NEID, mat.ClientTLS())
+		reporter = x1.NewReporter(cfg.AdmfURL, cfg.AdmfID, cfg.NEID, mat.ClientTLS())
+	}
+	// Deliver X2 asynchronously: the Report* hooks run on the per-UE GMM/NAS
+	// goroutine (some before the downlink NAS is even built), so a slow or
+	// unreachable MDF2 must never block them — that would delay a targeted UE's
+	// signalling, a target-observable timing side channel and an availability risk
+	// (review R3b; design D11 mandates async X2 delivery). Worker delivery failures
+	// surface to the ADMF over X1 (throttled, NE-level, no target id), never a log.
+	client := x2x3.NewAsyncSender(
+		x2x3.NewClient(cfg.MDF2, mat.ClientTLS()), 0,
+		func(error) {
+			if reporter != nil {
+				_ = reporter.ReportNEIssue(x1.NEIssueMDFUnreachable, "MDF2 X2 delivery failed")
+			}
+		},
+		nil, // drops are covered by the same MDF-unreachable report from the worker
+	)
+	sub := &subsystem{
+		store:    st,
+		client:   client,
+		iriCtx:   iri.NewContext(),
+		neID:     cfg.NEID,
+		reporter: reporter,
 	}
 	x1srv := x1.NewServer(st, cfg.NEID, x1.OnActivate(sub.reportStartOfInterception))
 	// Bind the X1 listener synchronously so a bind/permission failure is reported
@@ -194,10 +211,16 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 		if !ok {
 			return true
 		}
-		// The owning NAS goroutine mutates ue.State (a map) and the identifier
-		// fields concurrently; read them under ue.Mutex. An unsynchronised read
-		// here is a data race and can fatally panic on concurrent map iteration.
-		// Build the record under the lock; delivery happens later, off the lock.
+		// Read ue's identifiers and state under ue.Mutex and build the record here.
+		// The ue.State map's keys are fixed at UE creation (only the per-access
+		// *fsm.State values transition, via Set), so ranging it does not risk the
+		// fatal "concurrent map iteration and write". The lock is best-effort for the
+		// value/identifier reads: the NAS write paths do not currently take ue.Mutex,
+		// so it establishes ordering only against other ue.Mutex holders. The scan
+		// emits only for already-Registered UEs, whose SUPI/PEI/GPSI/TMSI are stable
+		// after the registration that set them — so the residual window is narrow.
+		// Closing it fully requires the NAS write paths to take ue.Mutex (a broader
+		// AMF concurrency change, tracked as review R1).
 		ue.Mutex.Lock()
 		if registered(ue) && taskTargets(task, ue) {
 			events = append(events, amfStartOfInterception(ue))
@@ -208,14 +231,11 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 	if len(events) == 0 {
 		return
 	}
-	// Deliver off the X1 request goroutine: delivery does blocking network I/O
-	// (bounded by the X2 client write deadline), and this callback runs
-	// synchronously on the X1 handler — it must not stall X1 provisioning.
-	go func() {
-		for _, ev := range events {
-			s.deliverIRI([]types.InterceptTask{task}, ev)
-		}
-	}()
+	// Delivery is asynchronous (enqueue-and-return; see Init), so this X1 callback
+	// never blocks on the MDF; hand the built records to the delivery client.
+	for _, ev := range events {
+		s.deliverIRI([]types.InterceptTask{task}, ev)
+	}
 }
 
 // deliverIRI encodes event once and delivers it as an X2 xIRI to every task in
@@ -233,17 +253,16 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
 		if !t.WantsProduct(types.ProductIRI) {
 			continue
 		}
-		if err := s.client.Send(&x2x3.PDU{
+		// Delivery is asynchronous (see Init): Send enqueues and returns, so this
+		// signalling path never blocks on the MDF; delivery failures are reported
+		// to the ADMF over X1 from the delivery worker, not here.
+		_ = s.client.Send(&x2x3.PDU{
 			Type:          x2x3.PDUTypeX2,
 			PayloadFormat: x2x3.PayloadFormat3GPP33128,
 			Direction:     x2x3.DirectionNotApplicable,
 			XID:           parseXID(t.XID),
 			Payload:       payload,
-		}); err != nil && s.reporter != nil {
-			// MDF delivery failed — surface it to the ADMF over X1 (throttled,
-			// NE-level, no target id), never to general logs.
-			_ = s.reporter.ReportNEIssue(x1.NEIssueMDFUnreachable, "MDF2 X2 delivery failed")
-		}
+		})
 	}
 }
 
