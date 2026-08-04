@@ -136,17 +136,18 @@ func ReportRegistration(ue *amfctx.AmfUe) {
 	if sub == nil || ue == nil {
 		return
 	}
-	sub.deliverIRI(sub.matchingTasks(ue), registrationEvent(ue))
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), registrationEvent(id))
 }
 
 // registrationEvent picks the xIRI for a completed registration: a mobility
 // registration update is an AMFLocationUpdate (the UE reporting movement while
 // staying registered); any other type is an AMFRegistration.
-func registrationEvent(ue *amfctx.AmfUe) any {
-	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
-		return amfLocationUpdate(ue)
+func registrationEvent(id amfctx.UeIdentity) any {
+	if id.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
+		return amfLocationUpdate(id)
 	}
-	return amfRegistration(ue)
+	return amfRegistration(id)
 }
 
 // ReportDeregistration emits an AMFDeregistration xIRI for ue if it matches an
@@ -162,7 +163,8 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access models
 	if networkInitiated {
 		dir = iri.DirNetworkInitiated
 	}
-	sub.deliverIRI(sub.matchingTasks(ue), amfDeregistration(ue, dir, accessType(access)))
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), amfDeregistration(id, dir, accessType(access)))
 }
 
 // ReportRegistrationReject emits an AMFUnsuccessfulProcedure xIRI (failed
@@ -175,7 +177,8 @@ func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
 	if sub == nil || ue == nil {
 		return
 	}
-	sub.deliverIRI(sub.matchingTasks(ue), amfUnsuccessfulRegistration(ue, cause))
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), amfUnsuccessfulRegistration(id, cause))
 }
 
 // ReportIdentifierAssociation emits an AMFIdentifierAssociation xIRI for ue if
@@ -187,7 +190,8 @@ func ReportIdentifierAssociation(ue *amfctx.AmfUe) {
 	if sub == nil || ue == nil {
 		return
 	}
-	sub.deliverIRI(sub.matchingTasks(ue), amfIdentifierAssociation(ue))
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), amfIdentifierAssociation(id))
 }
 
 // ReportIdentifierDeassociation emits an AMFIdentifierDeassociation xIRI for ue
@@ -199,7 +203,8 @@ func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
 	if sub == nil || ue == nil {
 		return
 	}
-	sub.deliverIRI(sub.matchingTasks(ue), amfIdentifierDeassociation(ue))
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), amfIdentifierDeassociation(id))
 }
 
 // reportStartOfInterception runs when a task is newly activated over X1. It
@@ -216,21 +221,17 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 		if !ok {
 			return true
 		}
-		// Read ue's identifiers and state under ue.Mutex and build the record here.
-		// The ue.State map's keys are fixed at UE creation (only the per-access
-		// *fsm.State values transition, via Set), so ranging it does not risk the
-		// fatal "concurrent map iteration and write". The lock is best-effort for the
-		// value/identifier reads: the NAS write paths do not currently take ue.Mutex,
-		// so it establishes ordering only against other ue.Mutex holders. The scan
-		// emits only for already-Registered UEs, whose SUPI/PEI/GPSI/TMSI are stable
-		// after the registration that set them — so the residual window is narrow.
-		// Closing it fully requires the NAS write paths to take ue.Mutex (a broader
-		// AMF concurrency change, tracked as review R1).
-		ue.Mutex.Lock()
-		if registered(ue) && taskTargets(task, ue) {
-			events = append(events, amfStartOfInterception(ue))
+		// This scan runs on the X1 goroutine, concurrently with the UEs' own NAS
+		// procedures, so the identity fields must be read through IdentitySnapshot:
+		// it takes them together under the identity lock the NAS Set* accessors
+		// write under, which is what makes the read race-free (review R1). Reading
+		// the fields directly here would race every registration in flight.
+		// ue.State needs no such care: its keys are fixed at UE creation and each
+		// *fsm.State guards its own transitions.
+		id := ue.IdentitySnapshot()
+		if registered(ue) && taskTargets(task, id) {
+			events = append(events, amfStartOfInterception(id))
 		}
-		ue.Mutex.Unlock()
 		return true
 	})
 	if len(events) == 0 {
@@ -273,11 +274,11 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
 
 // matchingTasks returns the active tasks targeting any of ue's identifiers,
 // de-duplicated by task id.
-func (s *subsystem) matchingTasks(ue *amfctx.AmfUe) []types.InterceptTask {
+func (s *subsystem) matchingTasks(id amfctx.UeIdentity) []types.InterceptTask {
 	var out []types.InterceptTask
 	seen := map[types.XID]bool{}
-	for _, id := range targetsOf(ue) {
-		for _, t := range s.store.Match(id) {
+	for _, target := range targetsOf(id) {
+		for _, t := range s.store.Match(target) {
 			if !seen[t.XID] {
 				seen[t.XID] = true
 				out = append(out, t)
@@ -289,114 +290,114 @@ func (s *subsystem) matchingTasks(ue *amfctx.AmfUe) []types.InterceptTask {
 
 // targetsOf returns ue's known 5G target identifiers, with the AMF's "type-"
 // prefixes stripped to the bare value the X1 tasking uses.
-func targetsOf(ue *amfctx.AmfUe) []types.TargetIdentifier {
+func targetsOf(id amfctx.UeIdentity) []types.TargetIdentifier {
 	var ids []types.TargetIdentifier
-	if v := afterPrefix(ue.Supi, "imsi-", "nai-"); v != "" {
+	if v := afterPrefix(id.Supi, "imsi-", "nai-"); v != "" {
 		ids = append(ids, types.TargetIdentifier{Type: types.TargetSUPI, Value: v})
 	}
-	if v := afterPrefix(ue.Pei, "imeisv-", "imei-"); v != "" {
+	if v := afterPrefix(id.Pei, "imeisv-", "imei-"); v != "" {
 		ids = append(ids, types.TargetIdentifier{Type: types.TargetPEI, Value: v})
 	}
-	if v := afterPrefix(ue.Gpsi, "msisdn-", "extid-"); v != "" {
+	if v := afterPrefix(id.Gpsi, "msisdn-", "extid-"); v != "" {
 		ids = append(ids, types.TargetIdentifier{Type: types.TargetGPSI, Value: v})
 	}
 	return ids
 }
 
-// amfRegistration maps an AmfUe to a TS 33.128 AMFRegistration record. The
+// amfRegistration maps a UE identity snapshot to a TS 33.128 AMFRegistration record. The
 // registration type is taken from the NAS 5GS registration request; the result
 // defaults to 3GPP-access.
-func amfRegistration(ue *amfctx.AmfUe) iri.AMFRegistration {
+func amfRegistration(id amfctx.UeIdentity) iri.AMFRegistration {
 	return iri.AMFRegistration{
-		RegistrationType:   registrationType(ue),
+		RegistrationType:   registrationType(id),
 		RegistrationResult: iri.RegResult3GPPAccess,
-		SUPI:               supiChoice(ue),
-		PEI:                peiChoice(ue),
-		GPSI:               gpsiChoice(ue),
-		GUTI:               fiveGGUTI(ue),
+		SUPI:               supiChoice(id),
+		PEI:                peiChoice(id),
+		GPSI:               gpsiChoice(id),
+		GUTI:               fiveGGUTI(id),
 	}
 }
 
-// amfLocationUpdate maps an AmfUe to a TS 33.128 AMFLocationUpdate record,
+// amfLocationUpdate maps a UE identity snapshot to a TS 33.128 AMFLocationUpdate record,
 // emitted when a mobility registration update tells the AMF the UE has moved.
 // The Location subtree is kept minimal (see li/iri.Location); the detailed
 // cell/TAI encoding is a later increment.
-func amfLocationUpdate(ue *amfctx.AmfUe) iri.AMFLocationUpdate {
+func amfLocationUpdate(id amfctx.UeIdentity) iri.AMFLocationUpdate {
 	return iri.AMFLocationUpdate{
-		SUPI:     supiChoice(ue),
-		PEI:      peiChoice(ue),
-		GPSI:     gpsiChoice(ue),
-		GUTI:     fiveGGUTI(ue),
+		SUPI:     supiChoice(id),
+		PEI:      peiChoice(id),
+		GPSI:     gpsiChoice(id),
+		GUTI:     fiveGGUTI(id),
 		Location: iri.Location{LocationInfo: iri.LocationInfo{CurrentLocation: true}},
 	}
 }
 
-// amfDeregistration maps an AmfUe to a TS 33.128 AMFDeregistration record.
-func amfDeregistration(ue *amfctx.AmfUe, dir iri.AMFDirection, access iri.AccessType) iri.AMFDeregistration {
+// amfDeregistration maps a UE identity snapshot to a TS 33.128 AMFDeregistration record.
+func amfDeregistration(id amfctx.UeIdentity, dir iri.AMFDirection, access iri.AccessType) iri.AMFDeregistration {
 	return iri.AMFDeregistration{
 		DeregistrationDirection: dir,
 		AccessType:              access,
-		SUPI:                    supiChoice(ue),
-		PEI:                     peiChoice(ue),
-		GPSI:                    gpsiChoice(ue),
-		GUTI:                    fiveGGUTI(ue),
+		SUPI:                    supiChoice(id),
+		PEI:                     peiChoice(id),
+		GPSI:                    gpsiChoice(id),
+		GUTI:                    fiveGGUTI(id),
 	}
 }
 
 // amfUnsuccessfulRegistration maps a rejected registration to a TS 33.128
 // AMFUnsuccessfulProcedure record with a 5GMM failure cause.
-func amfUnsuccessfulRegistration(ue *amfctx.AmfUe, cause uint8) iri.AMFUnsuccessfulProcedure {
+func amfUnsuccessfulRegistration(id amfctx.UeIdentity, cause uint8) iri.AMFUnsuccessfulProcedure {
 	return iri.AMFUnsuccessfulProcedure{
 		FailedProcedureType: iri.FailedRegistration,
 		FailureCause:        iri.FiveGMMCause(cause),
-		SUPI:                supiChoice(ue),
-		PEI:                 peiChoice(ue),
-		GPSI:                gpsiChoice(ue),
-		GUTI:                fiveGGUTI(ue),
+		SUPI:                supiChoice(id),
+		PEI:                 peiChoice(id),
+		GPSI:                gpsiChoice(id),
+		GUTI:                fiveGGUTI(id),
 	}
 }
 
-// amfStartOfInterception maps an already-registered AmfUe to a TS 33.128
+// amfStartOfInterception maps an already-registered UE identity snapshot to a TS 33.128
 // AMFStartOfInterceptionWithRegisteredUE record.
-func amfStartOfInterception(ue *amfctx.AmfUe) iri.AMFStartOfInterceptionWithRegisteredUE {
+func amfStartOfInterception(id amfctx.UeIdentity) iri.AMFStartOfInterceptionWithRegisteredUE {
 	return iri.AMFStartOfInterceptionWithRegisteredUE{
 		RegistrationResult: iri.RegResult3GPPAccess,
-		RegistrationType:   registrationType(ue),
-		SUPI:               supiChoice(ue),
-		PEI:                peiChoice(ue),
-		GPSI:               gpsiChoice(ue),
-		GUTI:               fiveGGUTI(ue),
+		RegistrationType:   registrationType(id),
+		SUPI:               supiChoice(id),
+		PEI:                peiChoice(id),
+		GPSI:               gpsiChoice(id),
+		GUTI:               fiveGGUTI(id),
 	}
 }
 
-// amfIdentifierAssociation maps an AmfUe to a TS 33.128 AMFIdentifierAssociation
+// amfIdentifierAssociation maps a UE identity snapshot to a TS 33.128 AMFIdentifierAssociation
 // record binding the target's SUPI to its assigned 5G-GUTI.
-func amfIdentifierAssociation(ue *amfctx.AmfUe) iri.AMFIdentifierAssociation {
+func amfIdentifierAssociation(id amfctx.UeIdentity) iri.AMFIdentifierAssociation {
 	return iri.AMFIdentifierAssociation{
-		SUPI: supiChoice(ue),
-		PEI:  peiChoice(ue),
-		GPSI: gpsiChoice(ue),
-		GUTI: fiveGGUTI(ue),
+		SUPI: supiChoice(id),
+		PEI:  peiChoice(id),
+		GPSI: gpsiChoice(id),
+		GUTI: fiveGGUTI(id),
 	}
 }
 
-// amfIdentifierDeassociation maps an AmfUe to a TS 33.128
+// amfIdentifierDeassociation maps a UE identity snapshot to a TS 33.128
 // AMFIdentifierDeassociation record releasing the target's SUPI↔5G-GUTI binding.
-func amfIdentifierDeassociation(ue *amfctx.AmfUe) iri.AMFIdentifierDeassociation {
+func amfIdentifierDeassociation(id amfctx.UeIdentity) iri.AMFIdentifierDeassociation {
 	return iri.AMFIdentifierDeassociation{
-		SUPI: supiChoice(ue),
-		GUTI: fiveGGUTI(ue),
+		SUPI: supiChoice(id),
+		GUTI: fiveGGUTI(id),
 	}
 }
 
 // supiChoice returns ue's SUPI as the iri "supi" CHOICE arm (IMSI or NAI), or
 // nil when the AMF holds no SUPI in a form we can map. A nil in a mandatory SUPI
 // field makes encoding fail, which deliverIRI swallows silently.
-func supiChoice(ue *amfctx.AmfUe) any {
-	if v, ok := strings.CutPrefix(ue.Supi, "imsi-"); ok {
+func supiChoice(id amfctx.UeIdentity) any {
+	if v, ok := strings.CutPrefix(id.Supi, "imsi-"); ok {
 		return iri.IMSI(v)
 	}
-	if v, ok := strings.CutPrefix(ue.Supi, "nai-"); ok {
+	if v, ok := strings.CutPrefix(id.Supi, "nai-"); ok {
 		return iri.NAI(v)
 	}
 	return nil
@@ -404,27 +405,27 @@ func supiChoice(ue *amfctx.AmfUe) any {
 
 // peiChoice returns ue's PEI as the iri "pei" CHOICE arm (IMEI or IMEISV), or
 // nil (an absent optional).
-func peiChoice(ue *amfctx.AmfUe) any {
-	if v, ok := strings.CutPrefix(ue.Pei, "imeisv-"); ok {
+func peiChoice(id amfctx.UeIdentity) any {
+	if v, ok := strings.CutPrefix(id.Pei, "imeisv-"); ok {
 		return iri.IMEISV(v)
 	}
-	if v, ok := strings.CutPrefix(ue.Pei, "imei-"); ok {
+	if v, ok := strings.CutPrefix(id.Pei, "imei-"); ok {
 		return iri.IMEI(v)
 	}
 	return nil
 }
 
 // gpsiChoice returns ue's GPSI as the iri "gpsi" CHOICE arm (MSISDN), or nil.
-func gpsiChoice(ue *amfctx.AmfUe) any {
-	if v, ok := strings.CutPrefix(ue.Gpsi, "msisdn-"); ok {
+func gpsiChoice(id amfctx.UeIdentity) any {
+	if v, ok := strings.CutPrefix(id.Gpsi, "msisdn-"); ok {
 		return iri.MSISDN(v)
 	}
 	return nil
 }
 
 // registrationType maps the NAS 5GS registration type to the TS 33.128 value.
-func registrationType(ue *amfctx.AmfUe) iri.AMFRegistrationType {
-	switch ue.RegistrationType5GS {
+func registrationType(id amfctx.UeIdentity) iri.AMFRegistrationType {
+	switch id.RegistrationType5GS {
 	case nasMessage.RegistrationType5GSMobilityRegistrationUpdating:
 		return iri.RegTypeMobility
 	case nasMessage.RegistrationType5GSPeriodicRegistrationUpdating:
@@ -455,14 +456,14 @@ func registered(ue *amfctx.AmfUe) bool {
 }
 
 // taskTargets reports whether task's target matches any of ue's identifiers.
-func taskTargets(task types.InterceptTask, ue *amfctx.AmfUe) bool {
-	return slices.Contains(targetsOf(ue), task.Target)
+func taskTargets(task types.InterceptTask, id amfctx.UeIdentity) bool {
+	return slices.Contains(targetsOf(id), task.Target)
 }
 
 // fiveGGUTI builds the 5G-GUTI from the AMF's served GUAMI and ue's 5G-TMSI.
 // The GUAMI's 6-hex AmfId encodes RegionID(8b) | SetID(10b) | Pointer(6b).
-func fiveGGUTI(ue *amfctx.AmfUe) iri.FiveGGUTI {
-	g := iri.FiveGGUTI{FiveGTMSI: int64(uint32(ue.Tmsi))}
+func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
+	g := iri.FiveGGUTI{FiveGTMSI: int64(uint32(id.Tmsi))}
 	guamis := amfctx.AMF_Self().ServedGuamiList
 	if len(guamis) == 0 {
 		return g

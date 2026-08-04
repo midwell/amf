@@ -25,9 +25,10 @@ func (c *captureSender) Send(p *x2x3.PDU) error {
 	return nil
 }
 
-// targetUe is a fully-identified UE used across the mapping tests.
-func targetUe() *amfctx.AmfUe {
-	return &amfctx.AmfUe{
+// targetIdentity is a fully-identified UE identity snapshot used across the
+// mapping tests.
+func targetIdentity() amfctx.UeIdentity {
+	return amfctx.UeIdentity{
 		Supi: "imsi-262019876543210",
 		Pei:  "imeisv-3534250000000151",
 		Gpsi: "msisdn-4915123456789",
@@ -35,12 +36,12 @@ func targetUe() *amfctx.AmfUe {
 }
 
 func TestTargetsOf(t *testing.T) {
-	ue := &amfctx.AmfUe{
+	id := amfctx.UeIdentity{
 		Supi: "imsi-262019876543210",
 		Pei:  "imeisv-3534250000000151",
 		Gpsi: "msisdn-4915123456789",
 	}
-	got := targetsOf(ue)
+	got := targetsOf(id)
 	want := map[types.TargetIdentifierType]string{
 		types.TargetSUPI: "262019876543210",
 		types.TargetPEI:  "3534250000000151",
@@ -56,18 +57,18 @@ func TestTargetsOf(t *testing.T) {
 	}
 
 	// An unmappable/absent identifier is not emitted.
-	if ids := targetsOf(&amfctx.AmfUe{Supi: "suci-0-262-01-..."}); len(ids) != 0 {
+	if ids := targetsOf(amfctx.UeIdentity{Supi: "suci-0-262-01-..."}); len(ids) != 0 {
 		t.Errorf("unmappable SUPI produced identifiers: %+v", ids)
 	}
 }
 
 func TestAMFRegistrationMapping(t *testing.T) {
-	ue := &amfctx.AmfUe{
+	id := amfctx.UeIdentity{
 		Supi: "imsi-262019876543210",
 		Pei:  "imei-353425000000015",
 		Gpsi: "msisdn-4915123456789",
 	}
-	reg := amfRegistration(ue)
+	reg := amfRegistration(id)
 	if reg.RegistrationResult != iri.RegResult3GPPAccess {
 		t.Errorf("registrationResult = %d", reg.RegistrationResult)
 	}
@@ -89,7 +90,7 @@ func TestFiveGGUTIDecode(t *testing.T) {
 	}
 	t.Cleanup(func() { amfctx.AMF_Self().ServedGuamiList = nil })
 
-	g := fiveGGUTI(&amfctx.AmfUe{Tmsi: 42})
+	g := fiveGGUTI(amfctx.UeIdentity{Tmsi: 42})
 	if g.MCC != "262" || g.MNC != "01" {
 		t.Errorf("PLMN = %s/%s, want 262/01", g.MCC, g.MNC)
 	}
@@ -120,7 +121,7 @@ func TestRegistrationType(t *testing.T) {
 		nasMessage.RegistrationType5GSReserved:                     iri.RegTypeInitial, // unknown → initial
 	}
 	for nas, want := range cases {
-		if got := registrationType(&amfctx.AmfUe{RegistrationType5GS: nas}); got != want {
+		if got := registrationType(amfctx.UeIdentity{RegistrationType5GS: nas}); got != want {
 			t.Errorf("registrationType(%d) = %d, want %d", nas, got, want)
 		}
 	}
@@ -129,21 +130,21 @@ func TestRegistrationType(t *testing.T) {
 // TestRegistrationEventDispatch checks that a mobility registration update maps
 // to an AMFLocationUpdate and every other registration type to AMFRegistration.
 func TestRegistrationEventDispatch(t *testing.T) {
-	ue := targetUe()
+	id := targetIdentity()
 
-	ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
-	if _, ok := registrationEvent(ue).(iri.AMFLocationUpdate); !ok {
-		t.Errorf("mobility update → %T, want AMFLocationUpdate", registrationEvent(ue))
+	id.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
+	if _, ok := registrationEvent(id).(iri.AMFLocationUpdate); !ok {
+		t.Errorf("mobility update → %T, want AMFLocationUpdate", registrationEvent(id))
 	}
 
 	for _, rt := range []uint8{
 		nasMessage.RegistrationType5GSInitialRegistration,
 		nasMessage.RegistrationType5GSPeriodicRegistrationUpdating,
 	} {
-		ue.RegistrationType5GS = rt
-		reg, ok := registrationEvent(ue).(iri.AMFRegistration)
+		id.RegistrationType5GS = rt
+		reg, ok := registrationEvent(id).(iri.AMFRegistration)
 		if !ok {
-			t.Errorf("registration type %d → %T, want AMFRegistration", rt, registrationEvent(ue))
+			t.Errorf("registration type %d → %T, want AMFRegistration", rt, registrationEvent(id))
 			continue
 		}
 		if rt == nasMessage.RegistrationType5GSPeriodicRegistrationUpdating && reg.RegistrationType != iri.RegTypePeriodic {
@@ -153,9 +154,9 @@ func TestRegistrationEventDispatch(t *testing.T) {
 }
 
 func TestDeregistrationMapping(t *testing.T) {
-	ue := targetUe()
+	id := targetIdentity()
 
-	net := amfDeregistration(ue, iri.DirNetworkInitiated, iri.AccessThreeGPP)
+	net := amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP)
 	if net.DeregistrationDirection != iri.DirNetworkInitiated || net.AccessType != iri.AccessThreeGPP {
 		t.Errorf("network dereg = dir %d access %d", net.DeregistrationDirection, net.AccessType)
 	}
@@ -163,14 +164,14 @@ func TestDeregistrationMapping(t *testing.T) {
 		t.Errorf("dereg SUPI = %#v", net.SUPI)
 	}
 
-	ue2 := amfDeregistration(ue, iri.DirUEInitiated, iri.AccessNonThreeGPP)
+	ue2 := amfDeregistration(id, iri.DirUEInitiated, iri.AccessNonThreeGPP)
 	if ue2.DeregistrationDirection != iri.DirUEInitiated || ue2.AccessType != iri.AccessNonThreeGPP {
 		t.Errorf("ue dereg = dir %d access %d", ue2.DeregistrationDirection, ue2.AccessType)
 	}
 }
 
 func TestUnsuccessfulRegistrationMapping(t *testing.T) {
-	rec := amfUnsuccessfulRegistration(targetUe(), nasMessage.Cause5GMM5GSServicesNotAllowed)
+	rec := amfUnsuccessfulRegistration(targetIdentity(), nasMessage.Cause5GMM5GSServicesNotAllowed)
 	if rec.FailedProcedureType != iri.FailedRegistration {
 		t.Errorf("failedProcedureType = %d, want FailedRegistration", rec.FailedProcedureType)
 	}
@@ -190,13 +191,13 @@ func TestAccessTypeMapping(t *testing.T) {
 }
 
 func TestTaskTargets(t *testing.T) {
-	ue := targetUe()
+	id := targetIdentity()
 	hit := types.InterceptTask{Target: types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}}
 	miss := types.InterceptTask{Target: types.TargetIdentifier{Type: types.TargetSUPI, Value: "000000000000000"}}
-	if !taskTargets(hit, ue) {
+	if !taskTargets(hit, id) {
 		t.Error("matching SUPI task not recognised")
 	}
-	if taskTargets(miss, ue) {
+	if taskTargets(miss, id) {
 		t.Error("non-matching task falsely recognised")
 	}
 }
@@ -230,10 +231,10 @@ func TestIdentifierAssociationMapping(t *testing.T) {
 	}
 	t.Cleanup(func() { amfctx.AMF_Self().ServedGuamiList = nil })
 
-	ue := targetUe()
-	ue.Tmsi = 42
+	id := targetIdentity()
+	id.Tmsi = 42
 
-	assoc := amfIdentifierAssociation(ue)
+	assoc := amfIdentifierAssociation(id)
 	if supi, ok := assoc.SUPI.(iri.IMSI); !ok || supi != "262019876543210" {
 		t.Errorf("association SUPI = %#v", assoc.SUPI)
 	}
@@ -241,7 +242,7 @@ func TestIdentifierAssociationMapping(t *testing.T) {
 		t.Errorf("association GUTI = %+v", assoc.GUTI)
 	}
 
-	deassoc := amfIdentifierDeassociation(ue)
+	deassoc := amfIdentifierDeassociation(id)
 	if supi, ok := deassoc.SUPI.(iri.IMSI); !ok || supi != "262019876543210" {
 		t.Errorf("deassociation SUPI = %#v", deassoc.SUPI)
 	}
@@ -269,7 +270,13 @@ func TestDeliveryIsolation(t *testing.T) {
 	active.Store(&subsystem{store: st, client: cap, iriCtx: iri.NewContext()})
 	t.Cleanup(func() { active.Store(nil) })
 
-	ReportRegistration(targetUe())
+	// Exercised through the exported entry point, so the snapshot is taken the
+	// way a live NAS path takes it.
+	ReportRegistration(&amfctx.AmfUe{
+		Supi: "imsi-262019876543210",
+		Pei:  "imeisv-3534250000000151",
+		Gpsi: "msisdn-4915123456789",
+	})
 
 	if len(cap.pdus) != 2 {
 		t.Fatalf("delivered %d xIRI PDUs, want 2 (the two IRI agencies; CC-only excluded)", len(cap.pdus))
@@ -291,16 +298,16 @@ func TestDeliveryIsolation(t *testing.T) {
 // present and CHOICE arms are registered. This is the correctness check that a
 // pure-mapping test cannot give.
 func TestEncodeAllEvents(t *testing.T) {
-	ue := targetUe()
+	id := targetIdentity()
 	ctx := iri.NewContext()
 	events := map[string]any{
-		"registration":            amfRegistration(ue),
-		"locationUpdate":          amfLocationUpdate(ue),
-		"deregistration":          amfDeregistration(ue, iri.DirNetworkInitiated, iri.AccessThreeGPP),
-		"unsuccessful":            amfUnsuccessfulRegistration(ue, nasMessage.Cause5GMM5GSServicesNotAllowed),
-		"startOfInterception":     amfStartOfInterception(ue),
-		"identifierAssociation":   amfIdentifierAssociation(ue),
-		"identifierDeassociation": amfIdentifierDeassociation(ue),
+		"registration":            amfRegistration(id),
+		"locationUpdate":          amfLocationUpdate(id),
+		"deregistration":          amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP),
+		"unsuccessful":            amfUnsuccessfulRegistration(id, nasMessage.Cause5GMM5GSServicesNotAllowed),
+		"startOfInterception":     amfStartOfInterception(id),
+		"identifierAssociation":   amfIdentifierAssociation(id),
+		"identifierDeassociation": amfIdentifierDeassociation(id),
 	}
 	for name, ev := range events {
 		if _, err := iri.EncodeXIRI(ctx, ev); err != nil {
