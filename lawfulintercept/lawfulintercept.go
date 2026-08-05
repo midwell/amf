@@ -279,8 +279,11 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
 			Type:          x2x3.PDUTypeX2,
 			PayloadFormat: x2x3.PayloadFormat3GPP33128,
 			Direction:     x2x3.DirectionNotApplicable,
-			XID:           parseXID(t.XID),
-			Payload:       payload,
+			// A provisioned ProductID replaces the task XID in the PDU header
+			// (TS 103 221-1 clause 6.2.1.2), so product is labelled with the
+			// warrant an ADMF names rather than with the task carrying it.
+			XID:     parseXID(t.DeliveryXID()),
+			Payload: payload,
 		})
 	}
 }
@@ -496,15 +499,11 @@ func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 	return g
 }
 
-// parseXID converts an X1 task id (a UUID string) to the 16-byte XID carried in
-// the X2 PDU header. On any parse failure it returns the zero XID (best-effort).
+// parseXID converts a task's X1 identifier to the 16-byte XID carried in the
+// X2 PDU header. It delegates to types.XID.Bytes so the conversion lives in one
+// place across the POIs and the triggered CC-POI in the UPF.
 func parseXID(xid types.XID) [16]byte {
-	var out [16]byte
-	b, err := hex.DecodeString(strings.ReplaceAll(string(xid), "-", ""))
-	if err == nil && len(b) == len(out) {
-		copy(out[:], b)
-	}
-	return out
+	return xid.Bytes()
 }
 
 // afterPrefix returns s with the first matching prefix removed, or "" if none
