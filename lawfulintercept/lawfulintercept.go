@@ -378,6 +378,9 @@ func amfIdentifierAssociation(id amfctx.UeIdentity) iri.AMFIdentifierAssociation
 		PEI:  peiChoice(id),
 		GPSI: gpsiChoice(id),
 		GUTI: fiveGGUTI(id),
+		// Mandatory in this record (review R33), so it is populated even though the
+		// detailed subtree is still deferred — same minimal form as AMFLocationUpdate.
+		Location: iri.Location{LocationInfo: iri.LocationInfo{CurrentLocation: true}},
 	}
 }
 
