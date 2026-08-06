@@ -266,8 +266,8 @@ func TestDeliveryIsolation(t *testing.T) {
 	st.Activate(types.InterceptTask{XID: xidB, Target: target, Products: []types.ProductType{types.ProductIRI}, State: types.TaskActive})
 	st.Activate(types.InterceptTask{XID: xidCC, Target: target, Products: []types.ProductType{types.ProductCC}, State: types.TaskActive})
 
-	cap := &captureSender{}
-	active.Store(&subsystem{store: st, client: cap, iriCtx: iri.NewContext()})
+	capture := &captureSender{}
+	active.Store(&subsystem{store: st, client: capture, iriCtx: iri.NewContext()})
 	t.Cleanup(func() { active.Store(nil) })
 
 	// Exercised through the exported entry point, so the snapshot is taken the
@@ -278,11 +278,11 @@ func TestDeliveryIsolation(t *testing.T) {
 		Gpsi: "msisdn-4915123456789",
 	})
 
-	if len(cap.pdus) != 2 {
-		t.Fatalf("delivered %d xIRI PDUs, want 2 (the two IRI agencies; CC-only excluded)", len(cap.pdus))
+	if len(capture.pdus) != 2 {
+		t.Fatalf("delivered %d xIRI PDUs, want 2 (the two IRI agencies; CC-only excluded)", len(capture.pdus))
 	}
 	count := map[[16]byte]int{}
-	for _, p := range cap.pdus {
+	for _, p := range capture.pdus {
 		count[p.XID]++
 	}
 	if count[parseXID(xidA)] != 1 || count[parseXID(xidB)] != 1 {
