@@ -2580,7 +2580,17 @@ func HandleRegistrationComplete(ctx ctxt.Context, ue *context.AmfUe, accessType 
 
 	// Lawful Interception IRI-POI: emit an AMFRegistration xIRI if this UE is a
 	// tasked target. No-op (and silent) unless LI is configured.
-	lawfulintercept.ReportRegistration(ue)
+	//
+	// A mobility registration update is excluded because it is already reported,
+	// as an AMFLocationUpdate, from HandleMobilityAndPeriodicRegistrationUpdating.
+	// It reaches here too: BuildRegistrationAccept carries the 5G-GUTI IE whenever
+	// the UE has a GUTI — which it does after its initial registration — and
+	// TS 24.501 clause 5.5.1.3.4 then requires the UE to send Registration
+	// Complete. Reporting it in both places delivered the agency two location
+	// records for one movement.
+	if ue.RegistrationType5GS != nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
+		lawfulintercept.ReportRegistration(ue)
+	}
 
 	if ue.T3550 != nil {
 		ue.T3550.Stop()

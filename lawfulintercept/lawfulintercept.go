@@ -137,8 +137,9 @@ func Init(cfg Config) error {
 	//nolint:errcheck // serve-until-close; a bind failure already surfaced above
 	go func() { _ = srv.ServeTLS(ln, "", "") }()
 	// Keepalive fail-safe: purge tasking if the ADMF goes silent (TS 103 221-1).
+	// A nil stop channel: it runs for as long as this element can hold tasking.
 	if cfg.KeepaliveTimeout > 0 {
-		go x1srv.WatchKeepalive(cfg.KeepaliveTimeout)
+		go x1srv.WatchKeepalive(cfg.KeepaliveTimeout, nil)
 	}
 	active.Store(sub)
 	// Tasking lives in memory, so this element has just discarded every warrant it
@@ -495,10 +496,26 @@ func taskTargets(task types.InterceptTask, id amfctx.UeIdentity) bool {
 	return slices.Contains(targetsOf(id), task.Target)
 }
 
-// fiveGGUTI builds the 5G-GUTI from the AMF's served GUAMI and ue's 5G-TMSI.
-// The GUAMI's 6-hex AmfId encodes RegionID(8b) | SetID(10b) | Pointer(6b).
+// fiveGGUTI builds the 5G-GUTI the AMF actually assigned this UE.
+//
+// It is taken from ue's own GUTI string, which AllocateGutiToUe composes as
+// PLMN ID + AmfId + 5G-TMSI, rather than from the served-GUAMI list: an AMF may
+// serve several GUAMIs, and the first of them is not necessarily the one this
+// UE's GUTI was cut from. Reading it back is the only way to report the identifier
+// the UE is actually known by, which is the whole point of the field.
+//
+// The served-GUAMI list remains the fallback for a UE that has no GUTI yet. If
+// even that is empty the MCC/MNC stay unset, and the codec is left to omit the
+// record's GUTI rather than emit an empty NumericString the schema forbids.
 func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 	g := iri.FiveGGUTI{FiveGTMSI: int64(uint32(id.Tmsi))}
+
+	if mcc, mnc, amfID, ok := splitGUTI(id.Guti); ok {
+		g.MCC, g.MNC = mcc, mnc
+		setAMFIdentifier(&g, amfID)
+		return g
+	}
+
 	guamis := amfctx.AMF_Self().ServedGuamiList
 	if len(guamis) == 0 {
 		return g
@@ -506,13 +523,38 @@ func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 	sg := guamis[0]
 	g.MCC = sg.PlmnId.Mcc
 	g.MNC = sg.PlmnId.Mnc
-	if b, err := hex.DecodeString(sg.AmfId); err == nil && len(b) == 3 {
-		v := uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])
-		g.AMFRegionID = int(v >> 16 & 0xFF)
-		g.AMFSetID = int(v >> 6 & 0x3FF)
-		g.AMFPointer = int(v & 0x3F)
-	}
+	setAMFIdentifier(&g, sg.AmfId)
 	return g
+}
+
+// splitGUTI takes a 5G-GUTI apart into its PLMN and AMF identifier components.
+// The AMF composes it as MCC(3) + MNC(2..3) + AmfId(6 hex) + 5G-TMSI(8 hex), so
+// the MNC's width is whatever is left once the two fixed-width tails are removed.
+func splitGUTI(guti string) (mcc, mnc, amfID string, ok bool) {
+	const (
+		mccLen   = 3
+		amfIDLen = 6
+		tmsiLen  = 8
+	)
+	// A two- or three-digit MNC are the only valid widths.
+	mncLen := len(guti) - mccLen - amfIDLen - tmsiLen
+	if mncLen < 2 || mncLen > 3 {
+		return "", "", "", false
+	}
+	return guti[:mccLen], guti[mccLen : mccLen+mncLen], guti[mccLen+mncLen : mccLen+mncLen+amfIDLen], true
+}
+
+// setAMFIdentifier unpacks the 6-hex AMF identifier, which encodes
+// RegionID(8b) | SetID(10b) | Pointer(6b).
+func setAMFIdentifier(g *iri.FiveGGUTI, amfID string) {
+	b, err := hex.DecodeString(amfID)
+	if err != nil || len(b) != 3 {
+		return
+	}
+	v := uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])
+	g.AMFRegionID = int(v >> 16 & 0xFF)
+	g.AMFSetID = int(v >> 6 & 0x3FF)
+	g.AMFPointer = int(v & 0x3F)
 }
 
 // parseXID converts a task's X1 identifier to the 16-byte XID carried in the

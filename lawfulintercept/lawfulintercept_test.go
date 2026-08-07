@@ -315,3 +315,68 @@ func TestEncodeAllEvents(t *testing.T) {
 		}
 	}
 }
+
+// TestFiveGGUTIPrefersTheUEsOwnGUTI: an AMF may serve several GUAMIs, and the UE's
+// GUTI was not necessarily cut from the first of them. Reporting the served list's
+// head told the agency a 5G-GUTI the UE is not known by; the UE's own GUTI string
+// is the identifier the network actually assigned it.
+func TestFiveGGUTIPrefersTheUEsOwnGUTI(t *testing.T) {
+	// Two served GUAMIs; the UE's GUTI comes from the second.
+	amfctx.AMF_Self().ServedGuamiList = []models.Guami{
+		{PlmnId: models.PlmnIdNid{Mcc: "262", Mnc: "01"}, AmfId: "010203"},
+		{PlmnId: models.PlmnIdNid{Mcc: "310", Mnc: "260"}, AmfId: "0a0b0c"},
+	}
+	t.Cleanup(func() { amfctx.AMF_Self().ServedGuamiList = nil })
+
+	// mcc(310) + mnc(260) + amfId(0a0b0c) + 5G-TMSI(8 hex).
+	g := fiveGGUTI(amfctx.UeIdentity{Guti: "3102600a0b0c0000002a", Tmsi: 42})
+	if g.MCC != "310" || g.MNC != "260" {
+		t.Errorf("PLMN = %s/%s, want 310/260 from the UE's own GUTI", g.MCC, g.MNC)
+	}
+	// 0x0a0b0c = RegionID 0x0a=10, SetID (bits 15..6) = 0x0b0c>>6 = 44, Pointer 0x0c&0x3f = 12.
+	if g.AMFRegionID != 10 || g.AMFSetID != 44 || g.AMFPointer != 12 {
+		t.Errorf("AmfId decode = region %d set %d pointer %d, want 10/44/12", g.AMFRegionID, g.AMFSetID, g.AMFPointer)
+	}
+
+	// A two-digit MNC is the other valid width.
+	if g := fiveGGUTI(amfctx.UeIdentity{Guti: "262010102030000002a", Tmsi: 42}); g.MCC != "262" || g.MNC != "01" {
+		t.Errorf("two-digit-MNC GUTI = %s/%s, want 262/01", g.MCC, g.MNC)
+	}
+
+	// No GUTI yet: fall back to the served list rather than emitting nothing.
+	if g := fiveGGUTI(amfctx.UeIdentity{Tmsi: 42}); g.MCC != "262" || g.MNC != "01" {
+		t.Errorf("fallback PLMN = %s/%s, want the served GUAMI 262/01", g.MCC, g.MNC)
+	}
+
+	// No GUTI and no served GUAMI: leave the PLMN unset rather than emit an empty
+	// NumericString, which the schema forbids.
+	amfctx.AMF_Self().ServedGuamiList = nil
+	if g := fiveGGUTI(amfctx.UeIdentity{Tmsi: 42}); g.MCC != "" || g.MNC != "" {
+		t.Errorf("PLMN = %s/%s with nothing to derive it from, want empty", g.MCC, g.MNC)
+	}
+}
+
+// TestMobilityUpdateIsReportedOnce: a mobility registration update is reported as
+// an AMFLocationUpdate from the mobility handler. It also reaches
+// HandleRegistrationComplete — BuildRegistrationAccept carries the 5G-GUTI IE
+// whenever the UE has one, and TS 24.501 clause 5.5.1.3.4 then requires the UE to
+// send Registration Complete — so reporting from both delivered the agency two
+// location records for one movement. This pins the dispatch that makes the
+// duplicate visible if the guard in HandleRegistrationComplete is ever removed.
+func TestMobilityUpdateIsReportedOnce(t *testing.T) {
+	id := amfctx.UeIdentity{
+		Supi:                "imsi-262019876543210",
+		RegistrationType5GS: nasMessage.RegistrationType5GSMobilityRegistrationUpdating,
+	}
+	if _, ok := registrationEvent(id).(iri.AMFLocationUpdate); !ok {
+		t.Fatalf("mobility update produced %T, want iri.AMFLocationUpdate", registrationEvent(id))
+	}
+
+	// Which is why HandleRegistrationComplete must not also report it: the two call
+	// sites would emit the same record twice for one procedure. An initial
+	// registration is the case that call site exists for.
+	id.RegistrationType5GS = nasMessage.RegistrationType5GSInitialRegistration
+	if _, ok := registrationEvent(id).(iri.AMFRegistration); !ok {
+		t.Errorf("initial registration produced %T, want iri.AMFRegistration", registrationEvent(id))
+	}
+}
