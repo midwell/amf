@@ -181,8 +181,8 @@ func (amf *AMF) Start() {
 		}); err != nil {
 			// Do not name the subsystem or echo err (which carries LI-identifying
 			// text) on the general operator log: that would reveal to an unauthorized
-			// operator that this NE is LI-provisioned (review R23; li-security-isolation
-			// NE-level undetectability). A listener-bind failure is already reported to
+			// operator that this NE is LI-provisioned, which network-element-level
+			// undetectability forbids. A listener-bind failure is already reported to
 			// the ADMF over X1 from within Init; an earlier failure (e.g. bad LI
 			// credentials) has no X1 channel yet and, pending a restricted LI log sink,
 			// is surfaced only non-attributably here.

@@ -78,7 +78,7 @@ func Init(cfg Config) error {
 	// goroutine (some before the downlink NAS is even built), so a slow or
 	// unreachable MDF2 must never block them — that would delay a targeted UE's
 	// signalling, a target-observable timing side channel and an availability risk
-	// (review R3b; design D11 mandates async X2 delivery). Worker delivery failures
+	// — so delivery is asynchronous by design. Worker delivery failures
 	// surface to the ADMF over X1 (throttled, NE-level, no target id), never a log.
 	client := x2x3.NewAsyncSender(
 		x2x3.NewClient(cfg.MDF2, mat.ClientTLS()), 0,
@@ -102,7 +102,7 @@ func Init(cfg Config) error {
 	// A peer that fails that check is refused, and — since this plane deliberately
 	// logs nothing — would otherwise be refused in complete silence. The ADMF is the
 	// only party entitled to hear that someone is trying to task its network
-	// elements under an identity that is not theirs (review R44).
+	// elements under an identity that is not theirs.
 	x1srv := x1.NewServer(st, cfg.NEID,
 		x1.WithADMF(cfg.AdmfID),
 		x1.OnActivate(sub.reportStartOfInterception),
@@ -128,9 +128,8 @@ func Init(cfg Config) error {
 	}
 	// NewListener supplies the properties every X1 endpoint needs and none of the
 	// three network functions should be trusted to remember separately: a discarded
-	// error log (review R35) and per-phase timeouts, without which an unauthenticated
-	// peer can hold connections open until this element can no longer be untasked
-	// (review R42).
+	// error log and per-phase timeouts, without which an unauthenticated peer can
+	// hold connections open until this element can no longer be untasked.
 	srv := x1.NewListener(x1srv, mat.ServerTLS())
 	// Certificates come from TLSConfig, so the file arguments are empty. ServeTLS
 	// blocks until the listener closes; the bind already succeeded above.
@@ -146,7 +145,7 @@ func Init(cfg Config) error {
 	// held. Nothing else tells the ADMF that — it goes on believing the
 	// interceptions it provisioned are running — and the standard's audit path is a
 	// query it has to think to make. Saying so on the way up is the one push signal
-	// available (review R38).
+	// available.
 	if reporter != nil && st.Len() == 0 {
 		reporter.Notify(x1.NEIssueTaskingAbsent,
 			"network function started with interception enabled and no tasking present")
@@ -253,7 +252,7 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 		// This scan runs on the X1 goroutine, concurrently with the UEs' own NAS
 		// procedures, so the identity fields must be read through IdentitySnapshot:
 		// it takes them together under the identity lock the NAS Set* accessors
-		// write under, which is what makes the read race-free (review R1). Reading
+		// write under, which is what makes the read race-free. Reading
 		// the fields directly here would race every registration in flight.
 		// ue.State needs no such care: its keys are fixed at UE creation and each
 		// *fsm.State guards its own transitions.
@@ -411,7 +410,7 @@ func amfIdentifierAssociation(id amfctx.UeIdentity) iri.AMFIdentifierAssociation
 		PEI:  peiChoice(id),
 		GPSI: gpsiChoice(id),
 		GUTI: fiveGGUTI(id),
-		// Mandatory in this record (review R33), so it is populated even though the
+		// Mandatory in this record, so it is populated even though the
 		// detailed subtree is still deferred — same minimal form as AMFLocationUpdate.
 		Location: iri.Location{LocationInfo: iri.LocationInfo{CurrentLocation: true}},
 	}
