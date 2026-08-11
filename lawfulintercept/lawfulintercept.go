@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -492,7 +491,7 @@ func registered(ue *amfctx.AmfUe) bool {
 
 // taskTargets reports whether task's target matches any of ue's identifiers.
 func taskTargets(task types.InterceptTask, id amfctx.UeIdentity) bool {
-	return slices.Contains(targetsOf(id), task.Target)
+	return task.TargetsAny(targetsOf(id))
 }
 
 // fiveGGUTI builds the 5G-GUTI the AMF actually assigned this UE.

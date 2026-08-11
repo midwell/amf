@@ -192,8 +192,8 @@ func TestAccessTypeMapping(t *testing.T) {
 
 func TestTaskTargets(t *testing.T) {
 	id := targetIdentity()
-	hit := types.InterceptTask{Target: types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}}
-	miss := types.InterceptTask{Target: types.TargetIdentifier{Type: types.TargetSUPI, Value: "000000000000000"}}
+	hit := types.InterceptTask{Targets: []types.TargetIdentifier{types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}}}
+	miss := types.InterceptTask{Targets: []types.TargetIdentifier{types.TargetIdentifier{Type: types.TargetSUPI, Value: "000000000000000"}}}
 	if !taskTargets(hit, id) {
 		t.Error("matching SUPI task not recognised")
 	}
@@ -262,9 +262,9 @@ func TestDeliveryIsolation(t *testing.T) {
 	)
 	target := types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}
 	st := store.New()
-	st.Activate(types.InterceptTask{XID: xidA, Target: target, Products: []types.ProductType{types.ProductIRI}, State: types.TaskActive})
-	st.Activate(types.InterceptTask{XID: xidB, Target: target, Products: []types.ProductType{types.ProductIRI}, State: types.TaskActive})
-	st.Activate(types.InterceptTask{XID: xidCC, Target: target, Products: []types.ProductType{types.ProductCC}, State: types.TaskActive})
+	st.Activate(types.InterceptTask{XID: xidA, Targets: []types.TargetIdentifier{target}, Products: []types.ProductType{types.ProductIRI}, State: types.TaskActive})
+	st.Activate(types.InterceptTask{XID: xidB, Targets: []types.TargetIdentifier{target}, Products: []types.ProductType{types.ProductIRI}, State: types.TaskActive})
+	st.Activate(types.InterceptTask{XID: xidCC, Targets: []types.TargetIdentifier{target}, Products: []types.ProductType{types.ProductCC}, State: types.TaskActive})
 
 	capture := &captureSender{}
 	active.Store(&subsystem{store: st, client: capture, iriCtx: iri.NewContext()})
