@@ -192,8 +192,8 @@ func TestAccessTypeMapping(t *testing.T) {
 
 func TestTaskTargets(t *testing.T) {
 	id := targetIdentity()
-	hit := types.InterceptTask{Targets: []types.TargetIdentifier{types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}}}
-	miss := types.InterceptTask{Targets: []types.TargetIdentifier{types.TargetIdentifier{Type: types.TargetSUPI, Value: "000000000000000"}}}
+	hit := types.InterceptTask{Targets: []types.TargetIdentifier{{Type: types.TargetSUPI, Value: "262019876543210"}}}
+	miss := types.InterceptTask{Targets: []types.TargetIdentifier{{Type: types.TargetSUPI, Value: "000000000000000"}}}
 	if !taskTargets(hit, id) {
 		t.Error("matching SUPI task not recognised")
 	}
