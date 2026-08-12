@@ -4,6 +4,7 @@
 package lawfulintercept
 
 import (
+	"sync"
 	"testing"
 
 	amfctx "github.com/omec-project/amf/context"
@@ -267,7 +268,13 @@ func TestDeliveryIsolation(t *testing.T) {
 	st.Activate(types.InterceptTask{XID: xidCC, Targets: []types.TargetIdentifier{target}, Products: []types.ProductType{types.ProductCC}, State: types.TaskActive})
 
 	capture := &captureSender{}
-	active.Store(&subsystem{store: st, client: capture, iriCtx: iri.NewContext()})
+	// No task here names a destination, so all three fall back to the configured MDF2 —
+	// which is the path every deployment predating the ListOfDIDs requirement is on, and
+	// which this test therefore also pins.
+	active.Store(&subsystem{
+		store: st, senderFor: func(string) sender { return capture },
+		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+	})
 	t.Cleanup(func() { active.Store(nil) })
 
 	// Exercised through the exported entry point, so the snapshot is taken the
@@ -378,5 +385,180 @@ func TestMobilityUpdateIsReportedOnce(t *testing.T) {
 	id.RegistrationType5GS = nasMessage.RegistrationType5GSInitialRegistration
 	if _, ok := registrationEvent(id).(iri.AMFRegistration); !ok {
 		t.Errorf("initial registration produced %T, want iri.AMFRegistration", registrationEvent(id))
+	}
+}
+
+// addressCapture records what was delivered and, crucially, where. The subject of these
+// tests is the destination, and a capture that forgets the address cannot see the defect:
+// with one configured endpoint, delivering to the task's destination and delivering to
+// configuration look identical.
+type addressCapture struct {
+	mu   sync.Mutex
+	sent map[string][][16]byte
+}
+
+func newAddressCapture() *addressCapture {
+	return &addressCapture{sent: map[string][][16]byte{}}
+}
+
+func (c *addressCapture) senderFor(addr string) sender {
+	return senderFunc(func(p *x2x3.PDU) error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.sent[addr] = append(c.sent[addr], p.XID)
+
+		return nil
+	})
+}
+
+type senderFunc func(*x2x3.PDU) error
+
+func (f senderFunc) Send(p *x2x3.PDU) error { return f(p) }
+
+func x2To(addr string) []types.DeliveryEndpoint {
+	return []types.DeliveryEndpoint{{Type: types.DeliveryX2, Address: addr}}
+}
+
+// TestXIRIGoesToTheDestinationsTheTaskNamed is the AMF half of the conformance fix. Two
+// warrants, two agencies, and neither agency sees the other's subscriber.
+//
+// This is the assertion the previous behaviour fails: both tasks resolved their
+// destinations, and both were delivered to the AMF's own configured MDF2 — so an ADMF
+// that provisioned two endpoints got everything at one of them, which is a disclosure to
+// an agency with no warrant for it.
+func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
+	const (
+		xidA    = "aaaaaaaa-0000-0000-0000-000000000001"
+		xidB    = "bbbbbbbb-0000-0000-0000-000000000002"
+		agencyA = "10.0.60.122:42069"
+		agencyB = "10.0.60.123:42070"
+	)
+	target := types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}
+	st := store.New()
+	st.Activate(types.InterceptTask{
+		XID: xidA, Targets: []types.TargetIdentifier{target},
+		Products: []types.ProductType{types.ProductIRI}, Deliveries: x2To(agencyA),
+	})
+	st.Activate(types.InterceptTask{
+		XID: xidB, Targets: []types.TargetIdentifier{target},
+		Products: []types.ProductType{types.ProductIRI}, Deliveries: x2To(agencyB),
+	})
+
+	capture := newAddressCapture()
+	active.Store(&subsystem{
+		store: st, senderFor: capture.senderFor,
+		// Configured, and deliberately neither agency's address: if the fix were absent
+		// this is where both records would arrive, and the assertion below would say so.
+		mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
+	})
+	t.Cleanup(func() { active.Store(nil) })
+
+	ReportRegistration(&amfctx.AmfUe{Supi: "imsi-262019876543210"})
+
+	for _, c := range []struct{ addr, xid string }{{agencyA, xidA}, {agencyB, xidB}} {
+		got := capture.sent[c.addr]
+		if len(got) != 1 {
+			t.Errorf("%s received %d records, want 1", c.addr, len(got))
+
+			continue
+		}
+		if got[0] != parseXID(types.XID(c.xid)) {
+			t.Errorf("%s received a record for a warrant it was not provisioned for", c.addr)
+		}
+	}
+	if n := len(capture.sent["10.0.60.99:42069"]); n != 0 {
+		t.Errorf("the configured endpoint received %d records, want 0: both tasks named a destination", n)
+	}
+}
+
+// The configured endpoint is not being removed, only demoted. Every deployment that
+// predates the ListOfDIDs requirement has ADMFs naming DIDs these elements were never
+// given, and taking this path away turns a conformance fix into an outage.
+//
+// Two ways to reach it, and the second is not obvious: a task that named nothing, and a
+// task that named a destination the element holds but which serves the *other* interface.
+// Both resolve no X2 endpoint, so both fall back — an assertion about the first alone would
+// leave the second to be discovered in a deployment.
+func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		deliveries []types.DeliveryEndpoint
+	}{
+		{name: "the task named no destination at all"},
+		{
+			name:       "the task named only a destination that carries content",
+			deliveries: []types.DeliveryEndpoint{{Type: types.DeliveryX3, Address: "10.0.60.122:42069"}},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			target := types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}
+			st := store.New()
+			st.Activate(types.InterceptTask{
+				XID: "aaaaaaaa-0000-0000-0000-000000000001", Targets: []types.TargetIdentifier{target},
+				Products: []types.ProductType{types.ProductIRI}, Deliveries: c.deliveries,
+			})
+
+			capture := newAddressCapture()
+			active.Store(&subsystem{
+				store: st, senderFor: capture.senderFor,
+				mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
+			})
+			t.Cleanup(func() { active.Store(nil) })
+
+			ReportRegistration(&amfctx.AmfUe{Supi: "imsi-262019876543210"})
+
+			if n := len(capture.sent["10.0.60.99:42069"]); n != 1 {
+				t.Errorf("the configured endpoint received %d records, want 1", n)
+			}
+			// And nothing went to the content endpoint: signalling delivered there would
+			// be a disclosure to an endpoint the ADMF designated for something else.
+			if n := len(capture.sent["10.0.60.122:42069"]); n != 0 {
+				t.Errorf("the X3 endpoint received %d xIRI records, want 0", n)
+			}
+		})
+	}
+}
+
+// TS 33.128 clause 6.2.2.2.1 scopes an AMF task's records to what its
+// IdentifierAssociationExtensions asked for. Before this, the identifier-association pair
+// went to every task — records the specification says "shall not be generated" absent the
+// extension, delivered to an agency that never asked for them.
+func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
+	for _, c := range []struct {
+		name                         string
+		scope                        types.RecordScope
+		wantGeneral, wantAssociation int
+	}{
+		{"no extension", types.RecordScopeStandard, 1, 0},
+		{"IdentifierAssociation only", types.RecordScopeIdentifierAssociation, 0, 1},
+		{"All", types.RecordScopeAll, 1, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			target := types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}
+			st := store.New()
+			st.Activate(types.InterceptTask{
+				XID: "aaaaaaaa-0000-0000-0000-000000000001", Targets: []types.TargetIdentifier{target},
+				Products: []types.ProductType{types.ProductIRI}, RecordScope: c.scope,
+			})
+
+			capture := &captureSender{}
+			active.Store(&subsystem{
+				store: st, senderFor: func(string) sender { return capture },
+				mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
+			})
+			t.Cleanup(func() { active.Store(nil) })
+
+			ue := &amfctx.AmfUe{Supi: "imsi-262019876543210"}
+			ReportRegistration(ue) // a general record
+			if got := len(capture.pdus); got != c.wantGeneral {
+				t.Errorf("registration delivered %d records, want %d", got, c.wantGeneral)
+			}
+
+			before := len(capture.pdus)
+			ReportIdentifierAssociation(ue)
+			if got := len(capture.pdus) - before; got != c.wantAssociation {
+				t.Errorf("identifier association delivered %d records, want %d", got, c.wantAssociation)
+			}
+		})
 	}
 }
