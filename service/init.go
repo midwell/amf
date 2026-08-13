@@ -185,6 +185,8 @@ func (amf *AMF) Start() {
 			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
 			Destinations: dests,
 			AdmfURL:      li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: kaTimeout,
+			DeactivateAllTasks:    li.DeactivateAllTasks,
+			RemoveAllDestinations: li.RemoveAllDestinations,
 		}); err != nil {
 			// Do not name the subsystem or echo err (which carries LI-identifying
 			// text) on the general operator log: that would reveal to an unauthorized
