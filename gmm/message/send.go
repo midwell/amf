@@ -150,6 +150,10 @@ func SendServiceAccept(ue *context.RanUe, anType models.AccessType, pDUSessionSt
 		return
 	}
 	ngap_message.SendDownlinkNasTransport(ue, nasMsg, nil)
+	// Reported here rather than in the caller because this function returns no
+	// error: a build failure above logs and returns, and a caller that reported
+	// afterwards would claim an accept the target never received.
+	lawfulintercept.ReportServiceAccept(amfUe)
 }
 
 func SendConfigurationUpdateCommand(amfUe *context.AmfUe, accessType models.AccessType,

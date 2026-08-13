@@ -98,8 +98,9 @@ func HandleULNASTransport(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 		return fmt.Errorf("PayloadContainerTypeSOR has not been implemented yet in UL NAS TRANSPORT")
 	case nasMessage.PayloadContainerTypeUEPolicy:
 		ue.GmmLog.Infoln("AMF Transfer UEPolicy To PCF")
-		callback.SendN1MessageNotify(ue, models.N1MESSAGECLASS_UPDP,
-			ulNasTransport.GetPayloadContainerContents(), nil)
+		policy := ulNasTransport.GetPayloadContainerContents()
+		callback.SendN1MessageNotify(ue, models.N1MESSAGECLASS_UPDP, policy, nil)
+		lawfulintercept.ReportUEPolicyTransfer(ue, policy)
 	case nasMessage.PayloadContainerTypeUEParameterUpdate:
 		ue.GmmLog.Infoln("AMF Transfer UEParameterUpdate To UDM")
 		upuMac, err := nasConvert.UpuAckToModels(ulNasTransport.GetPayloadContainerContents())
@@ -2351,6 +2352,7 @@ func sendServiceAccept(ue *context.AmfUe, anType models.AccessType, ctxList ngap
 		} else {
 			ngap_message.SendInitialContextSetupRequest(ue, anType, nasPdu, nil, nil, nil, nil)
 		}
+		lawfulintercept.ReportServiceAccept(ue)
 	} else if len(suList.List) != 0 {
 		nasPdu, err := gmm_message.BuildServiceAccept(ue, anType, pDUSessionStatus, reactivationResult,
 			errPduSessionId, errCause)
@@ -2358,7 +2360,10 @@ func sendServiceAccept(ue *context.AmfUe, anType models.AccessType, ctxList ngap
 			return err
 		}
 		ngap_message.SendPDUSessionResourceSetupRequest(ranUe, nasPdu, suList)
+		lawfulintercept.ReportServiceAccept(ue)
 	} else {
+		// The third branch reports from inside gmm_message.SendServiceAccept, which
+		// is where a build failure is visible — see the note there.
 		gmm_message.SendServiceAccept(ranUe, anType, pDUSessionStatus, reactivationResult, errPduSessionId, errCause)
 	}
 	return nil

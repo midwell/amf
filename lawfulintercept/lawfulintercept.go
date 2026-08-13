@@ -25,6 +25,7 @@ import (
 	"github.com/omec-project/li/types"
 	"github.com/omec-project/li/x1"
 	"github.com/omec-project/li/x2x3"
+	"github.com/omec-project/nas/v2"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
 )
@@ -284,6 +285,148 @@ func registrationEvent(id amfctx.UeIdentity) any {
 		return amfLocationUpdate(id)
 	}
 	return amfRegistration(id)
+}
+
+// ReportServiceAccept emits an AMFUEServiceAccept xIRI when the AMF has sent a
+// SERVICE ACCEPT to the target. Call it only where an accept was actually sent:
+// a record for an accept the AMF failed to build is a false report.
+//
+// TS 33.128 also names a SERVICE ACCEPT answering a CONTROL PLANE SERVICE
+// REQUEST, which this AMF does not implement, so only the plain event occurs.
+// No-op and silent when LI is inactive or ue is not a target.
+func ReportServiceAccept(ue *amfctx.AmfUe) {
+	sub := active.Load()
+	if sub == nil || ue == nil {
+		return
+	}
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), amfServiceAccept(id))
+}
+
+// ReportUEPolicyTransfer emits an AMFUEPolicyTransfer xIRI when the AMF passes a
+// UE policy container for the target. policy is copied, never parsed: the MDF and
+// the agency's tooling interpret it, and parsing an attacker-influenced payload
+// here would add exposure for no investigative gain.
+func ReportUEPolicyTransfer(ue *amfctx.AmfUe, policy []byte) {
+	sub := active.Load()
+	if sub == nil || ue == nil || len(policy) == 0 {
+		return
+	}
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), amfUEPolicyTransfer(id, policy))
+}
+
+// ReportPositioningInfoTransfer emits an AMFPositioningInfoTransfer xIRI when the
+// AMF relays an NRPPa or LPP message for the target. Both payloads are copied
+// opaquely, for the same reason as the UE policy.
+//
+// correlationID is mandatory in the record, so a transfer the AMF cannot
+// correlate produces nothing rather than a record with a fabricated identifier.
+func ReportPositioningInfoTransfer(ue *amfctx.AmfUe, nrppa, lpp []byte, correlationID string) {
+	sub := active.Load()
+	if sub == nil || ue == nil || correlationID == "" {
+		return
+	}
+	id := ue.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), amfPositioningInfoTransfer(id, nrppa, lpp, correlationID))
+}
+
+// Handover describes one handover as the AMF sees it when the HANDOVER REQUEST
+// ACKNOWLEDGE arrives — the point where TS 33.128 places both handover records.
+// The caller assembles it so this package never touches ngapType.
+type Handover struct {
+	UE              *amfctx.AmfUe
+	AMFUENGAPID     int64
+	RANUENGAPID     int64
+	HandoverType    int64
+	TargetToSource  []byte // from the acknowledge
+	SourceToTarget  []byte // carried from HANDOVER REQUIRED
+	PDUSessionID    int32
+	CauseGroup      HandoverCauseGroup
+	CauseValue      int64
+	HasCause        bool
+	HasPDUSessionID bool
+}
+
+// HandoverCauseGroup names which arm of the TS 33.128 HandoverCause CHOICE a
+// cause belongs to. The AMF's NGAP cause is a CHOICE over the same five groups,
+// so the caller maps the group and passes the value through.
+type HandoverCauseGroup int
+
+const (
+	CauseGroupRadioNetwork HandoverCauseGroup = iota
+	CauseGroupTransport
+	CauseGroupNAS
+	CauseGroupProtocol
+	CauseGroupMisc
+)
+
+// ReportHandoverCommand emits an AMFRANHandoverCommand xIRI when the AMF has sent
+// a HANDOVER COMMAND to the source RAN node. All five of its members are known at
+// that point.
+func ReportHandoverCommand(h Handover) {
+	sub := active.Load()
+	if sub == nil || h.UE == nil {
+		return
+	}
+	id := h.UE.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), iri.AMFRANHandoverCommand{
+		UserIdentifiers:         userIdentifiers(id),
+		AMFUENGAPID:             iri.AMFUENGAPID(h.AMFUENGAPID),
+		RANUENGAPID:             iri.RANUENGAPID(h.RANUENGAPID),
+		HandoverType:            iri.HandoverType(h.HandoverType),
+		TargetToSourceContainer: iri.RANTargetToSourceContainer(append([]byte(nil), h.TargetToSource...)),
+	})
+}
+
+// ReportHandoverRequest emits an AMFRANHandoverRequest xIRI. Despite the name,
+// TS 33.128 clause 6.2.2.2.9.3 triggers it on the AMF *receiving* the HANDOVER
+// REQUEST ACKNOWLEDGE, not on sending the request — which is why the cause and
+// the source-to-target container have to be carried forward from HANDOVER
+// REQUIRED.
+//
+// Eight members are mandatory. If any of the carried ones is missing the record
+// cannot be completed, and nothing is emitted rather than a record with a
+// fabricated cause or an empty container.
+func ReportHandoverRequest(h Handover) {
+	sub := active.Load()
+	if sub == nil || h.UE == nil {
+		return
+	}
+	if !h.HasCause || !h.HasPDUSessionID || len(h.SourceToTarget) == 0 || len(h.TargetToSource) == 0 {
+		return
+	}
+	id := h.UE.IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), iri.AMFRANHandoverRequest{
+		UserIdentifiers:               userIdentifiers(id),
+		AMFUENGAPID:                   iri.AMFUENGAPID(h.AMFUENGAPID),
+		RANUENGAPID:                   iri.RANUENGAPID(h.RANUENGAPID),
+		HandoverType:                  iri.HandoverType(h.HandoverType),
+		HandoverCause:                 handoverCause(h.CauseGroup, h.CauseValue),
+		PDUSessionResourceInformation: iri.PDUSessionResourceInformation{PDUSessionID: iri.PDUSessionID(h.PDUSessionID)},
+		TargetToSourceContainer:       iri.RANTargetToSourceContainer(append([]byte(nil), h.TargetToSource...)),
+		SourceToTargetContainer:       iri.RANSourceToTargetContainer(append([]byte(nil), h.SourceToTarget...)),
+	})
+}
+
+// handoverCause picks the CHOICE arm. The group is half the meaning: "radio
+// network: handover desirable for radio reason" and "misc: hardware failure"
+// describe very different events, and a value alone cannot tell them apart.
+func handoverCause(group HandoverCauseGroup, value int64) any {
+	switch group {
+	case CauseGroupTransport:
+		return iri.CauseTransport(value)
+	case CauseGroupNAS:
+		return iri.CauseNas(value)
+	case CauseGroupProtocol:
+		return iri.CauseProtocol(value)
+	case CauseGroupMisc:
+		return iri.CauseMisc(value)
+	case CauseGroupRadioNetwork:
+		return iri.CauseRadioNetwork(value)
+	default:
+		return iri.CauseRadioNetwork(value)
+	}
 }
 
 // ReportDeregistration emits an AMFDeregistration xIRI for ue if it matches an
@@ -609,6 +752,59 @@ func amfIdentifierDeassociation(id amfctx.UeIdentity) iri.AMFIdentifierDeassocia
 // supiChoice returns ue's SUPI as the iri "supi" CHOICE arm (IMSI or NAI), or
 // nil when the AMF holds no SUPI in a form we can map. A nil in a mandatory SUPI
 // field makes encoding fail, which deliverIRI swallows silently.
+// userIdentifiers builds the TS 33.128 UserIdentifiers list the newer AMF records
+// carry, from whichever identity leaves the UE context holds. It is the same
+// three identities the older records carry as separate optional members; these
+// records collect them into one list instead.
+func userIdentifiers(id amfctx.UeIdentity) iri.UserIdentifiers {
+	return iri.Identifiers(supiChoice(id), peiChoice(id), gpsiChoice(id))
+}
+
+// amfServiceAccept maps a UE identity snapshot to a TS 33.128 AMFUEServiceAccept
+// record (XIRIEvent [147]).
+//
+// serviceMessageIdentity is the message-type octet, per TS 24.501 clause 9.7 —
+// not the whole PDU. The serviceAccept arm is the one that applies: the record is
+// generated because the AMF sent an accept.
+func amfServiceAccept(id amfctx.UeIdentity) iri.AMFUEServiceAccept {
+	return iri.AMFUEServiceAccept{
+		UserIdentifiers:        userIdentifiers(id),
+		ServiceMessageIdentity: iri.ServiceAcceptIdentity{nas.MsgTypeServiceAccept},
+	}
+}
+
+// amfUEPolicyTransfer maps a UE identity snapshot and an opaque policy container
+// to a TS 33.128 AMFUEPolicyTransfer record (XIRIEvent [146]).
+func amfUEPolicyTransfer(id amfctx.UeIdentity, policy []byte) iri.AMFUEPolicyTransfer {
+	return iri.AMFUEPolicyTransfer{
+		SUPI:     supiChoice(id),
+		PEI:      peiChoice(id),
+		GPSI:     gpsiChoice(id),
+		GUTI:     fiveGGUTI(id),
+		UEPolicy: iri.UEPolicy(append([]byte(nil), policy...)),
+	}
+}
+
+// amfPositioningInfoTransfer maps a UE identity snapshot and the opaque
+// positioning payloads to a TS 33.128 AMFPositioningInfoTransfer record
+// (XIRIEvent [111]).
+func amfPositioningInfoTransfer(id amfctx.UeIdentity, nrppa, lpp []byte, correlationID string) iri.AMFPositioningInfoTransfer {
+	rec := iri.AMFPositioningInfoTransfer{
+		SUPI:             supiChoice(id),
+		PEI:              peiChoice(id),
+		GPSI:             gpsiChoice(id),
+		GUTI:             fiveGGUTI(id),
+		LCSCorrelationID: iri.LCSCorrelationID(correlationID),
+	}
+	if len(nrppa) > 0 {
+		rec.NRPPaMessage = append([]byte(nil), nrppa...)
+	}
+	if len(lpp) > 0 {
+		rec.LPPMessage = append([]byte(nil), lpp...)
+	}
+	return rec
+}
+
 func supiChoice(id amfctx.UeIdentity) any {
 	if v, ok := strings.CutPrefix(id.Supi, "imsi-"); ok {
 		return iri.IMSI(v)
