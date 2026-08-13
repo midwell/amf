@@ -316,21 +316,6 @@ func ReportUEPolicyTransfer(ue *amfctx.AmfUe, policy []byte) {
 	sub.deliverIRI(sub.matchingTasks(id), amfUEPolicyTransfer(id, policy))
 }
 
-// ReportPositioningInfoTransfer emits an AMFPositioningInfoTransfer xIRI when the
-// AMF relays an NRPPa or LPP message for the target. Both payloads are copied
-// opaquely, for the same reason as the UE policy.
-//
-// correlationID is mandatory in the record, so a transfer the AMF cannot
-// correlate produces nothing rather than a record with a fabricated identifier.
-func ReportPositioningInfoTransfer(ue *amfctx.AmfUe, nrppa, lpp []byte, correlationID string) {
-	sub := active.Load()
-	if sub == nil || ue == nil || correlationID == "" {
-		return
-	}
-	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), amfPositioningInfoTransfer(id, nrppa, lpp, correlationID))
-}
-
 // Handover describes one handover as the AMF sees it when the HANDOVER REQUEST
 // ACKNOWLEDGE arrives — the point where TS 33.128 places both handover records.
 // The caller assembles it so this package never touches ngapType.
@@ -785,25 +770,13 @@ func amfUEPolicyTransfer(id amfctx.UeIdentity, policy []byte) iri.AMFUEPolicyTra
 	}
 }
 
-// amfPositioningInfoTransfer maps a UE identity snapshot and the opaque
-// positioning payloads to a TS 33.128 AMFPositioningInfoTransfer record
-// (XIRIEvent [111]).
-func amfPositioningInfoTransfer(id amfctx.UeIdentity, nrppa, lpp []byte, correlationID string) iri.AMFPositioningInfoTransfer {
-	rec := iri.AMFPositioningInfoTransfer{
-		SUPI:             supiChoice(id),
-		PEI:              peiChoice(id),
-		GPSI:             gpsiChoice(id),
-		GUTI:             fiveGGUTI(id),
-		LCSCorrelationID: iri.LCSCorrelationID(correlationID),
-	}
-	if len(nrppa) > 0 {
-		rec.NRPPaMessage = append([]byte(nil), nrppa...)
-	}
-	if len(lpp) > 0 {
-		rec.LPPMessage = append([]byte(nil), lpp...)
-	}
-	return rec
-}
+// AMFPositioningInfoTransfer has no reporter here on purpose. TS 33.128 clause
+// 6.2.2.2.8 triggers it on positioning messages exchanged between the LMF and the
+// NG-RAN *via the AMF*, and this AMF has no LMF: it decodes an uplink NRPPa PDU,
+// stores the routing id and drops it. Its mandatory lcsCorrelationId is the
+// TS 29.572 correlation id carried in those same LMF exchanges, not the NGAP
+// routing id, so there would be nothing to populate it with either. li/iri still
+// defines the record; li/README.md records why nothing emits it.
 
 func supiChoice(id amfctx.UeIdentity) any {
 	if v, ok := strings.CutPrefix(id.Supi, "imsi-"); ok {

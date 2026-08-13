@@ -264,7 +264,6 @@ func TestNewRecordsSilentForUntaskedSubscriber(t *testing.T) {
 	ReportUEPolicyTransfer(targetUE(), []byte{0x01})
 	ReportHandoverRequest(sampleHandover())
 	ReportHandoverCommand(sampleHandover())
-	ReportPositioningInfoTransfer(targetUE(), []byte{0x01}, nil, "corr")
 
 	if len(snd.pdus) != 0 {
 		t.Errorf("an untasked subscriber produced %d record(s)", len(snd.pdus))
