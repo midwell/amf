@@ -3560,6 +3560,13 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 				},
 			}
 			ngap_message.SendHandoverPreparationFailure(sourceUe, *cause, nil)
+			// The acknowledge arrived but the handover failed here, so no record is
+			// emitted and the state HANDOVER REQUIRED stashed has no further use.
+			// This is the one failure exit that runs *after* the stash, so without
+			// this the container would outlive its handover — and a later
+			// acknowledge could build a record around a previous attempt's
+			// source-to-target container, which is worse than the leak.
+			sourceUe.ClearHandoverState()
 			return
 		}
 		ngap_message.SendHandoverCommand(sourceUe, pduSessionResourceHandoverList, pduSessionResourceToReleaseList,
