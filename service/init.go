@@ -185,6 +185,9 @@ func (amf *AMF) Start() {
 			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
 			Destinations: dests,
 			AdmfURL:      li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: kaTimeout,
+			X2X3KeepaliveEnabled:  li.X2X3KeepaliveEnabled,
+			X2X3KeepaliveTimeP1:   li.X2X3KeepaliveTimeP1,
+			X2X3KeepaliveTimeP2:   li.X2X3KeepaliveTimeP2,
 			DeactivateAllTasks:    li.DeactivateAllTasks,
 			RemoveAllDestinations: li.RemoveAllDestinations,
 		}); err != nil {
