@@ -16,6 +16,7 @@ import (
 
 	"github.com/omec-project/li/store"
 	"github.com/omec-project/li/types"
+	"github.com/omec-project/li/x2x3"
 )
 
 // admfPeerCert issues the certificate an ADMF presents on X1, binding identifier to the
@@ -103,7 +104,7 @@ func TestBulkDeactivationFollowsConfiguration(t *testing.T) {
 				NEID:               neID,
 				AdmfID:             admfID,
 				DeactivateAllTasks: c.configured,
-			}, &subsystem{store: st, neID: neID})
+			}, &subsystem{store: st, neID: neID, ids: x2x3.NewIdentity(neID, amfInterceptionPoint)})
 
 			resp, err := srv.Process(bulkRequest("DeactivateAllTasksRequest", admfID, neID),
 				admfPeerCert(t, admfID))
@@ -169,7 +170,7 @@ func TestBulkRemovalFollowsConfiguration(t *testing.T) {
 				NEID:                  neID,
 				AdmfID:                admfID,
 				RemoveAllDestinations: c.configured,
-			}, &subsystem{store: st, neID: neID})
+			}, &subsystem{store: st, neID: neID, ids: x2x3.NewIdentity(neID, amfInterceptionPoint)})
 
 			resp, err := srv.Process(bulkRequest("RemoveAllDestinationsRequest", admfID, neID),
 				admfPeerCert(t, admfID))

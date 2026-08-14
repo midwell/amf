@@ -11,6 +11,7 @@ package lawfulintercept
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -64,6 +65,17 @@ type Destination struct {
 	Address      string // host:port
 }
 
+// amfInterceptionPoint is the Interception Point ID every xIRI from this element
+// carries (ETSI TS 103 221-2 clause 5.3.8): it names the POI within the network
+// function, and this network function contains exactly one — the IRI-POI that reports
+// mobility events.
+const amfInterceptionPoint = "AMF-IRI-POI"
+
+// errNoElementIdentifier means the deployment configured interception without the
+// identifier this element asserts on X1, which is also the Network Function ID every
+// record it delivers has to carry (TS 33.128 table 5.3.1-2).
+var errNoElementIdentifier = errors.New("li: no network element identifier configured")
+
 // sender delivers an xIRI/xCC PDU to an MDF. *x2x3.Client satisfies it; tests
 // inject a capturing implementation to assert per-warrant delivery isolation.
 type sender interface {
@@ -86,9 +98,13 @@ type subsystem struct {
 	// mdf2 is the configured X2 endpoint. It serves a task that names no destination
 	// this element can resolve, and nothing else — an element that preferred it to the
 	// destinations a task named is the gap this exists behind rather than in front of.
-	mdf2     string
-	iriCtx   *liasn1.Context
-	neID     string
+	mdf2   string
+	iriCtx *liasn1.Context
+	neID   string
+	// ids supplies the conditional attributes that belong to this element rather than
+	// to the task — its two identities and the per-context sequence numbering — and is
+	// shared with the SMF's IRI-POI and the UPF's CC-POI through li/x2x3.
+	ids      *x2x3.Identity
 	reporter *x1.Reporter // nil when NE-initiated reporting is not configured
 }
 
@@ -163,6 +179,9 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 		// subsystem.deliveryFault.
 		x1.WithFaultProbes(sub.deliveryFault),
 		x1.OnActivate(sub.reportStartOfInterception),
+		// Numbering state belongs to the tasking that created it. Without this the
+		// element keeps one sequence context per warrant for the life of the process.
+		x1.OnDeactivate(func(t types.InterceptTask) { sub.ids.Forget(parseXID(t.DeliveryXID())) }),
 		x1.OnAuthFailure(func(code int) {
 			if sub.reporter != nil {
 				sub.reporter.Notify(x1.NEIssueX1AuthFailed,
@@ -181,6 +200,15 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 // listener (mutual TLS), and prepares X2 delivery to the MDF2. Call it once at
 // AMF startup, only when LI is configured.
 func Init(cfg Config) error {
+	// Without an identifier for this network element, product would reach a mediation
+	// function that cannot attribute it to the element that produced it — and an MDF
+	// accepts such a delivery rather than refusing it. Interception does not start; the
+	// AMF itself carries on serving traffic, because a network function that crash-loops
+	// over its LI configuration tells every operator it is LI-provisioned.
+	if cfg.NEID == "" {
+		return errNoElementIdentifier
+	}
+
 	mat, err := mtls.Load(cfg.Cert, cfg.Key, cfg.CACert)
 	if err != nil {
 		return err
@@ -214,6 +242,7 @@ func Init(cfg Config) error {
 		mdf2:      cfg.MDF2,
 		iriCtx:    iri.NewContext(),
 		neID:      cfg.NEID,
+		ids:       x2x3.NewIdentity(cfg.NEID, amfInterceptionPoint),
 		reporter:  reporter,
 	}
 	// Assigned after construction because it reads the subsystem it belongs to: the pool
@@ -274,7 +303,7 @@ func ReportRegistration(ue *amfctx.AmfUe) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), registrationEvent(id))
+	sub.reportEvent(id, registrationEvent(id))
 }
 
 // registrationEvent picks the xIRI for a completed registration: a mobility
@@ -300,7 +329,7 @@ func ReportServiceAccept(ue *amfctx.AmfUe) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), amfServiceAccept(id))
+	sub.reportEvent(id, amfServiceAccept(id))
 }
 
 // ReportUEPolicyTransfer emits an AMFUEPolicyTransfer xIRI when the AMF passes a
@@ -313,7 +342,7 @@ func ReportUEPolicyTransfer(ue *amfctx.AmfUe, policy []byte) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), amfUEPolicyTransfer(id, policy))
+	sub.reportEvent(id, amfUEPolicyTransfer(id, policy))
 }
 
 // Handover describes one handover as the AMF sees it when the HANDOVER REQUEST
@@ -355,7 +384,7 @@ func ReportHandoverCommand(h Handover) {
 		return
 	}
 	id := h.UE.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), iri.AMFRANHandoverCommand{
+	sub.reportEvent(id, iri.AMFRANHandoverCommand{
 		UserIdentifiers:         userIdentifiers(id),
 		AMFUENGAPID:             iri.AMFUENGAPID(h.AMFUENGAPID),
 		RANUENGAPID:             iri.RANUENGAPID(h.RANUENGAPID),
@@ -382,7 +411,7 @@ func ReportHandoverRequest(h Handover) {
 		return
 	}
 	id := h.UE.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), iri.AMFRANHandoverRequest{
+	sub.reportEvent(id, iri.AMFRANHandoverRequest{
 		UserIdentifiers:               userIdentifiers(id),
 		AMFUENGAPID:                   iri.AMFUENGAPID(h.AMFUENGAPID),
 		RANUENGAPID:                   iri.RANUENGAPID(h.RANUENGAPID),
@@ -428,7 +457,7 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access models
 		dir = iri.DirNetworkInitiated
 	}
 	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), amfDeregistration(id, dir, accessType(access)))
+	sub.reportEvent(id, amfDeregistration(id, dir, accessType(access)))
 }
 
 // ReportRegistrationReject emits an AMFUnsuccessfulProcedure xIRI (failed
@@ -442,7 +471,7 @@ func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), amfUnsuccessfulRegistration(id, cause))
+	sub.reportEvent(id, amfUnsuccessfulRegistration(id, cause))
 }
 
 // ReportIdentifierAssociation emits an AMFIdentifierAssociation xIRI for ue if
@@ -455,7 +484,7 @@ func ReportIdentifierAssociation(ue *amfctx.AmfUe) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), amfIdentifierAssociation(id))
+	sub.reportEvent(id, amfIdentifierAssociation(id))
 }
 
 // ReportIdentifierDeassociation emits an AMFIdentifierDeassociation xIRI for ue
@@ -468,7 +497,7 @@ func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), amfIdentifierDeassociation(id))
+	sub.reportEvent(id, amfIdentifierDeassociation(id))
 }
 
 // reportStartOfInterception runs when a task is newly activated over X1. It
@@ -479,7 +508,18 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 	if !task.WantsProduct(types.ProductIRI) {
 		return
 	}
-	var events []any
+	// The event these records report is the *activation*, not the registration each UE
+	// completed earlier, so one instant taken here is the right timestamp for all of
+	// them (design D5). Sampling per record would time the scan.
+	activated := time.Now()
+
+	// Each record's subject is a different UE, so the identities the header reports are
+	// per record rather than per task — hence the identity list travels beside the event.
+	type startRecord struct {
+		event any
+		ids   []types.TargetIdentifier
+	}
+	var events []startRecord
 	amfctx.AMF_Self().UePool.Range(func(_, value any) bool {
 		ue, ok := value.(*amfctx.AmfUe)
 		if !ok {
@@ -494,7 +534,7 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 		// *fsm.State guards its own transitions.
 		id := ue.IdentitySnapshot()
 		if registered(ue) && taskTargets(task, id) {
-			events = append(events, amfStartOfInterception(id))
+			events = append(events, startRecord{event: amfStartOfInterception(id), ids: targetsOf(id)})
 		}
 		return true
 	})
@@ -503,17 +543,42 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 	}
 	// Delivery is asynchronous (enqueue-and-return; see Init), so this X1 callback
 	// never blocks on the MDF; hand the built records to the delivery client.
-	for _, ev := range events {
-		s.deliverIRI([]types.InterceptTask{task}, ev)
+	for _, rec := range events {
+		s.deliverIRI([]types.InterceptTask{task}, rec.ids, activated, rec.event)
 	}
+}
+
+// reportEvent delivers event to every task the subject's identity matches, as the
+// identity and the clock stood when the event was observed.
+//
+// The instant is taken here, at the hook, because the X2 Timestamp attribute is the
+// time the *event* occurred (TS 33.128 table 5.3.2-2) rather than the time a PDU was
+// built. These hooks run synchronously with the procedure they observe, so this is as
+// close to the event as this element can get; sampling the clock further down would
+// time the record instead, and a mediation function cannot tell the two apart.
+func (s *subsystem) reportEvent(id amfctx.UeIdentity, event any) {
+	s.deliverIRI(s.matchingTasks(id), targetsOf(id), time.Now(), event)
 }
 
 // deliverIRI encodes event once and delivers it as an X2 xIRI to every task in
 // tasks that wants IRI product, at the destinations that task named. It is silent
 // on any error (encoding or delivery) so that interception can never be inferred
 // from AMF behaviour.
-func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
+//
+// subjectIDs are the identities this AMF holds for the record's subject, which the
+// header reports split into the ones each task matched and the rest; at is when the
+// event happened.
+func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.TargetIdentifier, at time.Time, event any) {
 	if len(tasks) == 0 {
+		return
+	}
+	if s.ids == nil {
+		// An element that cannot say which network function produced a record does not
+		// deliver one: the mediation function would accept product it cannot attribute.
+		// Init always supplies this and refuses to start without the identifier behind
+		// it, so reaching here means a subsystem was assembled by hand — fail closed
+		// rather than panic, because this runs on a UE's own NAS goroutine and a crash
+		// there would be visible to the target.
 		return
 	}
 	class := recordClassOf(event)
@@ -525,6 +590,17 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
 		if !t.WantsProduct(types.ProductIRI) || !produces(t, class) {
 			continue
 		}
+		// A provisioned ProductID replaces the task XID in the PDU header
+		// (TS 103 221-1 clause 6.2.1.2), so product is labelled with the warrant an
+		// ADMF names rather than with the task carrying it.
+		xid := parseXID(t.DeliveryXID())
+		// The six attributes TS 33.128 table 5.3.2-2 requires, built once per task and
+		// carried to every destination that task named: the sequence number belongs to
+		// the (XID, Correlation ID) context, so two destinations of one task receive the
+		// same number rather than two numberings of the same records.
+		matched, other := t.SplitTargets(subjectIDs)
+		attrs := s.ids.Attributes(xid, [x2x3.CorrelationIDLength]byte{}, at,
+			types.XMLFragments(matched), types.XMLFragments(other))
 		for _, addr := range s.x2Destinations(t) {
 			client := s.senderFor(addr)
 			if client == nil {
@@ -538,11 +614,9 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, event any) {
 				Type:          x2x3.PDUTypeX2,
 				PayloadFormat: x2x3.PayloadFormat3GPP33128,
 				Direction:     x2x3.DirectionNotApplicable,
-				// A provisioned ProductID replaces the task XID in the PDU header
-				// (TS 103 221-1 clause 6.2.1.2), so product is labelled with the
-				// warrant an ADMF names rather than with the task carrying it.
-				XID:     parseXID(t.DeliveryXID()),
-				Payload: payload,
+				XID:           xid,
+				Attributes:    attrs,
+				Payload:       payload,
 			})
 		}
 	}

@@ -44,6 +44,7 @@ func activateIRI(t *testing.T, snd sender, supi string) {
 	active.Store(&subsystem{
 		store: st, senderFor: func(string) sender { return snd },
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	})
 	t.Cleanup(func() { active.Store(nil) })
 }

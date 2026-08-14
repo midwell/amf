@@ -274,6 +274,7 @@ func TestDeliveryIsolation(t *testing.T) {
 	// which is the path every deployment predating the ListOfDIDs requirement is on, and
 	// which this test therefore also pins.
 	active.Store(&subsystem{
+		ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 		store: st, senderFor: func(string) sender { return capture },
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
 	})
@@ -448,6 +449,7 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 
 	capture := newAddressCapture()
 	active.Store(&subsystem{
+		ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 		store: st, senderFor: capture.senderFor,
 		// Configured, and deliberately neither agency's address: if the fix were absent
 		// this is where both records would arrive, and the assertion below would say so.
@@ -502,6 +504,7 @@ func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
 
 			capture := newAddressCapture()
 			active.Store(&subsystem{
+				ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 				store: st, senderFor: capture.senderFor,
 				mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
 			})
@@ -545,6 +548,7 @@ func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
 
 			capture := &captureSender{}
 			active.Store(&subsystem{
+				ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 				store: st, senderFor: func(string) sender { return capture },
 				mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
 			})
