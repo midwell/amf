@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	amfctx "github.com/omec-project/amf/context"
 	"github.com/omec-project/li/iri"
@@ -287,5 +288,43 @@ func TestDeactivationForgetsTheNumbering(t *testing.T) {
 
 	if n := sub.ids.Contexts(); n != 0 {
 		t.Errorf("%d numbering contexts survive the tasking that created them", n)
+	}
+}
+
+// TestTheTimestampIsTheEventsNotThePDUs is the property the whole timestamp
+// decision rests on: what reaches the wire is the instant the caller observed the
+// event, not the instant the PDU was assembled. Those differ whenever a record is
+// built after the fact — a start-of-interception record for a UE that registered
+// earlier, or several records built in a loop from one X1 activation — and a
+// mediation function has no way to tell which one it was handed.
+func TestTheTimestampIsTheEventsNotThePDUs(t *testing.T) {
+	snd := &captureSender{}
+	activateIRIWithTargets(t, snd, []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}})
+	sub := active.Load()
+
+	happened := time.Date(2026, 8, 14, 6, 28, 15, 322_190_000, time.UTC)
+	id := targetUE().IdentitySnapshot()
+	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id))
+	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id))
+
+	if len(snd.pdus) != 2 {
+		t.Fatalf("delivered %d records, want 2", len(snd.pdus))
+	}
+	for i, pdu := range snd.pdus {
+		var got []byte
+		for _, a := range pdu.Attributes {
+			if a.Type == x2x3.AttrTimestamp {
+				got = a.Value
+			}
+		}
+		if len(got) != 8 {
+			t.Fatalf("record %d carries no timestamp", i)
+		}
+		secs := binary.BigEndian.Uint32(got[0:4])
+		nanos := binary.BigEndian.Uint32(got[4:8])
+		if int64(secs) != happened.Unix() || int64(nanos) != int64(happened.Nanosecond()) {
+			t.Errorf("record %d timestamped %d.%09d, want the event's %d.%09d — the clock was read where the PDU was built",
+				i, secs, nanos, happened.Unix(), happened.Nanosecond())
+		}
 	}
 }
