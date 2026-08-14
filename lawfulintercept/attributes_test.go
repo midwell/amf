@@ -328,3 +328,26 @@ func TestTheTimestampIsTheEventsNotThePDUs(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryIdentityThisPOIProducesRenders ties the invariant li/types asserts to what
+// this element actually produces. targetsOf is the only source of the identities the
+// header reports, so an identity it yields that cannot be rendered would cost the
+// record a conditional attribute TS 33.128 marks required — with nothing failing.
+//
+// It covers the identities this fixture carries, which is every one targetsOf reads
+// today; the general rule (a subscriber identity type must have an element name)
+// belongs to li/types, next to where such a type would be added.
+func TestEveryIdentityThisPOIProducesRenders(t *testing.T) {
+	ids := targetsOf(targetUE().IdentitySnapshot())
+	if len(ids) != 3 {
+		t.Fatalf("the fixture yields %d identities, want the SUPI, PEI and GPSI this POI reads", len(ids))
+	}
+	for _, id := range ids {
+		if _, ok := id.XMLFragment(); !ok {
+			t.Errorf("%s renders no fragment, so a record matched on it would carry no matched target identifier", id.Type)
+		}
+	}
+	if got := len(types.XMLFragments(ids)); got != len(ids) {
+		t.Errorf("XMLFragments dropped %d of %d identities silently", len(ids)-got, len(ids))
+	}
+}
