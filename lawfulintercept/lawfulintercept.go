@@ -186,10 +186,7 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 		// The conditions this POI can observe about itself, which li/x1 cannot: see
 		// subsystem.deliveryFault.
 		x1.WithFaultProbes(sub.deliveryFault),
-		x1.OnActivate(sub.reportStartOfInterception),
-		// Numbering state belongs to the tasking that created it. Without this the
-		// element keeps one sequence context per warrant for the life of the process.
-		x1.OnDeactivate(func(t types.InterceptTask) { sub.ids.Forget(parseXID(t.DeliveryXID())) }),
+		x1.OnTaskChange(sub.applyTaskChange),
 		x1.OnAuthFailure(func(code int) {
 			if sub.reporter != nil {
 				sub.reporter.Notify(x1.NEIssueX1AuthFailed,
@@ -509,11 +506,45 @@ func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
 	sub.reportEvent(id, amfIdentifierDeassociation(id))
 }
 
-// reportStartOfInterception runs when a task is newly activated over X1. It
-// scans the AMF UE pool and, for every already-registered UE the task targets,
-// emits an AMFStartOfInterceptionWithRegisteredUE — so a warrant that arrives
-// after the UE is already on the network still produces an initial record.
-func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
+// applyTaskChange is the X1 lifecycle hook (x1.OnTaskChange): one event per
+// transition of this element's tasking, carrying the task as it was and as it
+// becomes. prev nil is an activation, next nil a removal, both a modification.
+//
+// The numbering state is released on removal and only on removal. It is keyed by
+// the delivery XID, which a modification never changes, so releasing it there
+// would discard contexts the modified task's own records have already used — and
+// the next record in one of them would repeat a sequence number the mediation
+// function has already seen for that (XID, correlation) pair. Under the previous
+// contract a retarget arrived as an activation followed by a deactivation of the
+// same XID, and the deactivation's release ran after the activation's records.
+//
+// The cost is that a retarget leaves the old target's contexts numbered until the
+// task is removed, since the sequencer is keyed by (XID, correlation) and cannot
+// say which of those a target no longer covered. That is the right way round: an
+// unused counter costs a map entry until the warrant ends, while a repeated
+// number is how a mediation function detects lost product, so it must mean loss
+// and nothing else.
+func (s *subsystem) applyTaskChange(prev, next *types.InterceptTask) {
+	switch {
+	case next == nil:
+		// Numbering state belongs to the tasking that created it. Without this the
+		// element keeps one sequence context per warrant for the life of the process.
+		s.ids.Forget(parseXID(prev.DeliveryXID()))
+	case prev == nil:
+		s.reportStartOfInterception(*next, nil)
+	default:
+		s.reportStartOfInterception(*next, prev)
+	}
+}
+
+// reportStartOfInterception runs when a task is newly activated or modified over
+// X1. It scans the AMF UE pool and, for every already-registered UE the task
+// targets, emits an AMFStartOfInterceptionWithRegisteredUE — so a warrant that
+// arrives after the UE is already on the network still produces an initial record.
+//
+// already, when set, is the task this one replaces. A UE it already covered is not
+// one whose interception begins here, so no record says it does.
+func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already *types.InterceptTask) {
 	if !task.WantsProduct(types.ProductIRI) {
 		return
 	}
@@ -542,7 +573,7 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 		// ue.State needs no such care: its keys are fixed at UE creation and each
 		// *fsm.State guards its own transitions.
 		id := ue.IdentitySnapshot()
-		if registered(ue) && taskTargets(task, id) {
+		if registered(ue) && taskTargets(task, id) && !covered(already, id) {
 			events = append(events, startRecord{event: amfStartOfInterception(id), ids: targetsOf(id)})
 		}
 		return true
@@ -555,6 +586,11 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask) {
 	for _, rec := range events {
 		s.deliverIRI([]types.InterceptTask{task}, rec.ids, activated, rec.event)
 	}
+}
+
+// covered reports whether task was already intercepting this UE's IRI.
+func covered(task *types.InterceptTask, id amfctx.UeIdentity) bool {
+	return task != nil && task.WantsProduct(types.ProductIRI) && taskTargets(*task, id)
 }
 
 // reportEvent delivers event to every task the subject's identity matches, as the

@@ -351,3 +351,92 @@ func TestEveryIdentityThisPOIProducesRenders(t *testing.T) {
 		t.Errorf("XMLFragments dropped %d of %d identities silently", len(ids)-got, len(ids))
 	}
 }
+
+// modifyRequest builds a ModifyTaskRequest retargeting an XID to the given target
+// SUPIs. A modification keeps the XID, which is the whole reason this element
+// cannot treat one as an activation followed by a deactivation.
+func modifyRequest(xid, admfID, neID string, supis ...string) []byte {
+	var targets string
+	for _, supi := range supis {
+		targets += `<ns1:targetIdentifier><ns1:supiimsi>` + supi + `</ns1:supiimsi></ns1:targetIdentifier>`
+	}
+
+	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<ns1:X1Request xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ns1:x1RequestMessage xsi:type="ns1:ModifyTaskRequest">
+    <ns1:admfIdentifier>` + admfID + `</ns1:admfIdentifier>
+    <ns1:neIdentifier>` + neID + `</ns1:neIdentifier>
+    <ns1:messageTimestamp>2026-01-01T00:00:00.000000Z</ns1:messageTimestamp>
+    <ns1:version>v1.6.1</ns1:version>
+    <ns1:x1TransactionId>bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb</ns1:x1TransactionId>
+    <ns1:taskDetails>
+      <ns1:xId>` + xid + `</ns1:xId>
+      <ns1:targetIdentifiers>` + targets + `</ns1:targetIdentifiers>
+      <ns1:deliveryType>X2Only</ns1:deliveryType>
+    </ns1:taskDetails>
+  </ns1:x1RequestMessage>
+</ns1:X1Request>`)
+}
+
+// TestModificationKeepsTheNumberingItsOwnRecordsUsed: the numbering state is keyed
+// by the delivery XID, and a ModifyTask never changes the XID. Releasing it on a
+// modification therefore discards contexts that are still in use — including ones
+// the modification's own records have just consumed — and the next record in such
+// a context repeats a number the mediation function has already seen for that
+// (XID, Correlation ID) pair. A repeated number there is not a cosmetic defect: it
+// is how a mediation function detects loss, so it must mean loss and nothing else.
+//
+// The previous contract made this unavoidable rather than accidental. A retarget
+// arrived as an activation followed by a deactivation of the same XID, and the
+// deactivation's release ran after the activation's records were numbered.
+func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
+	const xid, admf = "11111111-1111-4111-8111-111111111111", "admf-1"
+	const otherSUPI = "262010000000777"
+
+	snd := &captureSender{}
+	st := store.New()
+	st.Activate(types.InterceptTask{
+		XID: xid,
+		Targets: []types.TargetIdentifier{
+			{Type: types.TargetSUPI, Value: testTargetSUPI},
+			{Type: types.TargetSUPI, Value: otherSUPI},
+		},
+		Products: []types.ProductType{types.ProductIRI},
+		State:    types.TaskActive,
+	})
+	sub := &subsystem{
+		store: st, senderFor: func(string) sender { return snd },
+		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		neID: "amf-1", ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+	}
+	srv := newX1Server(st, Config{NEID: "amf-1", AdmfID: admf}, sub)
+	active.Store(sub)
+	t.Cleanup(func() { active.Store(nil) })
+
+	ReportRegistration(targetUE())
+	if len(snd.pdus) != 1 || seqOf(t, snd.pdus[0]) != 0 {
+		t.Fatalf("setup delivered %d records, first numbered %d", len(snd.pdus), seqOf(t, snd.pdus[0]))
+	}
+
+	// The warrant is retargeted: one identifier goes, one stays. The subject whose
+	// interception continues is the one whose numbering must continue with it.
+	resp, err := srv.Process(modifyRequest(xid, admf, "amf-1", testTargetSUPI, otherSUPI+"1"), admfPeerCert(t, admf))
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if resp.Messages[0].ErrorInformation != nil {
+		t.Fatalf("modification refused: %s", resp.Messages[0].ErrorInformation.ErrorDescription)
+	}
+	if n := sub.ids.Contexts(); n != 1 {
+		t.Fatalf("the modification left %d numbering contexts, want the 1 still in use", n)
+	}
+
+	ReportRegistration(targetUE())
+	if len(snd.pdus) != 2 {
+		t.Fatalf("delivered %d records, want 2", len(snd.pdus))
+	}
+	if got := seqOf(t, snd.pdus[1]); got != 1 {
+		t.Errorf("the record after the modification is numbered %d, want 1 — the modification "+
+			"discarded numbering its subject's context was still using", got)
+	}
+}
