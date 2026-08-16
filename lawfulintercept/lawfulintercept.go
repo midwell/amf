@@ -187,11 +187,34 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 		// subsystem.deliveryFault.
 		x1.WithFaultProbes(sub.deliveryFault),
 		x1.OnTaskChange(sub.applyTaskChange),
+		// Refuse a warrant this element could never act on. It resolves subjects by
+		// subscriber identity alone (see targetsOf), so a warrant naming only a UE
+		// address, a tunnel endpoint or a port matches nothing here at every moment —
+		// and acknowledging it tells the ADMF an interception is running that cannot
+		// be. Producing nothing is also what a tasked subject who does nothing
+		// produces, so the agency has no way to tell the two apart and waits.
+		//
+		// Refused only when *none* of the named identifiers is resolvable here: a
+		// warrant naming a SUPI and a UE address is one this element can partly serve,
+		// and declining it would refuse interception it is capable of performing.
+		x1.CanApply(canApply),
 		x1.OnAuthFailure(func(code int) {
-			if sub.reporter != nil {
-				sub.reporter.Notify(x1.NEIssueX1AuthFailed,
-					fmt.Sprintf("X1 provisioning refused: peer failed authentication (error %d)", code))
+			if sub.reporter == nil {
+				return
 			}
+			// Off this goroutine: OnAuthFailure documents that it runs synchronously on
+			// the X1 request goroutine and must not block, and Notify is a synchronous
+			// HTTPS round trip to the ADMF. Reporting an authentication failure by
+			// holding the provisioning interface open for the duration of a POST to a
+			// peer that may itself be unreachable turns a refused request into a stalled
+			// X1 channel — and makes the element's response time depend on whether the
+			// ADMF is up, which is observable to whoever is probing it.
+			//
+			// The goroutine is bounded in effect rather than in count: Notify's throttle
+			// is checked before anything is sent, so under a flood of refusals each of
+			// these returns immediately and at most one report per window is dispatched.
+			go sub.reporter.Notify(x1.NEIssueX1AuthFailed,
+				fmt.Sprintf("X1 provisioning refused: peer failed authentication (error %d)", code))
 		}),
 	}
 	// The two bulk operations the standard settles by advance agreement rather than by
@@ -1152,4 +1175,24 @@ func configuredDestinations(dests []Destination, reporter *x1.Reporter) []x1.Con
 	}
 
 	return out
+}
+
+// resolvableTargets are the identifier kinds this element can match a subject on.
+// It is targetsOf's counterpart: what that function can produce is exactly what a
+// warrant must name for this element to be able to act on it.
+var resolvableTargets = []types.TargetIdentifierType{
+	types.TargetSUPI, types.TargetPEI, types.TargetGPSI,
+}
+
+// canApply refuses tasking this element cannot act on, before it is acknowledged.
+func canApply(task types.InterceptTask) error {
+	if len(task.Targets) == 0 {
+		return errors.New("li: task names no target identifiers")
+	}
+	if !task.NamesAnyType(resolvableTargets...) {
+		return errors.New("li: task names no identifier this element resolves; " +
+			"it matches subjects by SUPI, PEI or GPSI")
+	}
+
+	return nil
 }
