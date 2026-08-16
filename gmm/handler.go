@@ -1287,11 +1287,21 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 	assignLadnInfo(ue, registrationRequest, anType)
 
 	// Lawful Interception IRI-POI: a mobility registration update means the target
-	// moved while staying registered — emit an AMFLocationUpdate. This path does
-	// not reach HandleRegistrationComplete (no new 5G-GUTI is assigned, so the UE
-	// sends no Registration Complete), so the registration-complete tap never fires
-	// for it. Periodic updates are keepalives with no location change and are not
-	// reported. Silent no-op unless LI is configured.
+	// moved while staying registered — emit an AMFLocationUpdate here.
+	//
+	// Periodic updates are deliberately *not* reported here, and that is not the
+	// same as not being reported: BuildRegistrationAccept carries the 5G-GUTI IE
+	// whenever the UE has one, which after an initial registration it does, so per
+	// TS 24.501 clause 5.5.1.3.4 the UE answers with Registration Complete and the
+	// tap in HandleRegistrationComplete reports them. Its guard excludes mobility
+	// for the same reason in reverse. Between them each registration type is
+	// reported exactly once — which is what TS 33.128 asks for, since a periodic
+	// update is a registration procedure the AMF performs and an unreported one is
+	// indistinguishable to an agency from a subject who did nothing.
+	//
+	// This comment previously said periodic updates were not reported at all, on
+	// the premise that this path is the only one they reach. They reach both; the
+	// guards are what separate them. Silent no-op unless LI is configured.
 	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
 		lawfulintercept.ReportRegistration(ue)
 	}

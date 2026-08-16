@@ -13,6 +13,7 @@ import (
 	"github.com/omec-project/li/store"
 	"github.com/omec-project/li/types"
 	"github.com/omec-project/li/x2x3"
+	"github.com/omec-project/nas/v2/nasMessage"
 )
 
 const testTargetSUPI = "262019876543210"
@@ -296,4 +297,44 @@ func TestNewRecordsSurviveMissingContext(t *testing.T) {
 		ReportServiceAccept(targetUE())
 		ReportHandoverCommand(sampleHandover())
 	})
+}
+
+// TestPeriodicRegistrationIsReportedOnceAsPeriodic pins behaviour that was
+// correct and undefended, which is how the comment describing it came to say the
+// opposite.
+//
+// A periodic registration update is a registration procedure the AMF performs, so
+// TS 33.128 wants a record for it, and `AMF IRI-POI events` forbids the silent
+// omission that suppressing it would create — an agency cannot tell an event that
+// was not reported from a subject who did nothing. It is reported by the
+// registration-complete tap rather than by the mobility tap, because the
+// registration accept carries a 5G-GUTI whenever the UE has one and the UE
+// therefore answers with Registration Complete.
+func TestPeriodicRegistrationIsReportedOnceAsPeriodic(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		regType uint8
+		want    iri.AMFRegistrationType
+	}{
+		{"periodic", nasMessage.RegistrationType5GSPeriodicRegistrationUpdating, iri.RegTypePeriodic},
+		{"mobility", nasMessage.RegistrationType5GSMobilityRegistrationUpdating, iri.RegTypeMobility},
+		{"initial", nasMessage.RegistrationType5GSInitialRegistration, iri.RegTypeInitial},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snd := &captureSender{}
+			activateIRI(t, snd, testTargetSUPI)
+
+			ue := targetUE()
+			ue.RegistrationType5GS = tc.regType
+			ReportRegistration(ue)
+
+			if len(snd.pdus) != 1 {
+				t.Fatalf("delivered %d records for one registration, want exactly 1", len(snd.pdus))
+			}
+			if got := registrationType(ue.IdentitySnapshot()); got != tc.want {
+				t.Errorf("registration type = %v, want %v — an agency reads this field to "+
+					"tell a keepalive from a movement from a new attachment", got, tc.want)
+			}
+		})
+	}
 }
