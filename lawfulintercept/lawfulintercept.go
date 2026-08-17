@@ -44,9 +44,18 @@ type Config struct {
 	// having been provisioned over X1, for destinations agreed out of band.
 	Destinations []Destination
 
-	AdmfURL          string        // ADMF X1 endpoint for NE-initiated issue reports (empty = disabled)
-	AdmfID           string        // the responsible ADMF's identifier: authenticates inbound X1 peers and addresses outbound reports (empty accepts any certified ADMF)
-	KeepaliveTimeout time.Duration // purge tasking if no X1 message within this (0 = disabled)
+	AdmfURL string // ADMF X1 endpoint for NE-initiated issue reports (empty = disabled)
+	AdmfID  string // the responsible ADMF's identifier: authenticates inbound X1 peers and addresses outbound reports (empty accepts any certified ADMF)
+	// KeepaliveTimeout is the fail-safe window as the operator wrote it: purge all
+	// tasking if no X1 message arrives within it. Empty leaves the fail-safe off,
+	// which is a choice an operator can state.
+	//
+	// A string rather than a duration, and parsed inside Init, because a value this
+	// element cannot read has to be *reported* — and the only channel it may be
+	// reported on is the one the reporter opens, which does not exist until Init runs.
+	// Parsed by the caller, the refusal had nowhere to go and (worse) was made by
+	// returning from the network function's own start-up.
+	KeepaliveTimeout string
 
 	// The three settings of the TS 103 221-2 clause 6.2.4 keepalive mechanism, as the
 	// operator wrote them. Parsed here rather than by the caller because an unusable
@@ -246,6 +255,20 @@ func Init(cfg Config) error {
 	if cfg.AdmfURL != "" {
 		reporter = x1.NewReporter(cfg.AdmfURL, cfg.AdmfID, cfg.NEID, mat.ClientTLS())
 	}
+	// The fail-safe window, now that there is somewhere to report a value this element
+	// cannot read. Interception does not start on one — a deployment that asked for the
+	// fail-safe and silently did not get it holds tasking nothing will ever reclaim,
+	// and looks healthy while it does — but the network function does, because an
+	// element that refuses to run over its LI configuration is distinguishable from one
+	// that has none by anybody who can see whether it is running.
+	keepalive, err := parseKeepaliveTimeout(cfg.KeepaliveTimeout)
+	if err != nil {
+		reporter.Notify(x1.NEIssueInvalidConfig,
+			"the configured keepalive fail-safe window is not a duration this element can "+
+				"read, so interception has not been started")
+
+		return err
+	}
 	// Deliver X2 asynchronously: the Report* hooks run on the per-UE GMM/NAS
 	// goroutine (some before the downlink NAS is even built), so a slow or
 	// unreachable MDF2 must never block them — that would delay a targeted UE's
@@ -323,8 +346,8 @@ func Init(cfg Config) error {
 	go func() { _ = srv.ServeTLS(ln, "", "") }()
 	// Keepalive fail-safe: purge tasking if the ADMF goes silent (TS 103 221-1).
 	// A nil stop channel: it runs for as long as this element can hold tasking.
-	if cfg.KeepaliveTimeout > 0 {
-		go x1srv.WatchKeepalive(cfg.KeepaliveTimeout, nil)
+	if keepalive > 0 {
+		go x1srv.WatchKeepalive(keepalive, nil)
 	}
 	active.Store(sub)
 	// Tasking lives in memory, so this element has just discarded every warrant it
@@ -593,8 +616,24 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already 
 	// The event these records report is the *activation*, not the registration each UE
 	// completed earlier, so one instant taken here is the right timestamp for all of
 	// them (design D5). Sampling per record would time the scan.
+	//
+	// Taken before the scan is handed off, so moving the scan off this goroutine does
+	// not move the instant the records report.
 	activated := time.Now()
 
+	// Off the X1 request goroutine. The scan walks every UE this AMF holds, so
+	// answering a provisioning function took time proportional to the registered-UE
+	// population — an element that answers a tasking request more slowly the busier it
+	// is, which is observable to whoever is asking and is the provisioning-latency form
+	// of the rule that keeps delivery off the signalling path. The SMF's equivalent,
+	// scanSessions, has always done this.
+	go s.scanRegisteredUEs(task, already, activated)
+}
+
+// scanRegisteredUEs emits the start-of-interception record for every already-registered
+// UE a newly activated task targets. It runs off the X1 request goroutine; see the
+// caller.
+func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.InterceptTask, activated time.Time) {
 	// Each record's subject is a different UE, so the identities the header reports are
 	// per record rather than per task — hence the identity list travels beside the event.
 	type startRecord struct {
@@ -607,8 +646,9 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already 
 		if !ok {
 			return true
 		}
-		// This scan runs on the X1 goroutine, concurrently with the UEs' own NAS
-		// procedures, so the identity fields must be read through IdentitySnapshot:
+		// This scan runs concurrently with the UEs' own NAS procedures — on its own
+		// goroutine now, which if anything widens the window rather than closing it —
+		// so the identity fields must be read through IdentitySnapshot:
 		// it takes them together under the identity lock the NAS Set* accessors
 		// write under, which is what makes the read race-free. Reading
 		// the fields directly here would race every registration in flight.
@@ -623,8 +663,8 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already 
 	if len(events) == 0 {
 		return
 	}
-	// Delivery is asynchronous (enqueue-and-return; see Init), so this X1 callback
-	// never blocks on the MDF; hand the built records to the delivery client.
+	// Delivery is asynchronous (enqueue-and-return; see Init), so nothing here blocks
+	// on the MDF; hand the built records to the delivery client.
 	for _, rec := range events {
 		s.deliverIRI([]types.InterceptTask{task}, rec.ids, activated, rec.event)
 	}
@@ -1195,4 +1235,30 @@ func canApply(task types.InterceptTask) error {
 	}
 
 	return nil
+}
+
+// parseKeepaliveTimeout reads the fail-safe window an operator wrote.
+//
+// Empty is not an error: an operator who writes nothing has stated that the fail-safe
+// is off, and that choice is honoured. A value that does not parse is a choice this
+// element could not read, and the difference matters because reading it as zero — which
+// is what discarding the parse error did — turns a mistyped duration into a silently
+// disabled fail-safe on an element that otherwise looks healthy.
+//
+// A non-positive duration is refused for the same reason it is at the UPF: "0s" and
+// "-5m" are values an operator wrote, and neither can mean the window they asked for.
+func parseKeepaliveTimeout(v string) (time.Duration, error) {
+	if v == "" {
+		return 0, nil
+	}
+
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("li: keepaliveTimeout %q is not a duration", v)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("li: keepaliveTimeout %q is not a positive duration", v)
+	}
+
+	return d, nil
 }

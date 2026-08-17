@@ -173,28 +173,16 @@ func (amf *AMF) Start() {
 	// (An init failure is a deployment/config error; production may route LI
 	// operational logs to a restricted sink per the undetectability requirement.)
 	if li := factory.AmfConfig.Configuration.Li; li != nil {
-		// An unparseable fail-safe window is refused rather than read as "off". Empty
-		// means disabled, which is a choice an operator can state; a value that does
-		// not parse is a choice they stated and this element could not read, and
-		// discarding it silently leaves a deployment that asked for the fail-safe
-		// without one — holding tasking that nothing will ever reclaim, and looking
-		// healthy while it does. The UPF already refuses its equivalent
-		// (pfcpiface/config.go), and a stated policy that reaches one element and not
-		// another is the failure this is.
-		kaTimeout, kaOK := liKeepaliveTimeout(li.KeepaliveTimeout)
-		if !kaOK {
-			// Not started, rather than started without the fail-safe the operator
-			// asked for. This element does not crash-loop over its LI configuration —
-			// that would tell every operator it is LI-provisioned — so the refusal is
-			// declining to start LI at all, reported the same non-attributable way as
-			// any other LI init failure. It fails toward interception not happening,
-			// which is the direction this plane is required to fail in; carrying on
-			// with the window silently set to "off" fails the other way, and looks
-			// healthy while doing it.
-			logger.InitLog.Errorln("an optional subsystem was not started: invalid configuration")
-
-			return
-		}
+		// The fail-safe window is passed on as the operator wrote it, and read inside
+		// Init. Reading it here meant refusing it here, and the refusal was a `return`
+		// from this function — which is not this subsystem's to make. It stopped every
+		// other subsystem too: the service-based interface, NGAP, registration with the
+		// network. The process then exited 0, so a mistyped duration in an optional
+		// block became a restart loop carrying a success code.
+		//
+		// Inside Init the refusal is scoped to interception, and the fault reporter
+		// exists by then — so the ADMF is told that this element is not intercepting,
+		// which nothing here could have told it.
 		dests := make([]lawfulintercept.Destination, 0, len(li.Destinations))
 		for _, d := range li.Destinations {
 			dests = append(dests, lawfulintercept.Destination{
@@ -205,7 +193,7 @@ func (amf *AMF) Start() {
 			X1Listen: li.X1Listen, MDF2: li.MDF2, NEID: li.NEID,
 			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
 			Destinations: dests,
-			AdmfURL:      li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: kaTimeout,
+			AdmfURL:      li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: li.KeepaliveTimeout,
 			X2X3KeepaliveEnabled:  li.X2X3KeepaliveEnabled,
 			X2X3KeepaliveTimeP1:   li.X2X3KeepaliveTimeP1,
 			X2X3KeepaliveTimeP2:   li.X2X3KeepaliveTimeP2,
