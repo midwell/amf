@@ -372,14 +372,9 @@ func SendRegistrationAccept(
 ) {
 	ue.GmmLog.Infoln("send Registration Accept")
 
-	// Lawful Interception IRI-POI: an initial Registration Accept carries the
-	// 5G-GUTI the AMF has bound to this target's SUPI, so emit an
-	// AMFIdentifierAssociation xIRI. Mobility/periodic accepts carry the same GUTI
-	// (no reassignment), so reporting association there would be redundant noise.
-	// Silent no-op unless LI is configured and the UE is a target.
-	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSInitialRegistration {
-		lawfulintercept.ReportIdentifierAssociation(ue)
-	}
+	// The Lawful Interception identifier-association hook used to be here. It is in
+	// BuildRegistrationAccept now — see there — because this is not the only path that
+	// sends a Registration Accept.
 
 	nasMsg, err := BuildRegistrationAccept(ue, anType, pDUSessionStatus, reactivationResult, errPduSessionId, errCause)
 	if err != nil {

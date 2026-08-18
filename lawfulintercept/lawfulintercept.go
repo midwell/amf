@@ -543,7 +543,7 @@ func handoverCause(group HandoverCauseGroup, value int64) any {
 // active task. networkInitiated distinguishes a network-ordered deregistration
 // from a UE-originating one; access is the access type being deregistered.
 // No-op and silent when LI is inactive or ue is not a target.
-func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access models.AccessType) {
+func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.AccessType) {
 	sub := active.Load()
 	if sub == nil || ue == nil {
 		return
@@ -553,8 +553,45 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access models
 		dir = iri.DirNetworkInitiated
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, amfDeregistration(id, dir, accessType(access)))
+	sub.reportEvent(id, amfDeregistration(id, dir, access))
 }
+
+// DeregistrationScope maps the access a UE-originating deregistration asked for onto the
+// record's own vocabulary.
+//
+// **The record can name both accesses, and must when both were deregistered.** TS 33.128
+// table 6.2.2.2.3-1 makes accessType mandatory with cardinality 1, and its type admits
+// three values — AccessType ::= ENUMERATED { threeGPPAccess(1), nonThreeGPPAccess(2),
+// threeGPPandNonThreeGPPAccess(3) } — so "both" is a value of the single field rather
+// than a reason to emit two records. The clause's own trigger text says the xIRI is
+// generated when a UE "has deregistered from the 5GS over at least one access type",
+// which is one record about a deregistration however many accesses it covered.
+//
+// This exists because the AMF used to report the access the NAS message *arrived on*
+// while acting on the access the message *asked for*: HandleDeregistrationRequest reads
+// the requested type and releases the SM contexts of both accesses when it is
+// AccessTypeBoth, and then reported one. A record contradicting what the same function
+// did is not the declarable case of a mandatory field the element cannot populate — it
+// is a populated field asserting something false, and nothing downstream distinguishes
+// the two.
+func DeregistrationScope(nasAccessType uint8) iri.AccessType {
+	switch nasAccessType {
+	case nasMessage.AccessTypeBoth:
+		return iri.AccessBoth
+	case nasMessage.AccessType3GPP:
+		return iri.AccessThreeGPP
+	case nasMessage.AccessTypeNon3GPP:
+		return iri.AccessNonThreeGPP
+	}
+
+	// A value this element does not recognise: report the access it is handling rather
+	// than inventing a scope. The caller passes the arrival access for this case.
+	return 0
+}
+
+// AccessScope maps a serving-access value onto the record's vocabulary, for the paths
+// where the element acts on exactly one access and there is nothing to ask.
+func AccessScope(a models.AccessType) iri.AccessType { return accessType(a) }
 
 // ReportRegistrationReject emits an AMFUnsuccessfulProcedure xIRI (failed
 // procedure = registration) for ue if it matches an active task; cause is the

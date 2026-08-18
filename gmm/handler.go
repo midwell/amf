@@ -1891,12 +1891,25 @@ func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe
 		gmm_message.SendDeregistrationRequest(ue.GetRanUe(accessType), anType, true, 0)
 	} else {
 		// Lawful Interception IRI-POI: this branch actually deregisters the UE, so
-		// emit an AMFDeregistration xIRI (network-initiated) and an
-		// AMFIdentifierDeassociation (the SUPI↔5G-GUTI binding is released) for a
-		// tasked target. Silent no-ops unless LI is configured.
-		lawfulintercept.ReportDeregistration(ue, true, accessType)
-		lawfulintercept.ReportIdentifierDeassociation(ue)
+		// emit an AMFDeregistration xIRI (network-initiated) for a tasked target.
+		// Silent no-op unless LI is configured.
+		//
+		// One access here, and it is the one this procedure was called for — a
+		// network-initiated deregistration names its access rather than reading one
+		// out of a request.
+		lawfulintercept.ReportDeregistration(ue, true, lawfulintercept.AccessScope(accessType))
+
+		// The binding goes only if the UE is left registered nowhere. Reported before
+		// SetDeregisteredState, so the state this reads is the one the record
+		// describes; a dual-registered UE losing one access keeps the binding, and the
+		// element keeps producing records under it.
+		// false, not a converted NAS value: a network-initiated deregistration is for
+		// the one access this procedure was called for.
+		releasesBinding := deregisteringEveryAccess(ue, false, accessType)
 		SetDeregisteredState(ue, anType)
+		if releasesBinding {
+			lawfulintercept.ReportIdentifierDeassociation(ue)
+		}
 	}
 	// TODO: Need to implement Nudm_SDM_Unsubscribe
 
@@ -2716,14 +2729,37 @@ func HandleDeregistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType mod
 ) error {
 	ue.GmmLog.Info("Handle Deregistration Request(UE Originating)")
 
-	// Lawful Interception IRI-POI: emit an AMFDeregistration xIRI (UE-initiated)
-	// for a tasked target, before the UE context is torn down, plus an
-	// AMFIdentifierDeassociation as the SUPI↔5G-GUTI binding is released. Silent
-	// no-ops unless LI is configured.
-	lawfulintercept.ReportDeregistration(ue, false, anType)
-	lawfulintercept.ReportIdentifierDeassociation(ue)
-
 	targetDeregistrationAccessType := deregistrationRequest.GetAccessType()
+
+	// Lawful Interception IRI-POI: emit an AMFDeregistration xIRI (UE-initiated) for a
+	// tasked target, before the UE context is torn down. Silent no-op unless LI is
+	// configured.
+	//
+	// **The record names the access the element acts on, not the one the message
+	// arrived over.** They differ: the requested type below may be AccessTypeBoth, and
+	// this function then releases the SM contexts of *both* accesses. Reporting anType
+	// there gave the mediation function a record contradicting what the same function
+	// went on to do — a populated field asserting something false, which nothing
+	// downstream can distinguish from a true one. TS 33.128 table 6.2.2.2.3-1 makes
+	// accessType mandatory with cardinality 1 and its type carries
+	// threeGPPandNonThreeGPPAccess(3), so "both" is a value of the one field rather
+	// than a reason to emit two records.
+	deregScope := lawfulintercept.DeregistrationScope(targetDeregistrationAccessType)
+	if deregScope == 0 {
+		// A requested type this element does not recognise: report the access the
+		// message arrived on rather than inventing a scope.
+		deregScope = lawfulintercept.AccessScope(anType)
+	}
+	lawfulintercept.ReportDeregistration(ue, false, deregScope)
+
+	// The identifier binding is released only when the UE is leaving altogether. A
+	// dual-registered UE deregistering one access keeps its SUPI↔5G-GUTI binding for
+	// the other, and announcing the release while the element goes on producing records
+	// under that same association tells the mediation function something it will then
+	// contradict.
+	if deregisteringEveryAccess(ue, targetDeregistrationAccessType == nasMessage.AccessTypeBoth, anType) {
+		lawfulintercept.ReportIdentifierDeassociation(ue)
+	}
 	ue.SmContextList.Range(func(key, value interface{}) bool {
 		smContext := value.(*context.SmContext)
 
@@ -2869,4 +2905,42 @@ func HandleAuthenticationError(ue *context.AmfUe, anType models.AccessType) erro
 		gmm_message.SendRegistrationReject(ue.GetRanUe(anType), nasMessage.Cause5GMMUEIdentityCannotBeDerivedByTheNetwork, "")
 	}
 	return nil
+}
+
+// deregisteringEveryAccess reports whether this deregistration leaves the UE registered
+// on no access at all, which is when its identifier binding is genuinely released.
+//
+// It exists for the Lawful Interception deassociation record. That record says the
+// SUPI↔5G-GUTI binding is gone, and the AMF holds one binding across every access a UE
+// is registered on — so a dual-registered UE deregistering one access keeps it. Emitting
+// the record per deregistration told the mediation function the binding was released
+// while the element went on producing records under it, which is a statement the element
+// itself immediately contradicts.
+// bothAccesses says the deregistration covers every access outright; otherwise it covers
+// arrivedOn and the binding survives if the UE is registered anywhere else.
+//
+// It is a bool rather than a NAS access type on purpose. util.AnTypeToNas answers
+// AccessTypeBoth for any value it does not recognise, which is a sound default for
+// addressing a NAS message and the wrong one here: an unknown access would silently
+// claim the identifier binding had been released.
+func deregisteringEveryAccess(ue *context.AmfUe, bothAccesses bool, arrivedOn models.AccessType) bool {
+	if ue == nil {
+		return true
+	}
+	if bothAccesses {
+		return true
+	}
+
+	// Otherwise this deregistration covers the access it arrived on, and the binding
+	// survives if the UE is still registered anywhere else.
+	for access, st := range ue.State {
+		if access == arrivedOn || st == nil {
+			continue
+		}
+		if st.Is(context.Registered) {
+			return false
+		}
+	}
+
+	return true
 }

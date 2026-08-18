@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"github.com/omec-project/amf/lawfulintercept"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/omec-project/amf/context"
@@ -489,6 +490,20 @@ func BuildDeregistrationAccept() ([]byte, error) {
 	return m.PlainNasEncode()
 }
 
+// liReportIdentifierAssociation is the Lawful Interception identifier-association hook,
+// reached through a package variable so a test can observe which of this package's paths
+// call it.
+//
+// A test cannot do that by activating the subsystem: `active` is private to
+// lawfulintercept, and Init needs mTLS material and a TCP bind this package's tests have
+// no business standing up. Without a seam the hook is a silent no-op in every test, so a
+// path that never calls it looks exactly like a path that does — which is how the
+// non-3GPP registration path came to be missing it in the first place.
+//
+// Production behaviour is unchanged: it is the same function, still a silent no-op when
+// LI is not configured.
+var liReportIdentifierAssociation = lawfulintercept.ReportIdentifierAssociation
+
 func BuildRegistrationAccept(
 	ue *context.AmfUe,
 	anType models.AccessType,
@@ -496,6 +511,34 @@ func BuildRegistrationAccept(
 	reactivationResult *[16]bool,
 	errPduSessionId, errCause []uint8,
 ) ([]byte, error) {
+	// Lawful Interception IRI-POI: an initial Registration Accept carries the 5G-GUTI
+	// the AMF has bound to this target's SUPI, so emit an AMFIdentifierAssociation
+	// xIRI. Mobility and periodic accepts carry the same GUTI (no reassignment), so
+	// reporting association there would be redundant noise — hence the gate. Silent
+	// no-op unless LI is configured and the UE is a target.
+	//
+	// **Here rather than on SendRegistrationAccept, because that is not the only path
+	// that sends one.** HandleInitialRegistration branches on access type: 3GPP calls
+	// the sender, and non-3GPP calls SendInitialContextSetupRequest and then this
+	// builder directly, stashing the result in ue.RegistrationAcceptForNon3GPPAccess
+	// for the N3IWF's answer. So a target registering over non-3GPP had its SUPI bound
+	// to a 5G-GUTI, carried to the UE, and reported nowhere. The registration itself
+	// *was* reported — ReportRegistration fires from the access-agnostic
+	// HandleRegistrationComplete — which is exactly what made the gap look like
+	// coverage from outside.
+	//
+	// It is a hook-on-the-sender defect of the same shape as the two teardown paths
+	// that were missing reportAndUntask, and the remedy is the same: put it on the one
+	// seam every path crosses. Both paths cross this builder, this is where the 5G-GUTI
+	// IE is placed, and the record reports precisely that binding — so the seam and the
+	// fact coincide.
+	//
+	// The other callers are all in HandleMobilityAndPeriodicRegistrationUpdating, where
+	// RegistrationType5GS is never InitialRegistration, so the gate excludes them.
+	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSInitialRegistration {
+		liReportIdentifierAssociation(ue)
+	}
+
 	m := nas.NewMessage()
 	m.GmmMessage = nas.NewGmmMessage()
 	m.GmmHeader.SetMessageType(nas.MsgTypeRegistrationAccept)
