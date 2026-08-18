@@ -10,8 +10,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"github.com/omec-project/li/store"
-	"github.com/omec-project/li/x1"
 	"io"
 	"math/big"
 	"net/http"
@@ -22,6 +20,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/omec-project/li/store"
+	"github.com/omec-project/li/x1"
 )
 
 // liPKI writes a throwaway LI certificate, key and trust anchor, and returns their

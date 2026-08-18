@@ -10,11 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"github.com/omec-project/amf/lawfulintercept"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/omec-project/amf/context"
 	"github.com/omec-project/amf/factory"
+	"github.com/omec-project/amf/lawfulintercept"
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/amf/nas/nas_security"
 	"github.com/omec-project/nas/v2"

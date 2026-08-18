@@ -65,12 +65,17 @@ func TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := deregisteringEveryAccess(tc.ue, tc.both, tc.arrivedOn); got != tc.want {
-				t.Errorf("deregisteringEveryAccess = %v, want %v — the deassociation record "+
-					"would %s", got, tc.want,
-					map[bool]string{true: "claim a binding is released while the element still uses it",
-						false: "withhold a record for a binding that is genuinely gone"}[got])
+			got := deregisteringEveryAccess(tc.ue, tc.both, tc.arrivedOn)
+			if got == tc.want {
+				return
 			}
+
+			consequence := "withhold a record for a binding that is genuinely gone"
+			if got {
+				consequence = "claim a binding is released while the element still uses it"
+			}
+			t.Errorf("deregisteringEveryAccess = %v, want %v — the deassociation record would %s",
+				got, tc.want, consequence)
 		})
 	}
 }
