@@ -191,3 +191,94 @@ func timestampOf(attrs []x2x3.TLV) (time.Time, bool) {
 
 	return time.Time{}, false
 }
+
+// withdrawingSender withdraws the warrant as the first record is delivered, and counts
+// what followed. Driven from the sender because a scan over a handful of UEs is over in
+// microseconds: racing a goroutine at it would assert nothing.
+type withdrawingSender struct {
+	mu      sync.Mutex
+	sent    int
+	onFirst func()
+}
+
+func (w *withdrawingSender) Send(_ *x2x3.PDU) error {
+	w.mu.Lock()
+	w.sent++
+	first := w.sent == 1
+	onFirst := w.onFirst
+	w.mu.Unlock()
+
+	if first && onFirst != nil {
+		onFirst()
+	}
+
+	return nil
+}
+
+func (w *withdrawingSender) count() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.sent
+}
+
+// TestAWithdrawalDuringAScanStopsTheRemainingRecords is the authority half of the rule
+// whose latency half TestStartOfInterceptionScanIsOffTheX1Goroutine pins, and the two
+// are the same fact seen twice.
+//
+// The scan runs off the X1 goroutine because a provisioning answer must not scale with
+// the registered-UE population. That is exactly what makes its duration unbounded by
+// anything the provisioning function can see, so "the warrant was valid when this scan
+// began" and "the warrant is valid now" stop being the same statement — and only the
+// second one licenses a record. A DeactivateTask is acknowledged, the ADMF records the
+// interception as ended, and records for it keep arriving at destinations that may
+// already have been retired. Nothing outside the element can audit that.
+func TestAWithdrawalDuringAScanStopsTheRemainingRecords(t *testing.T) {
+	const supi = "262019876543210"
+
+	task := types.InterceptTask{
+		XID:      "aaaaaaaa-0000-0000-0000-000000000002",
+		Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: supi}},
+		Products: []types.ProductType{types.ProductIRI},
+		State:    types.TaskActive,
+	}
+	st := store.New()
+	if !st.Activate(task) {
+		t.Fatal("activate")
+	}
+
+	snd := &withdrawingSender{onFirst: func() { st.Deactivate(task.XID) }}
+	s := &subsystem{
+		store: st, senderFor: func(string) sender { return snd },
+		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+	}
+
+	// Several UEs one warrant covers, so there is a remainder for the withdrawal to
+	// stop. They share a SUPI value the task targets and differ by pool key, which is
+	// all this scan reads them for.
+	for i := range 5 {
+		ue := &amfctx.AmfUe{Supi: "imsi-" + supi}
+		ue.State = map[models.AccessType]*fsm.State{
+			models.ACCESSTYPE__3_GPP_ACCESS: fsm.NewState(amfctx.Registered),
+		}
+		key := supi + "-" + string(rune('a'+i))
+		amfctx.AMF_Self().UePool.Store(key, ue)
+		t.Cleanup(func() { amfctx.AMF_Self().UePool.Delete(key) })
+	}
+
+	s.reportStartOfInterception(task, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && snd.count() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond) // let any further records land
+
+	if n := snd.count(); n == 0 {
+		t.Fatal("the scan delivered nothing at all; this asserts nothing about withdrawal")
+	} else if n > 1 {
+		t.Errorf("%d records were delivered for a warrant withdrawn after the first; "+
+			"the withdrawal was acknowledged and product kept arriving", n)
+	}
+}

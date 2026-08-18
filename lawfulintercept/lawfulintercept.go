@@ -219,10 +219,15 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 			// X1 channel — and makes the element's response time depend on whether the
 			// ADMF is up, which is observable to whoever is probing it.
 			//
-			// The goroutine is bounded in effect rather than in count: Notify's throttle
-			// is checked before anything is sent, so under a flood of refusals each of
-			// these returns immediately and at most one report per window is dispatched.
-			go sub.reporter.Notify(x1.NEIssueX1AuthFailed,
+			// The dispatch is bounded in effect rather than in count, and it is
+			// NotifyAsync that makes that true rather than the `go` this used to be.
+			// The throttle is consulted on this goroutine before anything is spawned,
+			// so under a flood of refusals each of these costs a mutex; spawning first
+			// would have been a goroutine per refusal, which is the shape that made the
+			// same fix wrong at the UPF, where the equivalent sites are driven by packet
+			// rate rather than by request rate. One form, so the three elements cannot
+			// reason about this hazard three times and reach three answers.
+			sub.reporter.NotifyAsync(x1.NEIssueX1AuthFailed,
 				fmt.Sprintf("X1 provisioning refused: peer failed authentication (error %d)", code))
 		}),
 	}
@@ -290,7 +295,27 @@ func Init(cfg Config) error {
 	pool := x2x3.NewPool(mat.ClientTLS(),
 		keepaliveConfig(cfg, reporter),
 		func(error) { watcher.Nudge() },
-		nil, // drops are covered by the same MDF-unreachable report from the worker
+		// Product dropped because the queue was full is reported as it happens, and
+		// this hook is the only place that can report it.
+		//
+		// It was nil, with a comment saying drops were covered by the worker's
+		// MDF-unreachable report — which AsyncSender.Unreachable's own documentation
+		// contradicts in terms. Queue saturation is deliberately excluded from
+		// reachability, because a full queue at one instant is a burst the buffer
+		// exists to absorb rather than a fault an ADMF can act on, and that doc says
+		// so and then says the drops themselves are reported as they happen. At the
+		// UPF they are (x3DeliveryLost). Here nothing reported them, so a reachable
+		// but slow MDF2 lost xIRI while the destination watcher went on
+		// reporting the destination healthy — product missing from an agency's
+		// record with every channel that could have said so reporting normality.
+		//
+		// Off the offering path, which is a signalling goroutine: this fires exactly
+		// when delivery is already behind, so blocking here would add the reporting
+		// stall to the condition being reported.
+		func() {
+			reporter.NotifyAsync(x1.NEIssueX2DeliveryLost,
+				"xIRI dropped from the X2 delivery queue")
+		},
 	)
 	sub := &subsystem{
 		store:     st,
@@ -665,8 +690,25 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 	}
 	// Delivery is asynchronous (enqueue-and-return; see Init), so nothing here blocks
 	// on the MDF; hand the built records to the delivery client.
+	//
+	// **The task is re-read before each record, and the record goes out under what the
+	// store holds now.** The scan's duration is unbounded by design — it is off the X1
+	// goroutine precisely so a provisioning answer does not scale with the registered-UE
+	// population — so "the warrant was valid when this scan started" and "the warrant is
+	// valid now" are two different statements, and only the second one authorises a
+	// record. A DeactivateTask acknowledged mid-scan otherwise leaves records for a
+	// withdrawn warrant still arriving, at destinations a ModifyTask may already have
+	// replaced; and it is exactly the failure an agency cannot audit, because from
+	// outside the element the withdrawal looks complete.
+	//
+	// Per record rather than per scan: a withdrawal that lands mid-scan has to stop the
+	// remainder, not merely the next one.
 	for _, rec := range events {
-		s.deliverIRI([]types.InterceptTask{task}, rec.ids, activated, rec.event)
+		current, held := s.store.Get(task.XID)
+		if !held {
+			return
+		}
+		s.deliverIRI([]types.InterceptTask{current}, rec.ids, activated, rec.event)
 	}
 }
 
@@ -1247,6 +1289,14 @@ func canApply(task types.InterceptTask) error {
 //
 // A non-positive duration is refused for the same reason it is at the UPF: "0s" and
 // "-5m" are values an operator wrote, and neither can mean the window they asked for.
+//
+// So is one below x1.MinKeepaliveWindow. "1ns" passes the chart's duration regex — ns
+// is a Go duration unit — and passed the positive test here, and then panicked the
+// process: the window is halved to produce the watchdog's tick interval, and integer
+// division reached zero inside time.NewTicker, on a goroutine. An LI configuration
+// mistake is permitted to cost interception and never the network function, so this is
+// refused here, reported to the ADMF by the caller, and refused again in the library
+// itself for any caller that does not check.
 func parseKeepaliveTimeout(v string) (time.Duration, error) {
 	if v == "" {
 		return 0, nil
@@ -1258,6 +1308,9 @@ func parseKeepaliveTimeout(v string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("li: keepaliveTimeout %q is not a positive duration", v)
+	}
+	if d < x1.MinKeepaliveWindow {
+		return 0, fmt.Errorf("li: keepaliveTimeout %q is shorter than the minimum fail-safe window %s", v, x1.MinKeepaliveWindow)
 	}
 
 	return d, nil

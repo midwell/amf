@@ -10,6 +10,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"github.com/omec-project/li/store"
+	"github.com/omec-project/li/x1"
 	"io"
 	"math/big"
 	"net/http"
@@ -167,5 +169,74 @@ func TestAStatedEmptyWindowIsHonoured(t *testing.T) {
 	}
 	if active.Load() == nil {
 		t.Error("interception did not start with the fail-safe deliberately off")
+	}
+}
+
+// TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess is the second of
+// the two paths on which an LI configuration mistake still cost the network function.
+//
+// "1ns" is a well-formed Go duration, so it passes the chart's regex — ns is a unit —
+// and it is positive, so it passed this element's own test. The fail-safe window is
+// then halved to produce the watchdog's tick interval, and integer division reaches
+// zero: time.NewTicker panics, on a goroutine, and the AMF goes down. An element that
+// terminates under an LI misconfiguration when one without interception configured does
+// not is distinguishable to anybody who can see whether it is running — which is the
+// class of leak this whole capability exists to prevent, arrived at from the
+// configuration file.
+//
+// The policy is the one already applied to an unreadable window: interception does not
+// start, the ADMF is told, and the network function serves.
+func TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess(t *testing.T) {
+	cert, key, ca := liPKI(t)
+	admf := newADMFStub(t)
+	t.Cleanup(func() { active.Store(nil) })
+
+	err := Init(Config{
+		NEID:     "amf-1",
+		X1Listen: "127.0.0.1:0",
+		MDF2:     "10.0.60.122:42069",
+		Cert:     cert, Key: key, CACert: ca,
+		AdmfURL: admf.srv.URL, AdmfID: "admf-1",
+		KeepaliveTimeout: "1ns",
+	})
+	if err == nil {
+		t.Fatal("Init accepted a fail-safe window shorter than the watchdog can measure")
+	}
+
+	if sub := active.Load(); sub != nil {
+		t.Error("interception was started despite the refusal")
+	}
+
+	joined := strings.Join(admf.received(), "\n")
+	if !strings.Contains(joined, "invalidConfig") {
+		t.Errorf("the refusal was not reported to the ADMF:\n%s", joined)
+	}
+}
+
+// TestTheWatchdogRefusesAWindowItCannotMeasure is the same guard one layer down, where
+// the panic actually was.
+//
+// The callers check their configured value and report it, which is where an operator's
+// mistake should be caught. But WatchKeepalive's stated precondition was "timeout must
+// be > 0", which 1ns satisfies — so the library handed every future caller a panic. It
+// returns instead: no watchdog, rather than a process.
+func TestTheWatchdogRefusesAWindowItCannotMeasure(t *testing.T) {
+	srv := x1.NewServer(store.New(), "amf-1")
+
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("the fail-safe watchdog panicked on a sub-floor window: %v", r)
+			}
+			close(done)
+		}()
+		srv.WatchKeepalive(time.Nanosecond, nil)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WatchKeepalive did not return for a window below the floor")
 	}
 }
