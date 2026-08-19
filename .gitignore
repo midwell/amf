@@ -35,3 +35,8 @@ gmm/gmm.dot
 # Build output. The binary is named after the module, so a plain `go build` drops it
 # here and it has been shipped inside an image once already.
 /amf
+
+# Local image packaging. Dockerfile.local wraps a host-cross-compiled binary
+# because the in-container build cannot resolve the li module yet; it is
+# scaffolding for that gap, not something the repository should carry.
+/Dockerfile.local
