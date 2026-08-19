@@ -43,7 +43,32 @@ func SendDLNASTransport(ue *context.RanUe, anType models.AccessType, payloadCont
 		return
 	}
 	ngap_message.SendDownlinkNasTransport(ue, nasMsg, nil)
+
+	// Lawful Interception: **the seam every downlink UE-policy container crosses.**
+	//
+	// TS 33.128 defines AMFUEPolicyTransfer as the record of this AMF passing a UE policy
+	// container, and it passes them in both directions: uplink to the PCF, and downlink to
+	// the UE from two separate N1N2 relay paths. Only the uplink was hooked, so half of the
+	// transfers this element performs produced no record at all — an agency's account of a
+	// tasked subject's policy exchange showing one side of a two-sided conversation, with
+	// nothing to say the other side is missing.
+	//
+	// Hooked here rather than at the two call sites, and that is the third time this shape
+	// has cost a record: a hook placed beside one caller is not inherited by the next, and
+	// the next is added by somebody who does not know the hook exists. Placed on the send
+	// itself, a relay path added later is reported without anybody remembering to.
+	//
+	// After the send, and gated on the container type as the uplink hook is: the record says
+	// the AMF transferred the policy, so it follows the transfer rather than preceding it.
+	if payloadContainerType == nasMessage.PayloadContainerTypeUEPolicy {
+		reportUEPolicyTransfer(amfUe, nasPdu)
+	}
 }
+
+// reportUEPolicyTransfer is the Lawful Interception hook, reached through a package variable
+// so a test can observe which of this package's paths raise it — which is the whole of what
+// was wrong. Production behaviour is the same function.
+var reportUEPolicyTransfer = lawfulintercept.ReportUEPolicyTransfer
 
 func SendNotification(ue *context.RanUe, nasMsg []byte) {
 	if ue == nil {

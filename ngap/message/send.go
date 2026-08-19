@@ -467,6 +467,23 @@ func SendHandoverRequest(sourceUe *context.RanUe, targetRan *context.AmfRan, cau
 		return
 	}
 
+	// Lawful Interception: the two values the HANDOVER REQUEST ACKNOWLEDGE's xIRI needs are
+	// committed **here**, past every guard above, rather than by the caller before the call.
+	//
+	// TS 33.128 puts the AMFRANHandoverRequest record on the acknowledgement, and these two
+	// values exist only on the way in — so they have to be stashed. Stashed by the caller,
+	// they were stashed before this function had decided whether to send: five guards return
+	// without sending, and one of them is "Handover Required Duplicated". A duplicate
+	// therefore overwrote the *live* handover's stash and sent nothing, and the first
+	// handover's acknowledgement was then reported with the rejected request's cause and
+	// container — a record describing a handover that never happened, attributed to one that
+	// did.
+	//
+	// Committed here, the stash and the request carry the same values by construction: a
+	// request that is not sent replaces nothing.
+	sourceUe.HandOverCause = &cause
+	sourceUe.HandOverSourceToTarget = append([]byte(nil), sourceToTargetTransparentContainer.Value...)
+
 	var targetUe *context.RanUe
 	if targetUeTmp, err := targetRan.NewRanUe(context.RanUeNgapIdUnspecified); err != nil {
 		sourceUe.Log.Errorf("create target UE error: %+v", err)

@@ -148,3 +148,52 @@ func TestX1ServerRefusesTaskingItCannotAct(t *testing.T) {
 		})
 	}
 }
+
+// TestATaskRequiringOnlyContentIsRefused is the product half of "any element refuses tasking
+// it cannot act on".
+//
+// This element is an IRI-POI: it produces xIRI and nothing else. `canApply` tested the
+// identifier kinds and not the products, so an `X3Only` warrant naming a valid SUPI was
+// acknowledged, stored, reported as active in an interrogation, and then skipped by every
+// delivery path for not requesting IRI. The provisioning function was told an interception is
+// running at an element that can never produce anything for it — indistinguishable, from the
+// agency's side, from a tasked subject who did nothing.
+//
+// `X2andX3` is accepted, and the distinction is the point: a warrant provisioned to several
+// elements legitimately names products only some of them produce, so refusing that would
+// refuse the ordinary multi-element warrant.
+func TestATaskRequiringOnlyContentIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		products []types.ProductType
+		refuse   bool
+	}{
+		{"X3Only", []types.ProductType{types.ProductCC}, true},
+		{"X2Only", []types.ProductType{types.ProductIRI}, false},
+		{"X2andX3", []types.ProductType{types.ProductIRI, types.ProductCC}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := canApply(types.InterceptTask{
+				XID:      taskXID,
+				Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: "262019876543210"}},
+				Products: tc.products,
+			})
+
+			if tc.refuse {
+				if err == nil {
+					t.Fatal("a warrant requiring only content was accepted: this element can never " +
+						"produce anything for it, and the ADMF has been told an interception is running")
+				}
+				if !strings.Contains(err.Error(), "X3Only") {
+					t.Errorf("the refusal reason is %q; a provisioning function has to be able to "+
+						"tell this from a fault", err)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Errorf("a warrant this element produces product for was refused: %v", err)
+			}
+		})
+	}
+}

@@ -3961,11 +3961,12 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 		}
 		// Update NH
 		amfUe.UpdateNH()
-		// Stash what the HANDOVER REQUEST ACKNOWLEDGE will need: TS 33.128 places
-		// the AMFRANHandoverRequest xIRI there, and these two values exist only
-		// here. Cleared on every outcome — see ClearHandoverState.
-		sourceUe.HandOverCause = cause
-		sourceUe.HandOverSourceToTarget = append([]byte(nil), sourceToTargetTransparentContainer.Value...)
+		// Lawful Interception: what the HANDOVER REQUEST ACKNOWLEDGE's xIRI needs is
+		// stashed by SendHandoverRequest, past its own guards. Stashed here it was
+		// stashed before that function had decided whether to send — and a duplicate
+		// HANDOVER REQUIRED returns on the "Handover Required Duplicated" guard, so it
+		// overwrote the live handover's stash and the first handover's acknowledgement
+		// was reported with the rejected request's values.
 		ngap_message.SendHandoverRequest(sourceUe, targetRan, *cause, pduSessionReqList,
 			*sourceToTargetTransparentContainer, false)
 	}

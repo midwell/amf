@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -100,6 +102,12 @@ type sender interface {
 }
 
 type subsystem struct {
+	// scans counts the activation scans this subsystem has dispatched. Nothing in
+	// production waits on it — the whole point of the scan is that a provisioning answer
+	// does not — but a scan is this subsystem's work, and owning it is what lets a test wait
+	// for the walk it started rather than leaving a goroutine to fail the next test.
+	scans sync.WaitGroup
+
 	store *store.Store
 	// senderFor returns the delivery client for one X2 destination address. It is a
 	// function rather than a single client because a task's destinations arrive over
@@ -723,8 +731,48 @@ func (s *subsystem) applyTaskChange(prev, next *types.InterceptTask) {
 		if prev.DeliveryXID() != next.DeliveryXID() {
 			s.ids.Forget(parseXID(prev.DeliveryXID()))
 		}
+		if !modificationCanProduceARecord(*prev, *next) {
+			return
+		}
 		s.reportStartOfInterception(*next, prev)
 	}
+}
+
+// modificationCanProduceARecord reports whether a modification could yield a
+// start-of-interception record at all.
+//
+// **The scan is not free and it was unconditional.** Every activation and modification
+// launched a goroutine that walks the whole registered-UE pool, and for a modification that
+// changed only the destinations, the record scope or the delivery labelling, `covered()` then
+// suppressed every record the walk produced — because a UE the previous task already covered
+// is not one whose interception begins here, and for those modifications that is every UE.
+// Bulk provisioning runs one such walk per warrant, concurrently.
+//
+// So the predicate is "this modification cannot yield a record", not "no newly covered
+// targets". Three things decide it:
+//
+//   - the targets, because a UE the task did not cover before is one whose interception
+//     begins now;
+//   - the products, because adding IRI to a content-only task begins interception of a
+//     product for subjects the task already covered — the case the SMF's own modification
+//     path tests and this one did not test at all;
+//   - the record scope, because widening it makes records due that were previously excluded.
+//
+// Getting the predicate too narrow re-creates the defect the per-record revalidation fixed;
+// getting it too wide only costs a walk. That asymmetry is why the test is written as three
+// equalities rather than as an attempt to be clever about what changed.
+func modificationCanProduceARecord(prev, next types.InterceptTask) bool {
+	if !slices.Equal(prev.Targets, next.Targets) {
+		return true
+	}
+	if prev.WantsProduct(types.ProductIRI) != next.WantsProduct(types.ProductIRI) {
+		return true
+	}
+	if prev.WantsProduct(types.ProductCC) != next.WantsProduct(types.ProductCC) {
+		return true
+	}
+
+	return prev.RecordScope != next.RecordScope
 }
 
 // reportStartOfInterception runs when a task is newly activated or modified over
@@ -752,18 +800,59 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already 
 	// is, which is observable to whoever is asking and is the provisioning-latency form
 	// of the rule that keeps delivery off the signalling path. The SMF's equivalent,
 	// scanSessions, has always done this.
-	go s.scanRegisteredUEs(task, already, activated)
+	//
+	// **Bounded, because bulk provisioning launches one of these per warrant at once.**
+	// TS 103 221-1's bulk operations and an ADMF restoring tasking after an element restart
+	// both provision many warrants in quick succession, and each walk reads the whole UE
+	// pool: unbounded, N warrants cost N concurrent full walks, on an element whose ordinary
+	// job is answering NAS procedures for those same UEs. The bound turns that into a queue.
+	//
+	// The provisioning answer still does not wait on any of it, which is the property that
+	// put the scan off the request goroutine in the first place — the slot is taken *inside*
+	// the goroutine, not before it.
+	s.scans.Add(1)
+	go func() {
+		defer s.scans.Done()
+
+		scanSlots <- struct{}{}
+		defer func() { <-scanSlots }()
+
+		s.scanRegisteredUEs(task, already, activated)
+	}()
 }
+
+// scanSlots bounds how many activation scans walk the UE pool at once.
+//
+// Four rather than one: a single slot would serialise unrelated warrants behind one walk, and
+// what matters is that the cost is bounded rather than that it is one. Package-level because
+// the bound is a property of this element's UE pool, of which there is one.
+var scanSlots = make(chan struct{}, 4)
+
+// scanWalked is called when a scan begins walking the UE pool. Set only by tests; nil
+// otherwise.
+var scanWalked func()
 
 // scanRegisteredUEs emits the start-of-interception record for every already-registered
 // UE a newly activated task targets. It runs off the X1 request goroutine; see the
 // caller.
 func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.InterceptTask, activated time.Time) {
+	// nil in production. It exists because the *walk* is what the predicate and the bound are
+	// about, and the walk is not observable from its records: a modification that cannot
+	// produce one still walked the whole pool and had covered() throw everything away. See
+	// TestAModificationThatCannotProduceARecordStartsNoScan.
+	if scanWalked != nil {
+		scanWalked()
+	}
+
 	// Each record's subject is a different UE, so the identities the header reports are
 	// per record rather than per task — hence the identity list travels beside the event.
 	type startRecord struct {
 		event any
 		ids   []types.TargetIdentifier
+		// id is the subject this record is about, kept so the per-record re-read can
+		// establish that the task still names it. Without it the revalidation could
+		// answer only whether the task still exists.
+		id amfctx.UeIdentity
 	}
 	var events []startRecord
 	amfctx.AMF_Self().UePool.Range(func(_, value any) bool {
@@ -781,7 +870,9 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 		// *fsm.State guards its own transitions.
 		id := ue.IdentitySnapshot()
 		if registered(ue) && taskTargets(task, id) && !covered(already, id) {
-			events = append(events, startRecord{event: amfStartOfInterception(id), ids: targetsOf(id)})
+			events = append(events, startRecord{
+				event: amfStartOfInterception(id), ids: targetsOf(id), id: id,
+			})
 		}
 		return true
 	})
@@ -803,10 +894,25 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 	//
 	// Per record rather than per scan: a withdrawal that lands mid-scan has to stop the
 	// remainder, not merely the next one.
+	//
+	// **What the re-read establishes is a list, and the subject was missing from it.** It
+	// answers that the task still exists, and — because the record is built from `current`
+	// — which products it wants and where its product goes. It did not answer whether the
+	// task still names *this subject*: a ModifyTask that retargets a warrant mid-scan
+	// leaves the remaining records describing the previous subject and delivers them under
+	// the warrant's own identifier, to the new subject's agency. Well-formed, correctly
+	// attributed, and about somebody the warrant no longer covers.
+	//
+	// So the check is here, beside the re-read, rather than in the record's own closure:
+	// what revalidation establishes is existence, products, destinations *and subject*, and
+	// a later omission from that list should read as a gap in a list.
 	for _, rec := range events {
 		current, held := s.store.Get(task.XID)
 		if !held {
 			return
+		}
+		if !taskTargets(current, rec.id) {
+			continue
 		}
 		s.deliverIRI([]types.InterceptTask{current}, rec.ids, activated, rec.event)
 	}
@@ -1385,6 +1491,20 @@ var resolvableTargets = []types.TargetIdentifierType{
 }
 
 // canApply refuses tasking this element cannot act on, before it is acknowledged.
+//
+// **Both halves of "cannot act on": the identifiers and the products.** This element is an
+// IRI-POI and produces xIRI, so a warrant requiring only content is one it can never make
+// anything for — and an `X3Only` task naming a valid SUPI was acknowledged, stored, reported
+// as active in an interrogation, and skipped by every delivery path for not requesting IRI.
+// The provisioning function was told an interception is running at an element that can
+// never produce anything for it, which is indistinguishable from the outside from a tasked
+// subject who did nothing. The requirement is written in terms of criteria and the CC-POI
+// already applies the product half; this is the same test on the other side.
+//
+// `X2andX3` is accepted, and that distinction matters: a warrant provisioned to several
+// elements legitimately names products only some of them produce, and refusing it here would
+// refuse the ordinary multi-element warrant. What is refused is a task requiring *none* of
+// what this element makes.
 func canApply(task types.InterceptTask) error {
 	if len(task.Targets) == 0 {
 		return errors.New("li: task names no target identifiers")
@@ -1392,6 +1512,11 @@ func canApply(task types.InterceptTask) error {
 	if !task.NamesAnyType(resolvableTargets...) {
 		return errors.New("li: task names no identifier this element resolves; " +
 			"it matches subjects by SUPI, PEI or GPSI")
+	}
+	if !task.WantsProduct(types.ProductIRI) {
+		return errors.New("li: task requires no product this element produces; " +
+			"an AMF IRI-POI produces xIRI (X2), so a task whose deliveryType is X3Only can " +
+			"never yield anything here")
 	}
 
 	return nil

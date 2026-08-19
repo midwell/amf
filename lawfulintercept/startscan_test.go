@@ -282,3 +282,68 @@ func TestAWithdrawalDuringAScanStopsTheRemainingRecords(t *testing.T) {
 			"the withdrawal was acknowledged and product kept arriving", n)
 	}
 }
+
+// TestARetargetDuringAScanStopsRecordsForThePreviousSubject is the subject half of the same
+// rule, and the half the per-record re-read did not establish.
+//
+// The re-read answers that the warrant still exists, and — since the record is delivered
+// under what the store now holds — which products it wants and where its product goes. It
+// did not answer whether the warrant still names *this* subject. So a ModifyTask that
+// retargets a warrant mid-scan left the remaining UEs producing records about the previous
+// subject, delivered under the warrant's own identifier to the new subject's agency:
+// well-formed, correctly attributed, and about somebody the warrant no longer covers.
+func TestARetargetDuringAScanStopsRecordsForThePreviousSubject(t *testing.T) {
+	const (
+		subject    = "262019876543210"
+		retargeted = "262010000000001"
+	)
+
+	task := types.InterceptTask{
+		XID:      "aaaaaaaa-0000-0000-0000-000000000003",
+		Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: subject}},
+		Products: []types.ProductType{types.ProductIRI},
+		State:    types.TaskActive,
+	}
+	st := store.New()
+	if !st.Activate(task) {
+		t.Fatal("activate")
+	}
+
+	// The ADMF retargets the warrant as the first record goes out. Activate over a held
+	// XID is how a modification reaches the store, which is the path x1's ModifyTask takes.
+	retarget := task
+	retarget.Targets = []types.TargetIdentifier{{Type: types.TargetSUPI, Value: retargeted}}
+	snd := &withdrawingSender{onFirst: func() { st.Activate(retarget) }}
+
+	s := &subsystem{
+		store: st, senderFor: func(string) sender { return snd },
+		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+	}
+
+	for i := range 5 {
+		ue := &amfctx.AmfUe{Supi: "imsi-" + subject}
+		ue.State = map[models.AccessType]*fsm.State{
+			models.ACCESSTYPE__3_GPP_ACCESS: fsm.NewState(amfctx.Registered),
+		}
+		key := subject + "-retarget-" + string(rune('a'+i))
+		amfctx.AMF_Self().UePool.Store(key, ue)
+		t.Cleanup(func() { amfctx.AMF_Self().UePool.Delete(key) })
+	}
+
+	s.reportStartOfInterception(task, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && snd.count() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond) // let any further records land
+
+	if n := snd.count(); n == 0 {
+		t.Fatal("the scan delivered nothing at all; this asserts nothing about retargeting")
+	} else if n > 1 {
+		t.Errorf("%d records were delivered for a subject the warrant no longer names: each is a "+
+			"well-formed record about the wrong person, delivered under the warrant's own "+
+			"identifier to the new subject's agency", n)
+	}
+}

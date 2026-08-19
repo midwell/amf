@@ -535,6 +535,19 @@ func BuildRegistrationAccept(
 	//
 	// The other callers are all in HandleMobilityAndPeriodicRegistrationUpdating, where
 	// RegistrationType5GS is never InitialRegistration, so the gate excludes them.
+	//
+	// **A known gap rather than a silent one.** The gate rests on "mobility and periodic
+	// accepts carry the same GUTI", which is true of this implementation as it stands and is
+	// not required by TS 24.501: the AMF may reassign the 5G-GUTI on a mobility or periodic
+	// registration update, and clause 5.4.1.3 makes that a legitimate thing to do. On the day
+	// this element starts doing it, the reassignment is a new SUPI-to-GUTI binding carried to
+	// the UE — exactly what AMFIdentifierAssociation reports — and this gate would suppress
+	// the record for it, silently, in the same shape as the non-3GPP path above.
+	//
+	// The condition to write then is "this accept carries a GUTI the UE did not already
+	// have", not the registration type. It is not written now because nothing here reassigns,
+	// and a check for a change that never happens is untestable; it is written down here so
+	// that whoever adds reassignment finds the consequence beside the code that causes it.
 	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSInitialRegistration {
 		liReportIdentifierAssociation(ue)
 	}
