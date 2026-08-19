@@ -660,13 +660,17 @@ func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
 // transition of this element's tasking, carrying the task as it was and as it
 // becomes. prev nil is an activation, next nil a removal, both a modification.
 //
-// The numbering state is released on removal and only on removal. It is keyed by
-// the delivery XID, which a modification never changes, so releasing it there
-// would discard contexts the modified task's own records have already used — and
-// the next record in one of them would repeat a sequence number the mediation
-// function has already seen for that (XID, correlation) pair. Under the previous
-// contract a retarget arrived as an activation followed by a deactivation of the
-// same XID, and the deactivation's release ran after the activation's records.
+// The numbering state is released on removal, and on a modification that moves the
+// delivery label — and on nothing else. It is keyed by the *delivery* XID, which is the
+// provisioned ProductID where a task carries one, so a relabel does change it: the
+// contexts under the superseded label are then stranded, because every record from that
+// point carries the new one and nothing will number under the old contexts again. A
+// modification that leaves the labelling alone must release nothing, since those
+// contexts are the ones the modified task's own records are still using — the next
+// record in one of them would repeat a sequence number the mediation function has
+// already seen for that (XID, correlation) pair. Under the previous contract a retarget
+// arrived as an activation followed by a deactivation of the same XID, and the
+// deactivation's release ran after the activation's records.
 //
 // The cost is that a retarget leaves the old target's contexts numbered until the
 // task is removed, since the sequencer is keyed by (XID, correlation) and cannot
@@ -683,6 +687,12 @@ func (s *subsystem) applyTaskChange(prev, next *types.InterceptTask) {
 	case prev == nil:
 		s.reportStartOfInterception(*next, nil)
 	default:
+		// The superseded label's contexts, before the record below can number under the
+		// new one. Forget rather than ForgetContext because at an IRI-POI one task is
+		// one warrant, so every context under that label belonged to this task.
+		if prev.DeliveryXID() != next.DeliveryXID() {
+			s.ids.Forget(parseXID(prev.DeliveryXID()))
+		}
 		s.reportStartOfInterception(*next, prev)
 	}
 }
