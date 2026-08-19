@@ -95,6 +95,17 @@ const amfInterceptionPoint = "AMF-IRI-POI"
 // record it delivers has to carry (TS 33.128 table 5.3.1-2).
 var errNoElementIdentifier = errors.New("li: no network element identifier configured")
 
+// errNoX1Listen means the deployment configured interception without an address for the
+// X1 listener to bind.
+//
+// This is not caught by the bind: Listen(ctx, "tcp", "") *succeeds*, on every interface at
+// an OS-selected ephemeral port. So interception starts, reports itself healthy, and waits
+// for tasking on a port nobody — the ADMF least of all — can predict. The element is
+// unprovisionable and indistinguishable from one that is merely un-tasked, which is the
+// worst shape this failure could take: silent, and only visible once a warrant that was
+// supposed to be running turns out never to have arrived.
+var errNoX1Listen = errors.New("li: no X1 listen address configured")
+
 // sender delivers an xIRI/xCC PDU to an MDF. *x2x3.Client satisfies it; tests
 // inject a capturing implementation to assert per-warrant delivery isolation.
 type sender interface {
@@ -120,6 +131,12 @@ type subsystem struct {
 	// rather than the pool itself for the same reason senderFor is one: a test states a
 	// delivery condition without an MDF to take away.
 	unreachable func() (unreachable, inUse int)
+	// unreachableAt answers the same question about one address, which is the shape a
+	// destination-scoped answer needs: an element's own status says how much is wrong, a
+	// destination's says whether that one is working. Same source, so the pushed report and
+	// the interrogation cannot disagree — which they did, one hard-coding activeAndWorking
+	// while the other reported the endpoint unreachable.
+	unreachableAt func(addr string) bool
 	// mdf2 is the configured X2 endpoint. It serves a task that names no destination
 	// this element can resolve, and nothing else — an element that preferred it to the
 	// destinations a task named is the gap this exists behind rather than in front of.
@@ -157,6 +174,20 @@ func (s *subsystem) deliveryFault() *x1.X1Error {
 	}
 
 	return x1.MDFUnreachableProbe(s.unreachable)()
+}
+
+// destinationUnreachable is whether delivery to one address is currently failing, for the
+// destination status the provisioning function can ask for.
+//
+// A method rather than the field itself so that an element with no delivery pool — a test, or
+// an element built before the pool exists — answers "reachable" rather than panicking. That
+// answer is also the one the X1 layer defaults to, so the two agree.
+func (s *subsystem) destinationUnreachable(addr string) bool {
+	if s.unreachableAt == nil {
+		return false
+	}
+
+	return s.unreachableAt(addr)
 }
 
 // destinationsInUse is where this element's xIRI currently goes: the X2 endpoints the tasking
@@ -203,6 +234,11 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 		// The conditions this POI can observe about itself, which li/x1 cannot: see
 		// subsystem.deliveryFault.
 		x1.WithFaultProbes(sub.deliveryFault),
+		// And the same fact at destination scope, for GetDestinationDetails. Without it the
+		// element answers activeAndWorking for an endpoint it is simultaneously reporting
+		// as unreachable over ReportDestinationIssue — two statements about one fact, and
+		// the ADMF trusts the one it asked for.
+		x1.WithDestinationReachability(sub.destinationUnreachable),
 		x1.OnTaskChange(sub.applyTaskChange),
 		// Refuse a warrant this element could never act on. It resolves subjects by
 		// subscriber identity alone (see targetsOf), so a warrant naming only a UE
@@ -274,6 +310,18 @@ func Init(cfg Config) error {
 	// and looks healthy while it does — but the network function does, because an
 	// element that refuses to run over its LI configuration is distinguishable from one
 	// that has none by anybody who can see whether it is running.
+	// The listener's address, before anything binds it. An empty address is a bind that
+	// succeeds on an unpredictable port rather than one that fails, so nothing downstream
+	// will ever report it — see errNoX1Listen. Reported to the ADMF, because an element that
+	// cannot be provisioned is precisely what the ADMF needs to hear about, and refused,
+	// because starting is what makes it look healthy.
+	if cfg.X1Listen == "" {
+		reporter.Notify(x1.NEIssueInvalidConfig,
+			"no X1 listen address is configured, so this element would accept tasking on an "+
+				"unpredictable port; interception has not been started")
+
+		return errNoX1Listen
+	}
 	keepalive, err := parseKeepaliveTimeout(cfg.KeepaliveTimeout)
 	if err != nil {
 		reporter.Notify(x1.NEIssueInvalidConfig,
@@ -360,6 +408,7 @@ func Init(cfg Config) error {
 	// knows what each destination's last delivery established, and only the subsystem knows
 	// which destinations the tasking still names.
 	sub.unreachable = func() (int, int) { return pool.UnreachableAmong(sub.destinationsInUse()) }
+	sub.unreachableAt = pool.UnreachableAt
 	// The watcher's view of the same destinations, with the identifiers the ADMF
 	// provisioned them under. A different shape from the probe's on purpose: the
 	// probe answers a status request and takes counts so it *cannot* name a
@@ -1221,9 +1270,6 @@ func amfIdentifierDeassociation(id amfctx.UeIdentity) iri.AMFIdentifierDeassocia
 	}
 }
 
-// supiChoice returns ue's SUPI as the iri "supi" CHOICE arm (IMSI or NAI), or
-// nil when the AMF holds no SUPI in a form we can map. A nil in a mandatory SUPI
-// field makes encoding fail, which deliverIRI swallows silently.
 // userIdentifiers builds the TS 33.128 UserIdentifiers list the newer AMF records
 // carry, from whichever identity leaves the UE context holds. It is the same
 // three identities the older records carry as separate optional members; these
@@ -1265,6 +1311,9 @@ func amfUEPolicyTransfer(id amfctx.UeIdentity, policy []byte) iri.AMFUEPolicyTra
 // routing id, so there would be nothing to populate it with either. li/iri still
 // defines the record; li/README.md records why nothing emits it.
 
+// supiChoice returns ue's SUPI as the iri "supi" CHOICE arm (IMSI or NAI), or
+// nil when the AMF holds no SUPI in a form we can map. A nil in a mandatory SUPI
+// field makes encoding fail, which deliverIRI swallows silently.
 func supiChoice(id amfctx.UeIdentity) any {
 	if v, ok := strings.CutPrefix(id.Supi, "imsi-"); ok {
 		return iri.IMSI(v)
@@ -1411,14 +1460,6 @@ func afterPrefix(s string, prefixes ...string) string {
 	return ""
 }
 
-// configuredDestinations maps the pre-shared destinations from configuration onto the
-// form the X1 server resolves them in, and tells the ADMF about any it cannot use.
-//
-// An entry that does not resolve is not a small mistake: a task naming that DID falls
-// through to the configured default endpoint instead, so an operator's typo quietly sends
-// one agency's product to another's address. There is no general log to say so on — this
-// plane deliberately writes to none — and the count is all the ADMF needs, since the
-// entries themselves are the operator's configuration and not the ADMF's business.
 // keepaliveConfig turns the operator's three settings into the clause 6.2.4
 // mechanism's configuration.
 //
@@ -1475,6 +1516,14 @@ func keepaliveConfig(cfg Config, reporter *x1.Reporter) x2x3.KeepaliveConfig {
 	return ka
 }
 
+// configuredDestinations maps the pre-shared destinations from configuration onto the
+// form the X1 server resolves them in, and tells the ADMF about any it cannot use.
+//
+// An entry that does not resolve is not a small mistake: a task naming that DID falls
+// through to the configured default endpoint instead, so an operator's typo quietly sends
+// one agency's product to another's address. There is no general log to say so on — this
+// plane deliberately writes to none — and the count is all the ADMF needs, since the
+// entries themselves are the operator's configuration and not the ADMF's business.
 func configuredDestinations(dests []Destination, reporter *x1.Reporter) []x1.ConfiguredDestination {
 	out := make([]x1.ConfiguredDestination, 0, len(dests))
 	var rejected int
