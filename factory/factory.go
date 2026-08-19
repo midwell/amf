@@ -33,6 +33,13 @@ func InitConfigFactory(f string) error {
 	if err = yaml.Unmarshal(content, &AmfConfig); err != nil {
 		return err
 	}
+	// The lenient decode above is upstream's and stays lenient — this fork must keep starting
+	// when upstream adds a key it does not model. The LI block is held to a stricter standard,
+	// on its own, because a key dropped there lands on a default that fails unsafely and says
+	// nothing: see strictLiBlock.
+	if err = strictLiBlock(content); err != nil {
+		return err
+	}
 	if AmfConfig.Configuration.AmfId == "" {
 		AmfConfig.Configuration.AmfId = "cafe00"
 		logger.CfgLog.Infof("amfId not set in configuration file. Using %s", AmfConfig.Configuration.AmfId)
