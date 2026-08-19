@@ -107,7 +107,18 @@ func TestReportUEPolicyTransfer(t *testing.T) {
 	activateIRI(t, snd, testTargetSUPI)
 
 	// Interior and trailing zero bytes: the shapes a payload-mangling codec breaks.
-	policy := []byte{0x01, 0x00, 0x00, 0xFF, 0x00}
+	//
+	// Sixteen octets, because `UEPolicy ::= OCTET STRING (SIZE(16..65540))` and the encoder
+	// now checks it. The previous value was five, and the failure it caused when the check
+	// arrived is the one the check exists for: a record violating its own definition used to
+	// encode cleanly, so a conformant mediation function would have discarded it while this
+	// element believed it had delivered. Fixed by making the fixture conformant rather than
+	// by relaxing the constraint, and at the shortest permitted length, which is the sharpest
+	// boundary to encode.
+	policy := []byte{
+		0x01, 0x00, 0x00, 0xFF, 0x00, 0x7F, 0x80, 0x00,
+		0x00, 0x02, 0x03, 0x04, 0xFE, 0xFF, 0x00, 0x00,
+	}
 	ReportUEPolicyTransfer(targetUE(), policy)
 
 	events := decodeEvents(t, snd)
