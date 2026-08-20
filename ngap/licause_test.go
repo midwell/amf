@@ -385,6 +385,24 @@ func TestTheHandoverTypeMappingIsTotalOverNGAP(t *testing.T) {
 			len(li), len(ngap))
 	}
 
+	// The bound the mapping claims, against the definition it is claimed over. The count check
+	// above would also catch NGAP gaining a value, but this is the assertion the requirement
+	// actually asks for — that the domain is bounded *and asserted against the source* — and it
+	// is the same shape as the cause groups'. A constant that agrees with the module by
+	// coincidence is not the same as one that is checked.
+	var highest int64
+	for _, v := range ngap {
+		if v > highest {
+			highest = v
+		}
+	}
+	if highest != highestNGAPHandoverType {
+		t.Errorf("the pinned NGAP module defines handover types up to %d and the mapping declares "+
+			"%d: a value above the declared bound is substituted rather than carried, and a value "+
+			"below it is shifted into a number TS 33.128 does not define",
+			highest, highestNGAPHandoverType)
+	}
+
 	// The two spell them differently: NGAP has FivegsToEps, the module has fiveGStoEPS. The
 	// same normalisation the causes use joins those, and one pair it does not — listed rather
 	// than fuzzily matched, for the reason spellingAliases gives.
