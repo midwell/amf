@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/omec-project/amf/lawfulintercept"
+	"github.com/omec-project/li/iri"
 	"github.com/omec-project/ngap/v2/aper"
 	"github.com/omec-project/ngap/v2/ngapType"
 )
@@ -364,5 +365,87 @@ func TestACauseWithNoArmSetProducesNoCause(t *testing.T) {
 		if _, _, _, ok := ngapCauseToLI(c.cause); ok {
 			t.Errorf("%s: produced a usable cause, so a record would carry a cause nobody sent", c.name)
 		}
+	}
+}
+
+// TestTheHandoverTypeMappingIsTotalOverNGAP is the cause test's twin, for the field beside it.
+//
+// It exists because the cause defect was fixed by reading the specification and the type defect
+// was not — the two sit in the same record, they fail the same way, and only one of them was
+// looked at. A delivered record found the other. So the assertion is the same shape: every value
+// NGAP defines, matched by name against the TS 33.128 module, with no arithmetic restated.
+func TestTheHandoverTypeMappingIsTotalOverNGAP(t *testing.T) {
+	modulePath := ts33128Module(t)
+	li := ts33128Values(t, modulePath, "HandoverType")
+	ngap := ngapValues(t, ngapModuleDir(t), "HandoverType")
+
+	if len(li) != 4 || len(ngap) != 4 {
+		t.Fatalf("parsed %d TS 33.128 and %d NGAP handover types, want 4 and 4 — a parse that "+
+			"finds the wrong number is checking something other than these enumerations",
+			len(li), len(ngap))
+	}
+
+	// The two spell them differently: NGAP has FivegsToEps, the module has fiveGStoEPS. The
+	// same normalisation the causes use joins those, and one pair it does not — listed rather
+	// than fuzzily matched, for the reason spellingAliases gives.
+	aliases := map[string]string{
+		// NGAP says UTRAN, the module says UTRA. Both mean the UMTS terrestrial radio access
+		// network, they sit at corresponding positions in the two enumerations, and one of the
+		// two documents is dropping a letter. A fuzzy match would have joined these *and*
+		// joined things that are not the same, which is the failure this mapping exists to
+		// prevent.
+		"fivegstoutran": "fivegstoutra",
+	}
+
+	for name, ngapValue := range ngap {
+		key := name
+		if alias, ok := aliases[name]; ok {
+			key = alias
+		}
+		want, defined := li[key]
+		got, substituted := liHandoverType(ngapValue)
+		switch {
+		case defined && substituted:
+			t.Errorf("%s(%d): TS 33.128 defines this as %d and the mapping substituted", name, ngapValue, want)
+		case defined && got != want:
+			t.Errorf("%s(%d): mapped to %d, and TS 33.128 defines it as %d. A record carrying "+
+				"this names a different kind of handover than the one that happened — and for "+
+				"the value NGAP numbers zero, a kind the enumeration does not define at all, "+
+				"which makes the whole record undecodable", name, ngapValue, got, want)
+		case !defined:
+			t.Errorf("%s(%d): no TS 33.128 handover type of this name; the module and the NGAP "+
+				"module have diverged and the mapping needs an explicit entry", name, ngapValue)
+		}
+	}
+}
+
+// TestAnIntra5GSHandoverIsNotEmittedAsZero is the specific value a delivered record was refused
+// for, pinned on its own.
+//
+// NGAP numbers intra-5GS zero and TS 33.128 numbers it one. Zero is the ordinary case — most
+// handovers are intra-5GS — so this was not an edge: it was the majority of handover records,
+// and every one of them was discarded by the receiver.
+func TestAnIntra5GSHandoverIsNotEmittedAsZero(t *testing.T) {
+	got, substituted := liHandoverType(int64(ngapType.HandoverTypePresentIntra5gs))
+	if substituted {
+		t.Error("intra-5GS was substituted; TS 33.128 defines it")
+	}
+	if got == 0 {
+		t.Error("an intra-5GS handover is emitted as handoverType 0, which the record's " +
+			"enumeration does not define. The published decoder refuses the whole record, so " +
+			"nothing arrives and this element believes it delivered")
+	}
+	if got != int64(iri.HandoverIntra5GS) {
+		t.Errorf("intra-5GS mapped to %d, want %d", got, iri.HandoverIntra5GS)
+	}
+}
+
+// TestAHandoverTypeBeyondNGAPIsSubstituted: NGAP's enumeration is extensible, so a value from a
+// later release would otherwise be shifted into a number TS 33.128 does not define — the same
+// defect in a new dress.
+func TestAHandoverTypeBeyondNGAPIsSubstituted(t *testing.T) {
+	if got, substituted := liHandoverType(4); !substituted || got != int64(iri.HandoverIntra5GS) {
+		t.Errorf("a handover type beyond what NGAP defines mapped to (%d, %v), want (%d, true)",
+			got, substituted, iri.HandoverIntra5GS)
 	}
 }

@@ -144,3 +144,48 @@ func liCauseValue(group lawfulintercept.HandoverCauseGroup, ngapValue int64) (va
 
 	return ngapValue + 1, false
 }
+
+// NGAP and TS 33.128 number HandoverType differently too, and this element cast it across
+// unchanged in exactly the way it cast the cause.
+//
+// **It is the sharper of the two defects, and it was found by decoding a delivered record
+// rather than by reading a specification.** TS 33.128 numbers the four values 1..4; NGAP numbers
+// them 0..3. So an intra-5GS handover — the ordinary case — was emitted as `handoverType: 0`,
+// which the arm's enumeration does not define at all. `handoverCause` at least produced a
+// plausible member of the right enumeration; this produces a record a conformant mediation
+// function **cannot decode**, and `handoverType` is mandatory in both records that carry it. The
+// project's own ASN.1 decoder refuses it:
+//
+//	XIRIPayload.event.aMFRANHandoverCommand.handoverType:
+//	  Expected enumeration value 1, 2, 3 or 4, but got 0
+//
+// So every intra-5GS handover record delivered before 2026-08-20 was discarded on receipt. Total
+// product loss for those records, with this element believing it had delivered and no fault
+// raised at either end.
+//
+// **The constraint check could not catch it, and the reason is worth stating.** It treats zero
+// as absence — correctly for an optional member, whose unset value reads as zero in Go — so a
+// mandatory member emitted as zero is indistinguishable from one legitimately omitted. That
+// exemption is what let both this and the cause defect through, and it is why `iri` now records
+// per type whether zero is a legitimate reading.
+var unrepresentableHandoverType = map[int64]bool{}
+
+// highestNGAPHandoverType is the last value NGAP defines. Both enumerations have four values, so
+// there is nothing to substitute for in this release — but the bound still matters: NGAP's is an
+// extensible ENUMERATED, and a value it gains later would otherwise be shifted into a number
+// TS 33.128 does not define, which is the defect above in a new dress.
+const highestNGAPHandoverType = 3
+
+// liHandoverType returns the TS 33.128 value for an NGAP handover type, and whether it had to
+// substitute.
+//
+// The substitution is `intra5GS`, which is not an "unspecified" — the enumeration has none — so
+// it is the least misleading of four wrong answers rather than a neutral one. It is reported for
+// that reason, like the cause substitution.
+func liHandoverType(ngapValue int64) (value int64, substituted bool) {
+	if ngapValue < 0 || ngapValue > highestNGAPHandoverType || unrepresentableHandoverType[ngapValue] {
+		return int64(iri.HandoverIntra5GS), true
+	}
+
+	return ngapValue + 1, false
+}

@@ -3591,13 +3591,18 @@ func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
 	if sourceUe == nil || sourceUe.AmfUe == nil {
 		return
 	}
+	// The record's vocabulary, not NGAP's — the two number these four values differently, and
+	// casting across produced `handoverType: 0` for an intra-5GS handover, which the arm's
+	// enumeration does not define. See liHandoverType.
+	handoverType, typeSubstituted := liHandoverType(int64(sourceUe.HandOverType.Value))
 	h := lawfulintercept.Handover{
-		UE:             sourceUe.AmfUe,
-		AMFUENGAPID:    sourceUe.AmfUeNgapId,
-		RANUENGAPID:    sourceUe.RanUeNgapId,
-		HandoverType:   int64(sourceUe.HandOverType.Value),
-		TargetToSource: targetToSource,
-		SourceToTarget: sourceUe.HandOverSourceToTarget,
+		UE:              sourceUe.AmfUe,
+		AMFUENGAPID:     sourceUe.AmfUeNgapId,
+		RANUENGAPID:     sourceUe.RanUeNgapId,
+		HandoverType:    handoverType,
+		TypeSubstituted: typeSubstituted,
+		TargetToSource:  targetToSource,
+		SourceToTarget:  sourceUe.HandOverSourceToTarget,
 	}
 	if len(handoverList.List) > 0 {
 		h.PDUSessionID = int32(handoverList.List[0].PDUSessionID.Value)

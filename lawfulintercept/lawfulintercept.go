@@ -599,8 +599,15 @@ type Handover struct {
 	// which of the two happened, this element cannot tell an agency the difference between a
 	// network that gave no reason and one that gave a reason the record could not carry.
 	CauseSubstituted bool
-	HasCause         bool
-	HasPDUSessionID  bool
+	// TypeSubstituted says the network gave a handover type TS 33.128 has no value for, and
+	// HandoverType carries `intra5GS` instead.
+	//
+	// Reported for the same reason CauseSubstituted is, and with more urgency: the enumeration
+	// has no "unspecified", so the substituted value is a positive claim about what kind of
+	// handover this was rather than an admission that the reason is unknown.
+	TypeSubstituted bool
+	HasCause        bool
+	HasPDUSessionID bool
 }
 
 // HandoverCauseGroup names which arm of the TS 33.128 HandoverCause CHOICE a
@@ -665,6 +672,13 @@ func ReportHandoverRequest(h Handover) {
 		sub.reporter.NotifyAsync(x1.NEIssueRecordValueSubstituted,
 			"a handover cause this element's record definitions cannot express was carried as "+
 				"the group's unspecified value")
+	}
+	// The handover type has no "unspecified" to fall back on, so the substitution asserts a
+	// kind of handover rather than declining to. Said out loud for that reason.
+	if h.TypeSubstituted && sub.reporter != nil {
+		sub.reporter.NotifyAsync(x1.NEIssueRecordValueSubstituted,
+			"a handover type this element's record definitions cannot express was carried as "+
+				"intra5GS")
 	}
 
 	id := h.UE.IdentitySnapshot()
