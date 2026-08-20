@@ -685,3 +685,21 @@ func TestDestinationsInUseFollowsTheTasking(t *testing.T) {
 			"left failing there would report a fault nothing could clear", got)
 	}
 }
+
+// awaitScans makes a test own the UE-pool scans it starts.
+//
+// reportStartOfInterception launches a goroutine — deliberately, so that acknowledging a
+// warrant does not wait on a walk of every UE this element holds — and tracks it on
+// subsystem.scans. A test that returns without waiting leaves it running into the next test,
+// where it reads `scanWalked` while that test writes it. `go test -race` reports the write and
+// the read from two different tests, and names the *second* test, which has nothing wrong with
+// it: the failure moves with scheduling, which is why it showed up about half the time on Linux
+// and not at all on this author's machine.
+//
+// Registered as cleanup rather than called inline, so it changes no assertion: the tests that
+// need the scan's *output* already poll for it, and this only holds the test open until the
+// goroutine it started has finished.
+func awaitScans(t *testing.T, s *subsystem) {
+	t.Helper()
+	t.Cleanup(func() { s.scans.Wait() })
+}

@@ -89,6 +89,7 @@ func TestStartOfInterceptionScanIsOffTheX1Goroutine(t *testing.T) {
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
 		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
+	awaitScans(t, s)
 	registeredUE(t, supi)
 
 	returned := make(chan struct{})
@@ -149,6 +150,7 @@ func TestStartOfInterceptionTimestampIsTheActivation(t *testing.T) {
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
 		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
+	awaitScans(t, s)
 	registeredUE(t, supi)
 
 	before := time.Now()
@@ -253,6 +255,7 @@ func TestAWithdrawalDuringAScanStopsTheRemainingRecords(t *testing.T) {
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
 		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
+	awaitScans(t, s)
 
 	// Several UEs one warrant covers, so there is a remainder for the withdrawal to
 	// stop. They share a SUPI value the task targets and differ by pool key, which is
@@ -320,6 +323,7 @@ func TestARetargetDuringAScanStopsRecordsForThePreviousSubject(t *testing.T) {
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
 		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
+	awaitScans(t, s)
 
 	for i := range 5 {
 		ue := &amfctx.AmfUe{Supi: "imsi-" + subject}

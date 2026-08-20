@@ -38,6 +38,7 @@ func TestARelabelReleasesTheSupersededLabelsNumbering(t *testing.T) {
 		neID:  "amf-1",
 		ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
+	awaitScans(t, sub)
 
 	prev := types.InterceptTask{
 		XID:       xid,

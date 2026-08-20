@@ -47,6 +47,7 @@ func countingScanFixture(t *testing.T, task types.InterceptTask) (*subsystem, *w
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
 		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
+	awaitScans(t, s)
 
 	return s, snd
 }
@@ -180,6 +181,7 @@ func TestConcurrentActivationScansAreBounded(t *testing.T) {
 		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
 		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
+	awaitScans(t, s)
 
 	// Bulk provisioning: many warrants at once, which is what TS 103 221-1's bulk operations
 	// and an ADMF restoring tasking after a restart both look like.
