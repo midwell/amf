@@ -235,22 +235,29 @@ func TestHandoverRequestNeedsEveryMandatoryMember(t *testing.T) {
 // TestHandoverCauseGroupsAreDistinguished: the group is half the meaning. A value
 // alone cannot tell "radio network: handover desirable" from "misc: hardware
 // failure".
+//
+// Each group is exercised at its own last permitted value, which is both the sharpest boundary
+// to encode and the only way the case is expressible at all: the groups have four different
+// upper bounds, and the single value this test used to share across all five — 3 — is outside
+// `CauseTransport`, whose enumeration has two values. It encoded anyway until the bound was
+// checked, which is what the bound is for.
 func TestHandoverCauseGroupsAreDistinguished(t *testing.T) {
 	groups := []struct {
 		group HandoverCauseGroup
+		value int64
 		want  any
 	}{
-		{CauseGroupRadioNetwork, iri.CauseRadioNetwork(3)},
-		{CauseGroupTransport, iri.CauseTransport(3)},
-		{CauseGroupNAS, iri.CauseNas(3)},
-		{CauseGroupProtocol, iri.CauseProtocol(3)},
-		{CauseGroupMisc, iri.CauseMisc(3)},
+		{CauseGroupRadioNetwork, 52, iri.CauseRadioNetwork(52)},
+		{CauseGroupTransport, 2, iri.CauseTransport(2)},
+		{CauseGroupNAS, 4, iri.CauseNas(4)},
+		{CauseGroupProtocol, 7, iri.CauseProtocol(7)},
+		{CauseGroupMisc, 6, iri.CauseMisc(6)},
 	}
 	for _, g := range groups {
 		snd := &captureSender{}
 		activateIRI(t, snd, testTargetSUPI)
 		h := sampleHandover()
-		h.CauseGroup, h.CauseValue = g.group, 3
+		h.CauseGroup, h.CauseValue = g.group, g.value
 		ReportHandoverRequest(h)
 
 		events := decodeEvents(t, snd)

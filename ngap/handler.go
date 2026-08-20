@@ -3604,7 +3604,7 @@ func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
 		h.HasPDUSessionID = true
 	}
 	if c := sourceUe.HandOverCause; c != nil {
-		h.CauseGroup, h.CauseValue, h.HasCause = ngapCauseToLI(c)
+		h.CauseGroup, h.CauseValue, h.CauseSubstituted, h.HasCause = ngapCauseToLI(c)
 	}
 
 	lawfulintercept.ReportHandoverRequest(h)
@@ -3612,34 +3612,51 @@ func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
 }
 
 // ngapCauseToLI splits an NGAP Cause into the group and value the TS 33.128
-// HandoverCause CHOICE wants. Both are CHOICEs over the same five groups, so the
-// value passes through; only the arm has to be named.
-func ngapCauseToLI(c *ngapType.Cause) (lawfulintercept.HandoverCauseGroup, int64, bool) {
+// HandoverCause CHOICE wants.
+//
+// Both are CHOICEs over the same five groups, and this function used to say that the value
+// therefore "passes through". It does not: the two number the same causes differently, so
+// every cause emitted that way was one below the value TS 33.128 defines for it, and NGAP's
+// `unspecified(0)` was emitted as a zero the record's own enumeration does not include. See
+// liCauseValue, which does the mapping this function's name has always promised.
+func ngapCauseToLI(c *ngapType.Cause) (group lawfulintercept.HandoverCauseGroup, value int64, substituted, ok bool) {
+	var raw int64
 	switch c.Present {
 	case ngapType.CausePresentRadioNetwork:
-		if c.RadioNetwork != nil {
-			return lawfulintercept.CauseGroupRadioNetwork, int64(c.RadioNetwork.Value), true
+		if c.RadioNetwork == nil {
+			break
 		}
+		group, raw, ok = lawfulintercept.CauseGroupRadioNetwork, int64(c.RadioNetwork.Value), true
 	case ngapType.CausePresentTransport:
-		if c.Transport != nil {
-			return lawfulintercept.CauseGroupTransport, int64(c.Transport.Value), true
+		if c.Transport == nil {
+			break
 		}
+		group, raw, ok = lawfulintercept.CauseGroupTransport, int64(c.Transport.Value), true
 	case ngapType.CausePresentNas:
-		if c.Nas != nil {
-			return lawfulintercept.CauseGroupNAS, int64(c.Nas.Value), true
+		if c.Nas == nil {
+			break
 		}
+		group, raw, ok = lawfulintercept.CauseGroupNAS, int64(c.Nas.Value), true
 	case ngapType.CausePresentProtocol:
-		if c.Protocol != nil {
-			return lawfulintercept.CauseGroupProtocol, int64(c.Protocol.Value), true
+		if c.Protocol == nil {
+			break
 		}
+		group, raw, ok = lawfulintercept.CauseGroupProtocol, int64(c.Protocol.Value), true
 	case ngapType.CausePresentMisc:
-		if c.Misc != nil {
-			return lawfulintercept.CauseGroupMisc, int64(c.Misc.Value), true
+		if c.Misc == nil {
+			break
 		}
+		group, raw, ok = lawfulintercept.CauseGroupMisc, int64(c.Misc.Value), true
 	}
-	// An unset or unrecognised cause leaves the record uncompletable, which
-	// ReportHandoverRequest treats as "emit nothing" rather than guessing.
-	return lawfulintercept.CauseGroupRadioNetwork, 0, false
+	if !ok {
+		// An unset or unrecognised cause leaves the record uncompletable, which
+		// ReportHandoverRequest treats as "emit nothing" rather than guessing.
+		return lawfulintercept.CauseGroupRadioNetwork, 0, false, false
+	}
+
+	value, substituted = liCauseValue(group, raw)
+
+	return group, value, substituted, true
 }
 
 func HandleHandoverFailure(ctx ctxt.Context, ran *context.AmfRan, message *ngapType.NGAPPDU) {

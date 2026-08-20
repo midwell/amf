@@ -555,22 +555,32 @@ func ReportUEPolicyTransfer(ue *amfctx.AmfUe, policy []byte) {
 // ACKNOWLEDGE arrives — the point where TS 33.128 places both handover records.
 // The caller assembles it so this package never touches ngapType.
 type Handover struct {
-	UE              *amfctx.AmfUe
-	AMFUENGAPID     int64
-	RANUENGAPID     int64
-	HandoverType    int64
-	TargetToSource  []byte // from the acknowledge
-	SourceToTarget  []byte // carried from HANDOVER REQUIRED
-	PDUSessionID    int32
-	CauseGroup      HandoverCauseGroup
-	CauseValue      int64
-	HasCause        bool
-	HasPDUSessionID bool
+	UE             *amfctx.AmfUe
+	AMFUENGAPID    int64
+	RANUENGAPID    int64
+	HandoverType   int64
+	TargetToSource []byte // from the acknowledge
+	SourceToTarget []byte // carried from HANDOVER REQUIRED
+	PDUSessionID   int32
+	CauseGroup     HandoverCauseGroup
+	// CauseValue is the cause in the vocabulary of the *record*, not of NGAP. The two number
+	// the same causes differently, so the caller maps it before setting this field.
+	CauseValue int64
+	// CauseSubstituted says the network gave a cause TS 33.128 has no value for, and CauseValue
+	// is that group's `unspecified` standing in for it.
+	//
+	// It travels because the substituted value is itself a legitimate cause: without knowing
+	// which of the two happened, this element cannot tell an agency the difference between a
+	// network that gave no reason and one that gave a reason the record could not carry.
+	CauseSubstituted bool
+	HasCause         bool
+	HasPDUSessionID  bool
 }
 
 // HandoverCauseGroup names which arm of the TS 33.128 HandoverCause CHOICE a
-// cause belongs to. The AMF's NGAP cause is a CHOICE over the same five groups,
-// so the caller maps the group and passes the value through.
+// cause belongs to. The AMF's NGAP cause is a CHOICE over the same five groups —
+// but not over the same values, so the caller maps the value as well as the arm
+// (see ngap.liCauseValue).
 type HandoverCauseGroup int
 
 const (
@@ -616,6 +626,21 @@ func ReportHandoverRequest(h Handover) {
 	if !h.HasCause || !h.HasPDUSessionID || len(h.SourceToTarget) == 0 || len(h.TargetToSource) == 0 {
 		return
 	}
+	// A cause the record's definition cannot express is carried as that group's `unspecified`
+	// and said out loud. The substituted value is a legitimate cause in its own right, so a
+	// silent substitution would leave an agency unable to tell a network that gave no reason
+	// from one that gave a reason this element could not carry.
+	//
+	// Element-scoped and naming nothing: what it says is which values this element can express,
+	// which is a property of the element and of the release its record definitions come from.
+	// Throttled by the reporter like every other condition, so a run of handovers carrying the
+	// same unrepresentable cause produces one report per window rather than one per handover.
+	if h.CauseSubstituted && sub.reporter != nil {
+		sub.reporter.NotifyAsync(x1.NEIssueRecordValueSubstituted,
+			"a handover cause this element's record definitions cannot express was carried as "+
+				"the group's unspecified value")
+	}
+
 	id := h.UE.IdentitySnapshot()
 	sub.reportEvent(id, iri.AMFRANHandoverRequest{
 		UserIdentifiers:               userIdentifiers(id),
