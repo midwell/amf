@@ -1418,10 +1418,10 @@ func taskTargets(task types.InterceptTask, id amfctx.UeIdentity) bool {
 // even that is empty the MCC/MNC stay unset, and the codec is left to omit the
 // record's GUTI rather than emit an empty NumericString the schema forbids.
 func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
-	g := iri.FiveGGUTI{FiveGTMSI: int64(uint32(id.Tmsi))}
+	g := iri.FiveGGUTI{FiveGTMSI: iri.FiveGTMSI(uint32(id.Tmsi))}
 
 	if mcc, mnc, amfID, ok := splitGUTI(id.Guti); ok {
-		g.MCC, g.MNC = mcc, mnc
+		g.MCC, g.MNC = iri.MCC(mcc), iri.MNC(mnc)
 		setAMFIdentifier(&g, amfID)
 		return g
 	}
@@ -1431,8 +1431,8 @@ func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 		return g
 	}
 	sg := guamis[0]
-	g.MCC = sg.PlmnId.Mcc
-	g.MNC = sg.PlmnId.Mnc
+	g.MCC = iri.MCC(sg.PlmnId.Mcc)
+	g.MNC = iri.MNC(sg.PlmnId.Mnc)
 	setAMFIdentifier(&g, sg.AmfId)
 	return g
 }
@@ -1462,9 +1462,9 @@ func setAMFIdentifier(g *iri.FiveGGUTI, amfID string) {
 		return
 	}
 	v := uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])
-	g.AMFRegionID = int(v >> 16 & 0xFF)
-	g.AMFSetID = int(v >> 6 & 0x3FF)
-	g.AMFPointer = int(v & 0x3F)
+	g.AMFRegionID = iri.AMFRegionID(v >> 16 & 0xFF)
+	g.AMFSetID = iri.AMFSetID(v >> 6 & 0x3FF)
+	g.AMFPointer = iri.AMFPointer(v & 0x3F)
 }
 
 // parseXID converts a task's X1 identifier to the 16-byte XID carried in the
