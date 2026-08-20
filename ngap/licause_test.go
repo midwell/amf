@@ -81,7 +81,8 @@ var causeGroups = []struct {
 func ts33128Module(t *testing.T) string {
 	t.Helper()
 
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/li").Output()
+	out, err := exec.CommandContext(t.Context(),
+		"go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/li").Output()
 	if err != nil {
 		t.Skipf("cannot locate the li module (%v); this test checks the cause mapping against "+
 			"the TS 33.128 module that module carries, and without it nothing here is checked", err)
@@ -161,7 +162,8 @@ func ts33128Values(t *testing.T, modulePath, asn1Type string) map[string]int64 {
 func ngapModuleDir(t *testing.T) string {
 	t.Helper()
 
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/ngap/v2").Output()
+	out, err := exec.CommandContext(t.Context(),
+		"go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/ngap/v2").Output()
 	if err != nil {
 		t.Skipf("cannot locate the ngap module (%v); without it the totality assertion below "+
 			"has nothing to be total over", err)
