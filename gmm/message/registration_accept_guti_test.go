@@ -60,11 +60,17 @@ func TestRegistrationAcceptCarriesGUTIWheneverTheUEHasOne(t *testing.T) {
 		t.Fatalf("decoding the registration accept: %v", err)
 	}
 
-	if m.GmmMessage == nil || m.GmmMessage.RegistrationAccept == nil {
+	// The embedded GmmMessage is checked on its own because the promoted selectors below
+	// dereference it.
+	if m.GmmMessage == nil {
+		t.Fatal("the built PDU carries no GMM message")
+	}
+
+	if m.RegistrationAccept == nil {
 		t.Fatal("the built PDU is not a registration accept")
 	}
 
-	if m.GmmMessage.RegistrationAccept.GUTI5G == nil {
+	if m.RegistrationAccept.GUTI5G == nil {
 		t.Error("the registration accept carries no 5G-GUTI IE for a UE that has a GUTI — " +
 			"the UE will send no Registration Complete, so a periodic registration " +
 			"update reaches neither reporting tap and is never reported")
