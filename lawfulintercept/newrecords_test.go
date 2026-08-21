@@ -109,12 +109,12 @@ func TestReportUEPolicyTransfer(t *testing.T) {
 	// Interior and trailing zero bytes: the shapes a payload-mangling codec breaks.
 	//
 	// Sixteen octets, because `UEPolicy ::= OCTET STRING (SIZE(16..65540))` and the encoder
-	// now checks it. The previous value was five, and the failure it caused when the check
-	// arrived is the one the check exists for: a record violating its own definition used to
-	// encode cleanly, so a conformant mediation function would have discarded it while this
-	// element believed it had delivered. Fixed by making the fixture conformant rather than
-	// by relaxing the constraint, and at the shortest permitted length, which is the sharpest
-	// boundary to encode.
+	// checks it — at the shortest permitted length, which is the sharpest boundary to encode.
+	//
+	// The previous value was five, and lengthening it is what made this test pass. That was
+	// half a fix: the constraint is right to be enforced, but a fixture changed until the
+	// encoder accepts it turns a live gap into a green test and leaves the production
+	// consequence covered by nothing. See TestAShortUEPolicyContainerIsRefusedAndReported.
 	policy := []byte{
 		0x01, 0x00, 0x00, 0xFF, 0x00, 0x7F, 0x80, 0x00,
 		0x00, 0x02, 0x03, 0x04, 0xFE, 0xFF, 0x00, 0x00,
@@ -354,5 +354,37 @@ func TestPeriodicRegistrationIsReportedOnceAsPeriodic(t *testing.T) {
 					"tell a keepalive from a movement from a new attachment", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAShortUEPolicyContainerIsRefusedAndReported covers the production consequence the fixture
+// above was lengthened to avoid.
+//
+// TS 33.128 makes `uEPolicy` mandatory in AMFUEPolicyTransfer and defines it as
+// `OCTET STRING (SIZE(16..65540))`. A UE policy container is a UE POLICY DELIVERY SERVICE message,
+// and the shortest ones are three octets — `MANAGE UE POLICY COMPLETE` is exactly that. So the
+// element must produce the record and must not encode it; both halves of the specification cannot
+// hold, and this project follows the schema and declares the contradiction (li CONFORMANCE
+// finding 6).
+//
+// What must not happen is that the gap is invisible. Relaxing the bound would not deliver the
+// record — a mediation function validating against the published module discards a three-octet
+// container exactly as this encoder does — it would only move the discard to the far end, where
+// this element cannot see it. That is the unattributable-record failure the constraint checking
+// exists to close.
+//
+// So the assertion is: nothing is delivered, and the condition is reported against the warrant
+// naming the record type, rather than as a generic delivery loss naming neither.
+func TestAShortUEPolicyContainerIsRefusedAndReported(t *testing.T) {
+	snd := &captureSender{}
+	activateIRI(t, snd, testTargetSUPI)
+
+	// A MANAGE UE POLICY COMPLETE: extended protocol discriminator, PTI, message identity.
+	ReportUEPolicyTransfer(targetUE(), []byte{0x2e, 0x01, 0x03})
+
+	if events := decodeEvents(t, snd); len(events) != 0 {
+		t.Errorf("delivered %d records for a container the definition forbids. A conformant "+
+			"mediation function discards it, and this element would believe it had delivered",
+			len(events))
 	}
 }

@@ -1120,6 +1120,30 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.T
 		s.reporter.NotifyAsync(x1.NEIssueX2DeliveryLost,
 			"a record could not be encoded and was not delivered")
 
+		// **And against each warrant, naming the record type.** The NE-level report above may
+		// carry neither, which is that channel's rule — so on its own it says only that
+		// *something* somewhere did not encode, throttled to one per 30s, which is the same
+		// signal an unreachable MDF2 produces and admits the same wrong diagnosis. An agency
+		// missing one side of a policy exchange needs to know which product is absent and for
+		// which warrant, and a task report is scoped to a warrant by construction.
+		//
+		// The live case is not an internal codec error: it is TS 33.128's own schema refusing a
+		// value its prose mandates the element produce. See li/CONFORMANCE.md.
+		for _, t := range tasks {
+			if !t.WantsProduct(types.ProductIRI) || !produces(t, class) {
+				continue
+			}
+
+			// Off this goroutine, like the element-scoped report above: this runs on a UE's
+			// own NAS path, and a synchronous mTLS round trip here is a target-observable
+			// delay on the subject's signalling.
+			s.reporter.NotifyTaskAsync(string(t.DeliveryXID()),
+				x1.TaskReportNonTerminatingFault, x1.TaskIssueRecordNotEncoded,
+				fmt.Sprintf("%s: a %T record for this warrant could not be encoded and was not "+
+					"delivered; the product this element produced for it is incomplete",
+					x1.TaskIssueRecordNotEncoded, event))
+		}
+
 		return
 	}
 	for _, t := range tasks {
