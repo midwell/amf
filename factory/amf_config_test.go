@@ -398,7 +398,21 @@ configuration:
 			if tt.typo == "keepaliveTimeut" {
 				body = strings.Replace(good, "keepaliveTimeout", tt.typo, 1)
 			}
-			err := InitConfigFactory(write(t, body))
+			// **Both halves, and the second is the one a previous round lost.** The key must be
+			// refused, *and* the network function must still come up: a configuration load that
+			// fails takes the service-based interface, NGAP, registration and every UE this AMF
+			// serves with it, over a typo in an optional subsystem — and a network function that
+			// will not start announces to every operator and peer that it is LI-provisioned,
+			// which is the disclosure undetectability exists to prevent. Asserting only the
+			// refusal is what let that regression through. See LiBlockError.
+			t.Cleanup(func() { liBlockErr = nil })
+
+			if err := InitConfigFactory(write(t, body)); err != nil {
+				t.Fatalf("a misspelled LI key stopped the whole configuration load, which stops "+
+					"the network function: %v", err)
+			}
+
+			err := LiBlockError()
 			if err == nil {
 				t.Fatalf("%s was accepted, so the setting the operator wrote never reached the "+
 					"element and its unsafe default stands with nothing saying so", tt.typo)

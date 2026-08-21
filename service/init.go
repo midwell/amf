@@ -190,7 +190,11 @@ func (amf *AMF) Start() {
 			})
 		}
 		if err = lawfulintercept.Init(lawfulintercept.Config{
-			X1Listen: li.X1Listen, MDF2: li.MDF2, NEID: li.NEID,
+			// The strict `li`-block decode's verdict, carried from the factory rather than
+			// acted on there. Same reasoning as the fail-safe window above: the refusal is
+			// scoped to interception here, and the fault reporter exists by then.
+			BlockError: factory.LiBlockError(),
+			X1Listen:   li.X1Listen, MDF2: li.MDF2, NEID: li.NEID,
 			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
 			Destinations: dests,
 			AdmfURL:      li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: li.KeepaliveTimeout,

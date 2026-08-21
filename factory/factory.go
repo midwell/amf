@@ -37,9 +37,19 @@ func InitConfigFactory(f string) error {
 	// when upstream adds a key it does not model. The LI block is held to a stricter standard,
 	// on its own, because a key dropped there lands on a default that fails unsafely and says
 	// nothing: see strictLiBlock.
-	if err = strictLiBlock(content); err != nil {
-		return err
-	}
+	//
+	// **Recorded, not returned.** Returning it failed the whole configuration load, which stops
+	// the AMF: the service-based interface, NGAP, registration with the network, every UE it
+	// serves — over a typo in an optional subsystem. That is the outage this fork's own
+	// `service/init.go` comment describes and refuses to cause for an unreadable keepalive
+	// window, arrived at one frame earlier and in another package. It is also the louder half of
+	// undetectability: a network function that will not start is visible to every operator and
+	// peer, where a log line is visible only to whoever reads logs.
+	//
+	// The refusal is carried to the LI subsystem instead, which is the only party that can act
+	// on it — it declines to intercept and reports the invalid configuration to the ADMF, at a
+	// point where the reporting channel exists. See LiBlockError.
+	liBlockErr = strictLiBlock(content)
 	if AmfConfig.Configuration.AmfId == "" {
 		AmfConfig.Configuration.AmfId = "cafe00"
 		logger.CfgLog.Infof("amfId not set in configuration file. Using %s", AmfConfig.Configuration.AmfId)
