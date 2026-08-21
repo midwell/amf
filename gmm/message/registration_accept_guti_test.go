@@ -8,7 +8,7 @@ import (
 
 	"github.com/omec-project/amf/context"
 	"github.com/omec-project/amf/factory"
-	"github.com/omec-project/nas/v2/nasMessage"
+	"github.com/omec-project/nas/v2"
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/fsm"
 )
@@ -51,37 +51,22 @@ func TestRegistrationAcceptCarriesGUTIWheneverTheUEHasOne(t *testing.T) {
 		t.Fatal("BuildRegistrationAccept produced no PDU")
 	}
 
-	// The IEI is what the UE keys on; its presence is the whole mechanism.
-	if !containsByte(nasPdu, nasMessage.RegistrationAcceptGUTI5GType) {
+	// **Decoded, not scanned.** This used to search the whole encoded PDU for the IEI byte
+	// (0x77) and pass if it occurred anywhere — including inside the value of some other
+	// information element, or inside the GUTI's own digits. A test that can pass on a PDU
+	// carrying no 5G-GUTI IE at all is one that would have watched this mechanism break.
+	m := nas.NewMessage()
+	if err := m.PlainNasDecode(&nasPdu); err != nil {
+		t.Fatalf("decoding the registration accept: %v", err)
+	}
+
+	if m.GmmMessage == nil || m.GmmMessage.RegistrationAccept == nil {
+		t.Fatal("the built PDU is not a registration accept")
+	}
+
+	if m.GmmMessage.RegistrationAccept.GUTI5G == nil {
 		t.Error("the registration accept carries no 5G-GUTI IE for a UE that has a GUTI — " +
 			"the UE will send no Registration Complete, so a periodic registration " +
 			"update reaches neither reporting tap and is never reported")
 	}
-}
-
-// TestTheTwoRegistrationTapsPartitionTheTypes states the other half: the guards
-// on the two taps are complements, so no registration type can be reported twice.
-func TestTheTwoRegistrationTapsPartitionTheTypes(t *testing.T) {
-	for _, regType := range []uint8{
-		nasMessage.RegistrationType5GSInitialRegistration,
-		nasMessage.RegistrationType5GSMobilityRegistrationUpdating,
-		nasMessage.RegistrationType5GSPeriodicRegistrationUpdating,
-		nasMessage.RegistrationType5GSEmergencyRegistration,
-	} {
-		mobilityTap := regType == nasMessage.RegistrationType5GSMobilityRegistrationUpdating
-		completeTap := regType != nasMessage.RegistrationType5GSMobilityRegistrationUpdating
-		if mobilityTap == completeTap {
-			t.Errorf("registration type %d is reported by both taps or by neither", regType)
-		}
-	}
-}
-
-func containsByte(b []byte, want byte) bool {
-	for _, got := range b {
-		if got == want {
-			return true
-		}
-	}
-
-	return false
 }

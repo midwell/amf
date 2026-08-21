@@ -82,15 +82,49 @@ var causeGroups = []struct {
 func ts33128Module(t *testing.T) string {
 	t.Helper()
 
+	// **Fatal, not skipped.** These are the assertions that keep the cause mapping honest —
+	// every handover and NGAP cause an agency receives depends on them — and a skip is a green
+	// run that checked nothing. A hermetic build with no module cache would have turned the
+	// strongest tests in this package into no-ops without anybody noticing, which is the same
+	// shape as a test that asserts against a stub.
+	//
+	// If this cannot find the module, the environment cannot check the mapping, and saying so
+	// loudly is the only useful answer.
 	out, err := exec.CommandContext(t.Context(),
 		"go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/li").Output()
 	if err != nil {
-		t.Skipf("cannot locate the li module (%v); this test checks the cause mapping against "+
+		t.Fatalf("cannot locate the li module (%v); this test checks the cause mapping against "+
 			"the TS 33.128 module that module carries, and without it nothing here is checked", err)
 	}
-	path := filepath.Join(strings.TrimSpace(string(out)), "iri", "testdata", "asn1", "TS33128Payloads.asn")
+
+	dir := strings.TrimSpace(string(out))
+
+	// **The pin, asserted rather than assumed.** Under the workspace `go list -m` answers with
+	// the local ./li checkout, not the version go.mod pins — so these tests can check the
+	// mapping against a module the shipped binary does not contain. Harmless while the two
+	// agree, load-bearing the moment they diverge, which is exactly when a cause mapping would
+	// silently stop corresponding.
+	if want := pinnedLiVersion(t); want != "" {
+		switch {
+		case strings.Contains(dir, "/pkg/mod/"):
+			// Resolved from the module cache, so the pin is what was checked and can be
+			// asserted outright. This is the shape a container build and CI see.
+			if !strings.Contains(dir, want) {
+				t.Fatalf("checking the cause mapping against %s while go.mod pins %s: these "+
+					"assertions would then pass against a module the shipped binary does not "+
+					"contain, which is exactly when a cause mapping stops corresponding", dir, want)
+			}
+		default:
+			// A workspace or replace directory. It cannot be compared to a version string, so
+			// say which tree was checked rather than implying the pin was.
+			t.Logf("cause mapping checked against the local tree %s, not the pinned %s; run with "+
+				"GOWORK=off to assert the pin", dir, want)
+		}
+	}
+
+	path := filepath.Join(dir, "iri", "testdata", "asn1", "TS33128Payloads.asn")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("the li module does not carry %s (%v)", path, err)
+		t.Fatalf("the li module at %s does not carry %s (%v)", dir, path, err)
 	}
 
 	return path
@@ -466,4 +500,28 @@ func TestAHandoverTypeBeyondNGAPIsSubstituted(t *testing.T) {
 		t.Errorf("a handover type beyond what NGAP defines mapped to (%d, %v), want (%d, true)",
 			got, substituted, iri.HandoverIntra5GS)
 	}
+}
+
+// pinnedLiVersion is the li version go.mod pins, or "" if it cannot be read. It is used to say
+// which module these assertions actually ran against, rather than leaving it to be assumed.
+func pinnedLiVersion(t *testing.T) string {
+	t.Helper()
+
+	mod, err := os.ReadFile("../go.mod")
+	if err != nil {
+		return ""
+	}
+
+	for _, line := range strings.Split(string(mod), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "github.com/omec-project/li") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+
+		return fields[len(fields)-1]
+	}
+
+	return ""
 }
