@@ -3929,7 +3929,9 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 		// Described in (23.502 4.9.1.3.2) step 3.Namf_Communication_CreateUEContext Request
 	} else {
 		// Handover in same AMF
-		sourceUe.HandOverType.Value = handoverType.Value
+		// The handover type is passed to SendHandoverRequest rather than written here, so that
+		// it is committed with the cause and the container, past the same guards. Written here
+		// it was committed before any of them ran.
 		tai, err := ngapConvert.TaiToModels(targetID.TargetRANNodeID.SelectedTAI)
 		if err != nil {
 			sourceUe.Log.Errorf("decode selected TAI failed: %+v", err)
@@ -3989,7 +3991,7 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 		// HANDOVER REQUIRED returns on the "Handover Required Duplicated" guard, so it
 		// overwrote the live handover's stash and the first handover's acknowledgement
 		// was reported with the rejected request's values.
-		ngap_message.SendHandoverRequest(sourceUe, targetRan, *cause, pduSessionReqList,
+		ngap_message.SendHandoverRequest(sourceUe, targetRan, *cause, *handoverType, pduSessionReqList,
 			*sourceToTargetTransparentContainer, false)
 	}
 }

@@ -197,3 +197,64 @@ func TestATaskRequiringOnlyContentIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestATaskWhoseDestinationsCarryNoIRIIsRefused is the third axis of "cannot act on", and the one
+// the other two do not cover.
+//
+// A task can pass both — its identifiers resolve, its delivery type asks for IRI — and still be
+// one this element can produce nothing for, because every destination it names is an X3 endpoint.
+// The live shape is an ADMF that provisioned a destination for the warrant's CC leg and then named
+// it on the IRI task as well.
+//
+// Acknowledged, such a task is stored, answers `provisioningStatus: complete` with an empty fault
+// list, and consumes a sequence number per record while delivering to zero addresses. Every
+// account this element gives of itself says the interception is running.
+//
+// The distinction that must survive: a task naming *no* destination is a gap the provisioning
+// function left, and the configured MDF2 fills it. Only a task that named destinations and yielded
+// no X2 endpoint is an assertion this element cannot honour.
+func TestATaskWhoseDestinationsCarryNoIRIIsRefused(t *testing.T) {
+	base := func(dids []string, deliveries []types.DeliveryEndpoint) types.InterceptTask {
+		return types.InterceptTask{
+			XID:        taskXID,
+			Targets:    []types.TargetIdentifier{{Type: types.TargetSUPI, Value: "262019876543210"}},
+			Products:   []types.ProductType{types.ProductIRI},
+			DIDs:       dids,
+			Deliveries: deliveries,
+		}
+	}
+
+	t.Run("named destinations, none of them X2", func(t *testing.T) {
+		err := canApply(base([]string{"did-cc"}, []types.DeliveryEndpoint{
+			{Type: types.DeliveryX3, Address: "192.0.2.9:9999"},
+		}))
+		if err == nil {
+			t.Fatal("a task whose only destination is an X3 endpoint was accepted. Every record " +
+				"it produces is built, numbered and delivered to nowhere, while this element " +
+				"reports the interception as running and faultless")
+		}
+
+		if !strings.Contains(err.Error(), "X2") {
+			t.Errorf("the refusal reason is %q; a provisioning function has to be able to tell "+
+				"this from a fault", err)
+		}
+	})
+
+	t.Run("named destinations including an X2 one", func(t *testing.T) {
+		if err := canApply(base([]string{"did-iri", "did-cc"}, []types.DeliveryEndpoint{
+			{Type: types.DeliveryX2, Address: "192.0.2.8:8888"},
+			{Type: types.DeliveryX3, Address: "192.0.2.9:9999"},
+		})); err != nil {
+			t.Errorf("a task naming an X2 endpoint alongside an X3 one was refused: %v", err)
+		}
+	})
+
+	t.Run("no destinations named at all", func(t *testing.T) {
+		// The gap the configured MDF2 fills, which is a different fact and must stay accepted —
+		// it is the case every deployment predating the ListOfDIDs requirement is in.
+		if err := canApply(base(nil, nil)); err != nil {
+			t.Errorf("a task naming no destinations was refused: %v. That is a gap the "+
+				"provisioning function left, not an instruction this element cannot honour", err)
+		}
+	})
+}

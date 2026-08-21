@@ -37,9 +37,10 @@ func TestADuplicateHandoverRequiredLeavesTheLiveHandoversStashIntact(t *testing.
 		RadioNetwork: &ngapType.CauseRadioNetwork{Value: ngapType.CauseRadioNetworkPresentHandoverDesirableForRadioReason},
 	}
 	liveContainer := []byte{0x01, 0x02, 0x03, 0x04}
+	liveType := ngapType.HandoverType{Value: ngapType.HandoverTypePresentIntra5gs}
 
 	// The live handover: sent, so its values are what the acknowledgement must report.
-	SendHandoverRequest(sourceUe, sourceUe.Ran, *live,
+	SendHandoverRequest(sourceUe, sourceUe.Ran, *live, liveType,
 		ngapType.PDUSessionResourceSetupListHOReq{
 			List: []ngapType.PDUSessionResourceSetupItemHOReq{{}},
 		},
@@ -63,6 +64,7 @@ func TestADuplicateHandoverRequiredLeavesTheLiveHandoversStashIntact(t *testing.
 		Misc:    &ngapType.CauseMisc{Value: ngapType.CauseMiscPresentUnspecified},
 	}
 	SendHandoverRequest(sourceUe, sourceUe.Ran, *rejected,
+		ngapType.HandoverType{Value: ngapType.HandoverTypePresentFivegsToEps},
 		ngapType.PDUSessionResourceSetupListHOReq{
 			List: []ngapType.PDUSessionResourceSetupItemHOReq{{}},
 		},
@@ -76,5 +78,16 @@ func TestADuplicateHandoverRequiredLeavesTheLiveHandoversStashIntact(t *testing.
 	if !bytes.Equal(sourceUe.HandOverSourceToTarget, liveContainer) {
 		t.Errorf("the stashed container is %v, want the live handover's %v",
 			sourceUe.HandOverSourceToTarget, liveContainer)
+	}
+
+	// **The third value, which this test used to leave out — and which was therefore the one
+	// still written by the caller, before any guard had run.** Both handover records carry the
+	// type, so a duplicate that overwrote it made them state a handover the subject did not
+	// perform: intra-5GS reported as 5GS-to-EPS. A mandatory field, populated, plausible and
+	// false, which nothing downstream distinguishes from a true one.
+	if sourceUe.HandOverType.Value != liveType.Value {
+		t.Errorf("the stashed handover type is %d, want the live handover's %d: the duplicate's "+
+			"type replaced it, so both records for the handover that did happen name one that "+
+			"did not", sourceUe.HandOverType.Value, liveType.Value)
 	}
 }

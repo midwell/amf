@@ -97,6 +97,31 @@ func newADMFStub(t *testing.T) *admfStub {
 	return a
 }
 
+// awaitReport waits for a report carrying want to reach the stub.
+//
+// Start-up reports are dispatched asynchronously: Notify is a synchronous mTLS round trip bounded
+// only by its own 10s timeout, and Init runs inline in the network function's Start — before NGAP,
+// before the SBI, before NRF registration. An unreachable ADMF delayed every start-up of an
+// LI-provisioned AMF, which is distinguishable from one that is not LI-provisioned by anyone who
+// can see when it starts serving.
+func (a *admfStub) awaitReport(t *testing.T, want string) string {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		joined := strings.Join(a.received(), "\n")
+		if strings.Contains(joined, want) {
+			return joined
+		}
+
+		if time.Now().After(deadline) {
+			return joined
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (a *admfStub) received() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -137,12 +162,11 @@ func TestUnreadableKeepaliveWindowStopsInterceptionAndTellsTheADMF(t *testing.T)
 		t.Error("interception was started despite the refusal")
 	}
 
-	reports := admf.received()
-	if len(reports) == 0 {
+	joined := admf.awaitReport(t, "invalidConfig")
+	if joined == "" {
 		t.Fatal("nothing was reported to the ADMF; an element that is not intercepting " +
 			"because it could not read its own configuration is in a state no interrogation reveals")
 	}
-	joined := strings.Join(reports, "\n")
 	if !strings.Contains(joined, "invalidConfig") {
 		t.Errorf("the report does not carry invalidConfig:\n%s", joined)
 	}
@@ -209,7 +233,7 @@ func TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess(t *testin
 		t.Error("interception was started despite the refusal")
 	}
 
-	joined := strings.Join(admf.received(), "\n")
+	joined := admf.awaitReport(t, "invalidConfig")
 	if !strings.Contains(joined, "invalidConfig") {
 		t.Errorf("the refusal was not reported to the ADMF:\n%s", joined)
 	}
@@ -281,7 +305,7 @@ func TestNoX1ListenAddressStopsInterceptionAndTellsTheADMF(t *testing.T) {
 			"healthy")
 	}
 
-	joined := strings.Join(admf.received(), "\n")
+	joined := admf.awaitReport(t, "invalidConfig")
 	if !strings.Contains(joined, "invalidConfig") {
 		t.Errorf("the refusal was not reported to the ADMF, which is the one party that needs to "+
 			"know this element cannot be provisioned:\n%s", joined)

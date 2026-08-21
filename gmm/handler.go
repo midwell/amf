@@ -1889,8 +1889,16 @@ func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe
 	anType := util.AnTypeToNas(accessType)
 	if ue.CmConnect(accessType) && ue.State[accessType].Is(context.Registered) {
 		// setting reregistration required flag to true
-		// Reregistration-required: the UE stays attached and re-registers, so this
-		// is NOT a deregistration for LI purposes — emit no dereg/deassociation here.
+		//
+		// **Nothing is reported here, and that is because the procedure is not over.** An
+		// earlier version of this claimed the UE "stays attached", so this was not a
+		// deregistration for LI purposes. It is one: the UE answers with a DEREGISTRATION
+		// ACCEPT, HandleDeregistrationAccept runs, and the state becomes Deregistered — and
+		// every SM context is released below, on this branch as much as the other. Reporting
+		// from the branch that *starts* a procedure is what left this one silent, because the
+		// branch not taken is the one that completes it by another route.
+		//
+		// So the record is emitted where the procedure completes: HandleDeregistrationAccept.
 		gmm_message.SendDeregistrationRequest(ue.GetRanUe(accessType), anType, true, 0)
 	} else {
 		// Lawful Interception IRI-POI: this branch actually deregisters the UE, so
@@ -2883,12 +2891,50 @@ func HandleDeregistrationAccept(ctx ctxt.Context, ue *context.AmfUe, anType mode
 		}
 	}
 
+	// Lawful Interception IRI-POI: this is where a network-initiated deregistration
+	// completes. The UE has accepted, the event below sets the state to Deregistered, and
+	// NetworkInitiatedDeregistrationProcedure has already released every SM context.
+	//
+	// Reported here rather than beside the request, because the request has two outcomes and
+	// only one of them is a deregistration: T3522 expiring aborts the procedure and leaves the
+	// UE registered, which is correctly reported as nothing.
+	//
+	// Reported before the event, so deregisteringEveryAccess reads the state the record
+	// describes rather than the state the event is about to write — the same ordering the
+	// initiating function's other branch uses.
+	//
+	// **Not in the DeregistrationAcceptEvent handler**, which would look like the single seam
+	// and is not: the UE-originated path fires that same event, and reports its own record
+	// already, so a record raised there would be emitted twice for every deregistration a
+	// subject asks for.
+	// The access this element acted on, which SendDeregistrationRequest recorded when it sent
+	// the request. A value this element does not recognise falls back to the access the accept
+	// arrived over, rather than inventing a scope — as the UE-originated path does.
+	deregScope := lawfulintercept.DeregistrationScope(ue.DeregistrationTargetAccessType)
+	if deregScope == 0 {
+		deregScope = lawfulintercept.AccessScope(anType)
+	}
+
+	lawfulintercept.ReportDeregistration(ue, true, deregScope)
+
+	releasesBinding := deregisteringEveryAccess(ue,
+		ue.DeregistrationTargetAccessType == nasMessage.AccessTypeBoth, anType)
+
 	ue.DeregistrationTargetAccessType = 0
 
-	return GmmFSM.SendEvent(ctx, ue.State[models.ACCESSTYPE__3_GPP_ACCESS], DeregistrationAcceptEvent, fsm.ArgsType{
+	err := GmmFSM.SendEvent(ctx, ue.State[models.ACCESSTYPE__3_GPP_ACCESS], DeregistrationAcceptEvent, fsm.ArgsType{
 		ArgAmfUe:      ue,
 		ArgAccessType: anType,
 	})
+
+	// The binding goes only once the UE is left registered nowhere, and after the state says
+	// so: announcing the release while this element is still producing records under the
+	// association is what the UE-originated path was corrected for.
+	if releasesBinding {
+		lawfulintercept.ReportIdentifierDeassociation(ue)
+	}
+
+	return err
 }
 
 func HandleStatus5GMM(ue *context.AmfUe, anType models.AccessType, status5GMM *nasMessage.Status5GMM) error {

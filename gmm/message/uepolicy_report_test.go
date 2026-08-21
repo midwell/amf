@@ -98,3 +98,60 @@ func TestADownlinkContainerOfAnotherKindIsNotReported(t *testing.T) {
 		t.Errorf("%d containers of other kinds were reported as UE policy transfers", reported)
 	}
 }
+
+// TestTheBuilderIsWhereTheUEPolicyReportLives pins the seam, not the caller.
+//
+// The hook sat on SendDLNASTransport, which looked like the seam every downlink UE-policy
+// container crosses and was not: producer/n1n2message.go builds the message with this builder and
+// hands it to NGAP itself, never calling that function. It is also the only caller of this builder
+// that passes a *variable* container type — every other one hard-codes N1SMInfo — so it is
+// precisely the caller that can carry a policy, and precisely the one the hook did not cover.
+//
+// So the assertion is about the builder. A relay path that builds a DL NAS Transport carrying a
+// policy container is reported whether or not it goes on to use SendDLNASTransport, which is what
+// makes a path added later reported without anybody remembering to hook it.
+func TestTheBuilderIsWhereTheUEPolicyReportLives(t *testing.T) {
+	ue := relayingUe(t)
+
+	var reported [][]byte
+
+	restore := reportUEPolicyTransfer
+	reportUEPolicyTransfer = func(_ *context.AmfUe, pdu []byte) {
+		reported = append(reported, pdu)
+	}
+
+	t.Cleanup(func() { reportUEPolicyTransfer = restore })
+
+	policy := []byte{0x2e, 0x01, 0x03, 0x04, 0x05}
+
+	// Built directly, as the N1N2 relay does — no SendDLNASTransport anywhere in this call.
+	if _, err := BuildDLNASTransport(ue.AmfUe, models.ACCESSTYPE__3_GPP_ACCESS,
+		nasMessage.PayloadContainerTypeUEPolicy, policy, 1, nil, nil, 0); err != nil {
+		t.Fatalf("BuildDLNASTransport: %v", err)
+	}
+
+	if len(reported) != 1 {
+		t.Fatalf("a downlink UE policy container built outside SendDLNASTransport produced %d "+
+			"records, want 1. The N1N2 relay path builds and sends the message itself, so a hook "+
+			"on the sender never sees it: the agency's account of a tasked subject's policy "+
+			"exchange shows one side of a two-sided conversation", len(reported))
+	}
+
+	if string(reported[0]) != string(policy) {
+		t.Errorf("the record carried %x, want the container that was transferred %x",
+			reported[0], policy)
+	}
+
+	// And a container of another kind still produces nothing, so the gate did not widen.
+	reported = nil
+
+	if _, err := BuildDLNASTransport(ue.AmfUe, models.ACCESSTYPE__3_GPP_ACCESS,
+		nasMessage.PayloadContainerTypeN1SMInfo, policy, 1, nil, nil, 0); err != nil {
+		t.Fatalf("BuildDLNASTransport: %v", err)
+	}
+
+	if len(reported) != 0 {
+		t.Errorf("an SM container produced %d UE-policy records; the gate must stay on the "+
+			"container type", len(reported))
+	}
+}

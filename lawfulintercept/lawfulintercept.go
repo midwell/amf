@@ -356,7 +356,7 @@ func Init(cfg Config) error {
 	// the keys that did decode are not trustworthy as a set, and one of the ones that did not
 	// may be the fail-safe window or the fault endpoint.
 	if cfg.BlockError != nil {
-		reporter.Notify(x1.NEIssueInvalidConfig,
+		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
 			"this element's interception configuration carries a setting it does not "+
 				"recognise, so the values it would fall back on cannot be trusted; "+
 				"interception has not been started")
@@ -364,7 +364,7 @@ func Init(cfg Config) error {
 		return cfg.BlockError
 	}
 	if cfg.X1Listen == "" {
-		reporter.Notify(x1.NEIssueInvalidConfig,
+		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
 			"no X1 listen address is configured, so this element would accept tasking on an "+
 				"unpredictable port; interception has not been started")
 
@@ -372,7 +372,7 @@ func Init(cfg Config) error {
 	}
 	keepalive, err := parseKeepaliveTimeout(cfg.KeepaliveTimeout)
 	if err != nil {
-		reporter.Notify(x1.NEIssueInvalidConfig,
+		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
 			"the configured keepalive fail-safe window is not a duration this element can "+
 				"read, so interception has not been started")
 
@@ -483,7 +483,7 @@ func Init(cfg Config) error {
 		// Surface the failure to the ADMF over X1 too (an operational fault, not a
 		// per-target signal), best-effort.
 		if sub.reporter != nil {
-			sub.reporter.Notify(x1.NEIssueX1ListenFailed, "X1 listener bind failed")
+			sub.reporter.NotifyAsync(x1.NEIssueX1ListenFailed, "X1 listener bind failed")
 		}
 		return fmt.Errorf("lawful interception: X1 listen on %s: %w", cfg.X1Listen, err)
 	}
@@ -508,7 +508,19 @@ func Init(cfg Config) error {
 	// query it has to think to make. Saying so on the way up is the one push signal
 	// available.
 	if reporter != nil && st.Len() == 0 {
-		reporter.Notify(x1.NEIssueTaskingAbsent,
+		// Asynchronously, like every other start-up report here. Notify is a synchronous mTLS
+		// round trip bounded only by its own 10s client timeout, and Init runs inline in the
+		// network function's Start — before NGAP, before the service-based interface, before
+		// registration with the network. `st.Len() == 0` is true on every start, so an
+		// unreachable ADMF delayed *every* start-up of an LI-provisioned AMF by up to ten
+		// seconds.
+		//
+		// That is an undetectability failure and not merely a slow start: a network function
+		// that comes up later when a third party is down is distinguishable from one that is
+		// not LI-provisioned, by anyone who can see when it starts serving — and the signal is
+		// produced by the outage rather than by anything this element logs, so no amount of care
+		// about log content removes it.
+		reporter.NotifyAsync(x1.NEIssueTaskingAbsent,
 			"network function started with interception enabled and no tasking present")
 	}
 	return nil
@@ -1569,7 +1581,7 @@ func keepaliveConfig(cfg Config, reporter *x1.Reporter) x2x3.KeepaliveConfig {
 
 	report := func(format string, args ...any) {
 		if reporter != nil {
-			reporter.Notify(x1.NEIssueInvalidConfig, fmt.Sprintf(format, args...))
+			reporter.NotifyAsync(x1.NEIssueInvalidConfig, fmt.Sprintf(format, args...))
 		}
 	}
 
@@ -1624,7 +1636,7 @@ func configuredDestinations(dests []Destination, reporter *x1.Reporter) []x1.Con
 		out = append(out, entry)
 	}
 	if rejected > 0 {
-		reporter.Notify(x1.NEIssueInvalidConfig, fmt.Sprintf(
+		reporter.NotifyAsync(x1.NEIssueInvalidConfig, fmt.Sprintf(
 			"%d configured delivery destination(s) are unusable and were dropped; "+
 				"a task naming one will be delivered to the default endpoint instead", rejected))
 	}
@@ -1666,6 +1678,28 @@ func canApply(task types.InterceptTask) error {
 		return errors.New("li: task requires no product this element produces; " +
 			"an AMF IRI-POI produces xIRI (X2), so a task whose deliveryType is X3Only can " +
 			"never yield anything here")
+	}
+	// **And the third axis: destinations that cannot carry the product.** A task can pass both
+	// tests above — its identifiers resolve, its delivery type asks for IRI — and still be one
+	// this element can produce nothing for, because the destinations it names resolve to no X2
+	// endpoint. The live shape is an ADMF that provisioned a destination for the warrant's CC
+	// leg and then named it on the IRI task too.
+	//
+	// Acknowledged, it is stored, reported as `provisioningStatus: complete` with an empty fault
+	// list, and consumes a sequence number per record while delivering to zero addresses. Every
+	// account this element gives of itself says the interception is running, which is the exact
+	// condition the two checks above exist to prevent, reached by the one route they do not
+	// cover. x2Destinations already declines to substitute the configured MDF2 here — correctly,
+	// since that would send one agency's product to an endpoint the warrant never named — so
+	// refusing the task is what closes the gap rather than widening it.
+	//
+	// Keyed on len(task.DIDs), exactly as x2Destinations is: a task naming *no* destination is a
+	// gap the provisioning function left and the configured endpoint fills it, which is a
+	// different fact and stays accepted.
+	if len(task.DIDs) > 0 && len(task.DeliveryAddresses(types.DeliveryX2)) == 0 {
+		return errors.New("li: task names delivery destinations but none of them is an X2 " +
+			"endpoint; an AMF IRI-POI delivers xIRI over X2, so every record this task " +
+			"produced would be built, numbered and delivered to nowhere")
 	}
 
 	return nil

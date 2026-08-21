@@ -432,6 +432,7 @@ a Nsmf_PDUSession_CreateSMContext Response(N2 SM Information (PDU Session ID, ca
 // nsci: new security context indicator, if amfUe has updated security context, set nsci to true, otherwise set to false
 // N2 handover in same AMF
 func SendHandoverRequest(sourceUe *context.RanUe, targetRan *context.AmfRan, cause ngapType.Cause,
+	handoverType ngapType.HandoverType,
 	pduSessionResourceSetupListHOReq ngapType.PDUSessionResourceSetupListHOReq,
 	sourceToTargetTransparentContainer ngapType.SourceToTargetTransparentContainer, nsci bool,
 ) {
@@ -483,6 +484,17 @@ func SendHandoverRequest(sourceUe *context.RanUe, targetRan *context.AmfRan, cau
 	// request that is not sent replaces nothing.
 	sourceUe.HandOverCause = &cause
 	sourceUe.HandOverSourceToTarget = append([]byte(nil), sourceToTargetTransparentContainer.Value...)
+	// **All three, together, past the guards.** The handover type used to be written by the
+	// caller before this function was even entered, so the guards above protected two of the
+	// three values the handover records carry and not the third. A second HANDOVER REQUIRED for
+	// the same UE — a source-gNB retransmission, or a second attempt — is refused by the
+	// duplicate guard, correctly leaving the cause and the container of the handover in flight
+	// alone, and used to overwrite its type anyway. Both records for that handover then named a
+	// type the subject did not perform: a mandatory field, populated, plausible and false, which
+	// nothing downstream distinguishes from a true one.
+	//
+	// ClearHandoverState does not clear it either, so the wrong value outlived the procedure.
+	sourceUe.HandOverType = handoverType
 
 	var targetUe *context.RanUe
 	if targetUeTmp, err := targetRan.NewRanUe(context.RanUeNgapIdUnspecified); err != nil {

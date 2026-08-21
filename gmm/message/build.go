@@ -52,6 +52,31 @@ func BuildDLNASTransport(ue *context.AmfUe, anType models.AccessType, payloadCon
 	m.GmmMessage = nas.NewGmmMessage()
 	m.GmmHeader.SetMessageType(nas.MsgTypeDLNASTransport)
 
+	// Lawful Interception: **the seam every downlink UE-policy container crosses.**
+	//
+	// TS 33.128 defines AMFUEPolicyTransfer as the record of this AMF passing a UE policy
+	// container, and it passes them in both directions: uplink to the PCF, and downlink to the
+	// UE. This hook lived on SendDLNASTransport, which looked like the seam and was not: a
+	// third relay path builds the message here and hands it to NGAP itself, without going
+	// through that function at all — and it is the *only* caller of this builder that passes a
+	// variable container type, so it is precisely the one that can carry a policy. Every other
+	// caller hard-codes N1SMInfo.
+	//
+	// That is the third time a hook beside one caller has cost a record. Placed on the builder,
+	// which every path must call to have a message at all, a relay path added later is reported
+	// without anybody remembering to.
+	//
+	// **The trade, stated rather than hidden:** this reports when the element commits to the
+	// transfer rather than after the bytes leave. A message built and then not transmitted —
+	// the caller returning on an error between here and its send — is reported as transferred.
+	// That window is a few lines with no I/O, and the alternative was an entire relay path
+	// reporting nothing at all, which is certain rather than possible. The lower seam,
+	// ngap_message.SendDownlinkNasTransport, is common to all three paths but is handed only
+	// bytes: it cannot tell a policy container from an SM one without parsing what it forwards.
+	if payloadContainerType == nasMessage.PayloadContainerTypeUEPolicy {
+		reportUEPolicyTransfer(ue, nasPdu)
+	}
+
 	m.SecurityHeader = nas.SecurityHeader{
 		ProtocolDiscriminator: nasMessage.Epd5GSMobilityManagementMessage,
 		SecurityHeaderType:    nas.SecurityHeaderTypeIntegrityProtectedAndCiphered,
