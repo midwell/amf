@@ -502,8 +502,14 @@ func TestAHandoverTypeBeyondNGAPIsSubstituted(t *testing.T) {
 	}
 }
 
-// pinnedLiVersion is the li version go.mod pins, or "" if it cannot be read. It is used to say
-// which module these assertions actually ran against, rather than leaving it to be assumed.
+// pinnedLiVersion is the li version this module actually builds against, or "" if it cannot be
+// read. It is used to say which module these assertions ran against rather than leaving it assumed.
+//
+// **The replace directive governs, not the require.** go.mod names li twice — a `require` at
+// whatever version the dependency graph settled on, and a `replace` pointing at the fork this
+// project ships. The replacement is what is compiled, and the require line is only a floor, so
+// reading the first matching line answers with a version nothing builds against. That is not
+// hypothetical: it is how this helper was first written, and this test caught it.
 func pinnedLiVersion(t *testing.T) string {
 	t.Helper()
 
@@ -512,16 +518,28 @@ func pinnedLiVersion(t *testing.T) string {
 		return ""
 	}
 
+	var required string
+
 	for _, line := range strings.Split(string(mod), "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "github.com/omec-project/li") {
+		if !strings.Contains(line, "omec-project/li") && !strings.Contains(line, "midwell/li") {
 			continue
 		}
 
 		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
 
-		return fields[len(fields)-1]
+		// A replace is definitive; keep looking past a require in case one follows.
+		if strings.HasPrefix(line, "replace ") {
+			return fields[len(fields)-1]
+		}
+
+		if required == "" {
+			required = fields[len(fields)-1]
+		}
 	}
 
-	return ""
+	return required
 }
