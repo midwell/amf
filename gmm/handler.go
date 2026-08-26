@@ -625,6 +625,9 @@ func HandleRegistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType model
 		if err != nil {
 			return fmt.Errorf("decode SUCI failed: %w", err)
 		}
+		// The LI point of interception needs the SUCI members, and the string above
+		// cannot be parsed back into them without loss — see amf/lawfulintercept.
+		ue.SetSuciRaw(mobileIdentity5GSContents)
 		plmnID, err := util.PlmnIdStringToModels(plmnId)
 		if err != nil {
 			err = fmt.Errorf("invalid SUCI: %w", err)
@@ -688,12 +691,12 @@ func HandleRegistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType model
 	case models.ACCESSTYPE__3_GPP_ACCESS:
 		switch {
 		case ue.Location.NrLocation != nil:
-			ue.RatType = models.RATTYPE_NR
+			ue.SetRatType(models.RATTYPE_NR)
 		case ue.Location.EutraLocation != nil:
-			ue.RatType = models.RATTYPE_EUTRA
+			ue.SetRatType(models.RATTYPE_EUTRA)
 		}
 	case models.ACCESSTYPE_NON_3_GPP_ACCESS:
-		ue.RatType = models.RATTYPE_WLAN
+		ue.SetRatType(models.RATTYPE_WLAN)
 	}
 
 	// Rel-18 NR-NTN: if the serving RAN advertised RATInformation for this
@@ -703,13 +706,13 @@ func HandleRegistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType model
 		if ratInfo := ranUe.Ran.RatInformationForTAC(ue.Tai.Tac); ratInfo != nil {
 			switch ratInfo.Value {
 			case ngapType.RATInformationPresentNRLEO:
-				ue.RatType = models.RATTYPE_NR_LEO
+				ue.SetRatType(models.RATTYPE_NR_LEO)
 			case ngapType.RATInformationPresentNRMEO:
-				ue.RatType = models.RATTYPE_NR_MEO
+				ue.SetRatType(models.RATTYPE_NR_MEO)
 			case ngapType.RATInformationPresentNRGEO:
-				ue.RatType = models.RATTYPE_NR_GEO
+				ue.SetRatType(models.RATTYPE_NR_GEO)
 			case ngapType.RATInformationPresentNROTHERSAT:
-				ue.RatType = models.RATTYPE_NR_OTHER_SAT
+				ue.SetRatType(models.RATTYPE_NR_OTHER_SAT)
 			}
 		}
 	}
@@ -1725,6 +1728,9 @@ func HandleIdentityResponse(ue *context.AmfUe, identityResponse *nasMessage.Iden
 		if err != nil {
 			return fmt.Errorf("decode SUCI failed: %w", err)
 		}
+		// The LI point of interception needs the SUCI members, and the string above
+		// cannot be parsed back into them without loss — see amf/lawfulintercept.
+		ue.SetSuciRaw(mobileIdentityContents)
 		plmnID, err := util.PlmnIdStringToModels(plmnId)
 		if err != nil {
 			err = fmt.Errorf("invalid SUCI: %w", err)

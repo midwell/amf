@@ -1315,6 +1315,9 @@ func amfRegistration(id amfctx.UeIdentity) iri.AMFRegistration {
 		PEI:                peiChoice(id),
 		GPSI:               gpsiChoice(id),
 		GUTI:               fiveGGUTI(id),
+		SUCI:               suciOf(id),
+		FiveGSTAIList:      taiListOf(id),
+		RATType:            ratTypeOf(id.RatType),
 	}
 }
 
@@ -1324,6 +1327,7 @@ func amfRegistration(id amfctx.UeIdentity) iri.AMFRegistration {
 // cell/TAI encoding is a later increment.
 func amfLocationUpdate(id amfctx.UeIdentity) iri.AMFLocationUpdate {
 	return iri.AMFLocationUpdate{
+		SUCI:     suciOf(id),
 		SUPI:     supiChoice(id),
 		PEI:      peiChoice(id),
 		GPSI:     gpsiChoice(id),
@@ -1335,6 +1339,7 @@ func amfLocationUpdate(id amfctx.UeIdentity) iri.AMFLocationUpdate {
 // amfDeregistration maps a UE identity snapshot to a TS 33.128 AMFDeregistration record.
 func amfDeregistration(id amfctx.UeIdentity, dir iri.AMFDirection, access iri.AccessType) iri.AMFDeregistration {
 	return iri.AMFDeregistration{
+		SUCI:                    suciOf(id),
 		DeregistrationDirection: dir,
 		AccessType:              access,
 		SUPI:                    supiChoice(id),
@@ -1348,6 +1353,7 @@ func amfDeregistration(id amfctx.UeIdentity, dir iri.AMFDirection, access iri.Ac
 // AMFUnsuccessfulProcedure record with a 5GMM failure cause.
 func amfUnsuccessfulRegistration(id amfctx.UeIdentity, cause uint8) iri.AMFUnsuccessfulProcedure {
 	return iri.AMFUnsuccessfulProcedure{
+		SUCI:                suciOf(id),
 		FailedProcedureType: iri.FailedRegistration,
 		FailureCause:        iri.FiveGMMCause(cause),
 		SUPI:                supiChoice(id),
@@ -1361,23 +1367,111 @@ func amfUnsuccessfulRegistration(id amfctx.UeIdentity, cause uint8) iri.AMFUnsuc
 // AMFStartOfInterceptionWithRegisteredUE record.
 func amfStartOfInterception(id amfctx.UeIdentity) iri.AMFStartOfInterceptionWithRegisteredUE {
 	return iri.AMFStartOfInterceptionWithRegisteredUE{
+		SUCI:               suciOf(id),
 		RegistrationResult: iri.RegResult3GPPAccess,
 		RegistrationType:   registrationType(id),
 		SUPI:               supiChoice(id),
 		PEI:                peiChoice(id),
 		GPSI:               gpsiChoice(id),
 		GUTI:               fiveGGUTI(id),
+		FiveGSTAIList:      taiListOf(id),
 	}
+}
+
+// suciOf builds the sUCI record member from the octets the UE sent, or the zero
+// value when the UE did not present a SUCI at all — which is every registration by
+// 5G-GUTI, and so most of them. An all-zero SUCI encodes as absent, which is what
+// "conditional on availability" asks for.
+func suciOf(id amfctx.UeIdentity) iri.SUCI {
+	suci, ok := suciFromNAS(id.SuciRaw)
+	if !ok {
+		return iri.SUCI{}
+	}
+
+	return suci
+}
+
+// taiListOf maps the UE's registration area to fiveGSTAIList. Nil when the AMF holds
+// no registration area, which encodes as absent.
+func taiListOf(id amfctx.UeIdentity) iri.TAIList {
+	if len(id.TaiList) == 0 {
+		return nil
+	}
+	out := make(iri.TAIList, 0, len(id.TaiList))
+	for _, tai := range id.TaiList {
+		tac, err := hex.DecodeString(tai.Tac)
+		if err != nil || len(tac) < 2 || len(tac) > 3 {
+			// TAC ::= OCTET STRING (SIZE(2..3)). A TAI we cannot render is dropped
+			// rather than approximated: a wrong tracking area is a wrong location.
+			continue
+		}
+		mcc, mnc := tai.PlmnId.GetMcc(), tai.PlmnId.GetMnc()
+		if mcc == "" || mnc == "" {
+			continue
+		}
+		out = append(out, iri.TAI{
+			PLMNID: iri.PLMNID{MCC: iri.MCC(mcc), MNC: iri.MNC(mnc)},
+			TAC:    tac,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+
+	return out
+}
+
+// ratTypeOf maps the 5GC RAT type to TS 33.128's enumeration. An unmapped value
+// yields zero, which encodes as absent — reporting no RAT type is right where
+// reporting the wrong one would be a claim about the access the UE used.
+func ratTypeOf(rat models.RatType) iri.RATType {
+	switch rat {
+	case models.RATTYPE_NR:
+		return iri.RATNR
+	case models.RATTYPE_EUTRA:
+		return iri.RATEUTRA
+	case models.RATTYPE_WLAN:
+		return iri.RATWLAN
+	case models.RATTYPE_VIRTUAL:
+		return iri.RATVirtual
+	case models.RATTYPE_NBIOT:
+		return iri.RATNBIOT
+	case models.RATTYPE_LTE_M:
+		return iri.RATLTEM
+	case models.RATTYPE_NR_U:
+		return iri.RATNRU
+	case models.RATTYPE_EUTRA_U:
+		return iri.RATEUTRAU
+	case models.RATTYPE_TRUSTED_N3_GA:
+		return iri.RATTrustedN3GA
+	case models.RATTYPE_TRUSTED_WLAN:
+		return iri.RATTrustedWLAN
+	// Non-terrestrial access, which this deployment serves — see AmfUe.IsNtn.
+	case models.RATTYPE_NR_LEO:
+		return iri.RATNRLEO
+	case models.RATTYPE_NR_MEO:
+		return iri.RATNRMEO
+	case models.RATTYPE_NR_GEO:
+		return iri.RATNRGEO
+	case models.RATTYPE_NR_OTHER_SAT:
+		return iri.RATNROtherSat
+	case models.RATTYPE_NR_REDCAP:
+		return iri.RATNRRedCap
+	}
+
+	return 0
 }
 
 // amfIdentifierAssociation maps a UE identity snapshot to a TS 33.128 AMFIdentifierAssociation
 // record binding the target's SUPI to its assigned 5G-GUTI.
 func amfIdentifierAssociation(id amfctx.UeIdentity) iri.AMFIdentifierAssociation {
 	return iri.AMFIdentifierAssociation{
-		SUPI: supiChoice(id),
-		PEI:  peiChoice(id),
-		GPSI: gpsiChoice(id),
-		GUTI: fiveGGUTI(id),
+		SUPI:          supiChoice(id),
+		PEI:           peiChoice(id),
+		GPSI:          gpsiChoice(id),
+		GUTI:          fiveGGUTI(id),
+		SUCI:          suciOf(id),
+		FiveGSTAIList: taiListOf(id),
 		// Mandatory in this record, so it is populated even though the
 		// detailed subtree is still deferred — same minimal form as AMFLocationUpdate.
 		Location: iri.Location{LocationInfo: iri.LocationInfo{CurrentLocation: true}},
@@ -1390,6 +1484,9 @@ func amfIdentifierDeassociation(id amfctx.UeIdentity) iri.AMFIdentifierDeassocia
 	return iri.AMFIdentifierDeassociation{
 		SUPI: supiChoice(id),
 		GUTI: fiveGGUTI(id),
+		SUCI: suciOf(id),
+		PEI:  peiChoice(id),
+		GPSI: gpsiChoice(id),
 	}
 }
 
@@ -1418,6 +1515,7 @@ func amfServiceAccept(id amfctx.UeIdentity) iri.AMFUEServiceAccept {
 // to a TS 33.128 AMFUEPolicyTransfer record (XIRIEvent [146]).
 func amfUEPolicyTransfer(id amfctx.UeIdentity, policy []byte) iri.AMFUEPolicyTransfer {
 	return iri.AMFUEPolicyTransfer{
+		SUCI:     suciOf(id),
 		SUPI:     supiChoice(id),
 		PEI:      peiChoice(id),
 		GPSI:     gpsiChoice(id),

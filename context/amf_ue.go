@@ -70,8 +70,9 @@ const (
 type AmfUe struct {
 	// Mutex sync.Mutex `json:"mutex,omitempty" yaml:"mutex" bson:"mutex,omitempty"`
 	Mutex sync.Mutex `json:"-"`
-	// identityMu guards the UE identity fields (Supi/Pei/Gpsi/Tmsi/Guti and
-	// RegistrationType5GS) so they can be read safely from goroutines other than
+	// identityMu guards the UE identity fields (Supi/Pei/Gpsi/Tmsi/Guti,
+	// RegistrationType5GS, SuciRaw, RatType and the RegistrationArea entry
+	// IdentitySnapshot reads) so they can be read safely from goroutines other than
 	// the one running the UE's NAS procedure (e.g. SBI handlers, logging). Use the
 	// Get*/Set* accessors below; do not touch those fields directly across
 	// goroutines. It is deliberately separate from Mutex (which guards RanUe/CM
@@ -94,16 +95,20 @@ type AmfUe struct {
 	TargetAmfProfile *models.NFProfileDiscovery `json:"targetAmfProfile,omitempty"`
 	TargetAmfUri     string                     `json:"targetAmfUri,omitempty"`
 	/* Ue Identity*/
-	PlmnId              models.PlmnId `json:"plmnId,omitempty"`
-	Suci                string        `json:"suci,omitempty"`
-	Supi                string        `json:"supi,omitempty"`
-	UnauthenticatedSupi bool          `json:"unauthenticatedSupi,omitempty"`
-	Gpsi                string        `json:"gpsi,omitempty"`
-	Pei                 string        `json:"pei,omitempty"`
-	Tmsi                int32         `json:"tmsi,omitempty"` // 5G-Tmsi
-	Guti                string        `json:"guti,omitempty"`
-	GroupID             string        `json:"groupID,omitempty"`
-	EBI                 int32         `json:"ebi,omitempty"`
+	PlmnId models.PlmnId `json:"plmnId,omitempty"`
+	Suci   string        `json:"suci,omitempty"`
+	// SuciRaw is the same identity in the octets the UE sent. Kept because the
+	// formatted Suci string cannot be parsed back into the members TS 33.128's sUCI
+	// record member requires without losing information — see amf/lawfulintercept.
+	SuciRaw             []byte `json:"suciRaw,omitempty"`
+	Supi                string `json:"supi,omitempty"`
+	UnauthenticatedSupi bool   `json:"unauthenticatedSupi,omitempty"`
+	Gpsi                string `json:"gpsi,omitempty"`
+	Pei                 string `json:"pei,omitempty"`
+	Tmsi                int32  `json:"tmsi,omitempty"` // 5G-Tmsi
+	Guti                string `json:"guti,omitempty"`
+	GroupID             string `json:"groupID,omitempty"`
+	EBI                 int32  `json:"ebi,omitempty"`
 	/* Ue Identity*/
 	EventSubscriptionsInfo map[string]*AmfUeEventSubscription `json:"eventSubscriptionInfo,omitempty"`
 	/* User Location*/
@@ -491,6 +496,24 @@ type UeIdentity struct {
 	Guti                string
 	Tmsi                int32
 	RegistrationType5GS uint8
+
+	// SuciRaw is the 5GS mobile identity as the UE sent it, kept in its octet form
+	// rather than as the formatted Suci string. TS 33.128's sUCI is a SEQUENCE of six
+	// members, and recovering them from the string is lossy — the routing indicator's
+	// leading zeros are gone and the scheme output has been through a nibble swap.
+	// Empty whenever the UE registered by 5G-GUTI, which is the common case and
+	// correctly reports the field as unavailable.
+	SuciRaw []byte
+
+	// TaiList is the 3GPP-access registration area, which is what TS 33.128 means by
+	// fiveGSTAIList: "tracking areas associated with the registration area within
+	// which the UE is current registered". Not the serving TAI, which the AMF also
+	// holds. Non-3GPP access is out of scope for this deployment, so only the one
+	// access type is snapshotted.
+	TaiList []models.Tai
+
+	// RatType backs the AMF's own rATType. The SMF reports its own from SMContext.
+	RatType models.RatType
 }
 
 // IdentitySnapshot returns a consistent copy of ue's identity fields.
@@ -504,6 +527,9 @@ func (ue *AmfUe) IdentitySnapshot() UeIdentity {
 		Guti:                ue.Guti,
 		Tmsi:                ue.Tmsi,
 		RegistrationType5GS: ue.RegistrationType5GS,
+		SuciRaw:             append([]byte(nil), ue.SuciRaw...),
+		TaiList:             append([]models.Tai(nil), ue.RegistrationArea[models.ACCESSTYPE__3_GPP_ACCESS]...),
+		RatType:             ue.RatType,
 	}
 }
 
@@ -548,6 +574,37 @@ func (ue *AmfUe) SetPei(v string)  { ue.identityMu.Lock(); ue.Pei = v; ue.identi
 func (ue *AmfUe) SetGpsi(v string) { ue.identityMu.Lock(); ue.Gpsi = v; ue.identityMu.Unlock() }
 func (ue *AmfUe) SetGuti(v string) { ue.identityMu.Lock(); ue.Guti = v; ue.identityMu.Unlock() }
 func (ue *AmfUe) SetTmsi(v int32)  { ue.identityMu.Lock(); ue.Tmsi = v; ue.identityMu.Unlock() }
+
+// SetRatType records the access technology under identityMu, so IdentitySnapshot can
+// report it to the LI point of interception without racing the NAS procedure that
+// sets it.
+//
+// Other readers of ue.RatType (IsNtn, the SBI handlers) still read it unguarded.
+// That is pre-existing and untouched here; this accessor makes the snapshot path
+// safe, and does not claim to have made every path safe.
+func (ue *AmfUe) SetRatType(v models.RatType) {
+	ue.identityMu.Lock()
+	ue.RatType = v
+	ue.identityMu.Unlock()
+}
+
+// SetRegistrationAreaLocked replaces the registration area for one access type under
+// identityMu. Same reasoning as SetRatType: IdentitySnapshot reads this entry from
+// the LI scan goroutine, so its writer has to take the lock the snapshot takes.
+func (ue *AmfUe) SetRegistrationAreaLocked(anType models.AccessType, tais []models.Tai) {
+	ue.identityMu.Lock()
+	ue.RegistrationArea[anType] = tais
+	ue.identityMu.Unlock()
+}
+
+// SetSuciRaw stores the 5GS mobile identity octets alongside the formatted Suci. It
+// copies, because the caller's buffer is a slice of the decoded NAS message and does
+// not outlive the procedure.
+func (ue *AmfUe) SetSuciRaw(v []byte) {
+	ue.identityMu.Lock()
+	ue.SuciRaw = append([]byte(nil), v...)
+	ue.identityMu.Unlock()
+}
 
 func (ue *AmfUe) SetRegistrationType5GS(v uint8) {
 	ue.identityMu.Lock()
