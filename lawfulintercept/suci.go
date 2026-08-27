@@ -30,8 +30,13 @@ import (
 //   - schemeOutput under the null scheme is nibble-swapped MSIN with a trailing 'f'
 //     removed, so it can be an odd number of hex digits and will not decode.
 //
-// From the octets none of that arises: schemeOutput is carried through as the octets
-// it already is.
+// Reading the octets removes the first two. It does *not* remove the third, which is
+// the one that matters most: table 8.3.5-1 defines schemeOutput as "the characters
+// resulting as the output of the permanent identifier with the protection scheme
+// applied", and under the null scheme those characters are the MSIN's digits. The raw
+// octets are that MSIN in nibble-swapped BCD, so shipping them transposes every pair —
+// MSIN 0100007488 goes out as 1000004788, a well-formed record naming a subscriber
+// that does not exist. See schemeOutput below.
 //
 // The rule throughout is that a SUCI which does not yield clean members produces no
 // sUCI at all. A missing target identity is a gap an audit can find; a wrong one is
@@ -75,13 +80,18 @@ func suciFromNAS(buf []byte) (iri.SUCI, bool) {
 		return iri.SUCI{}, false
 	}
 
+	output, ok := schemeOutput(buf[6]&0x0f, buf[8:])
+	if !ok {
+		return iri.SUCI{}, false
+	}
+
 	suci := iri.SUCI{
 		MCC:                    iri.MCC(mcc),
 		MNC:                    iri.MNC(mnc),
 		RoutingIndicator:       iri.RoutingIndicator(routing),
 		ProtectionSchemeID:     iri.ProtectionSchemeID(buf[6] & 0x0f),
 		HomeNetworkPublicKeyID: iri.HomeNetworkPublicKeyID{buf[7]},
-		SchemeOutput:           append(iri.SchemeOutput(nil), buf[8:]...),
+		SchemeOutput:           output,
 	}
 
 	// "shall be included if different from the number of meaningful digits given in
@@ -136,4 +146,48 @@ func bcdDigits(o1, o2 byte) string {
 	}
 
 	return s
+}
+
+// schemeOutput renders the concealed identifier the way table 8.3.5-1 describes it:
+// "the characters resulting as the output of the permanent identifier with the
+// protection scheme applied".
+//
+// Under the null scheme (0) that output is the MSIN, carried in NAS as nibble-swapped
+// BCD, and the characters are its digits — so the nibbles are unswapped and rendered
+// as ASCII. Shipping the raw octets instead transposes every digit pair, which is a
+// well-formed record naming a different subscriber; that is what the first version of
+// this file did, and the cluster run is what caught it.
+//
+// Under any other scheme the output is ciphertext with no characters to speak of, so
+// the octets are carried through unchanged.
+func schemeOutput(scheme byte, raw []byte) (iri.SchemeOutput, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	if int(scheme) != nasMessage.ProtectionSchemeNullScheme {
+		return append(iri.SchemeOutput(nil), raw...), true
+	}
+
+	digits := make(iri.SchemeOutput, 0, len(raw)*2)
+	for i, o := range raw {
+		lo, hi := o&0x0f, o>>4
+		if lo > 9 {
+			return nil, false // filler cannot start an octet
+		}
+		digits = append(digits, '0'+lo)
+		if hi == 0x0f {
+			// The odd-length filler, valid only in the final octet.
+			if i != len(raw)-1 {
+				return nil, false
+			}
+
+			return digits, true
+		}
+		if hi > 9 {
+			return nil, false
+		}
+		digits = append(digits, '0'+hi)
+	}
+
+	return digits, true
 }

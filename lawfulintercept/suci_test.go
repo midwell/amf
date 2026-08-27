@@ -140,3 +140,68 @@ func TestSuciThreeDigitMNC(t *testing.T) {
 		t.Errorf("MNC = %q, want 453", got.MNC)
 	}
 }
+
+// schemeOutput is where the first version of this file was wrong, and no unit test
+// caught it — the cluster run did, by decoding a delivered record against 3GPP's own
+// module and reading a subscriber that does not exist.
+//
+// Table 8.3.5-1 defines the field as "the characters resulting as the output of the
+// permanent identifier with the protection scheme applied". Under the null scheme
+// those characters are the MSIN's digits; NAS carries them nibble-swapped, so shipping
+// the raw octets transposes every pair.
+func TestSchemeOutputRendersCharactersUnderTheNullScheme(t *testing.T) {
+	// The production case: IMSI 208930100007488 is MCC 208, MNC 93, MSIN 0100007488.
+	// The MSIN arrives as 10 00 00 47 88 and must be reported as its digits, not as
+	// 1000004788 — which is what the octets read as if carried through unchanged.
+	got, ok := suciFromNAS(suciNAS([2]byte{0xf0, 0xff}, 0x00, 0x00,
+		0x10, 0x00, 0x00, 0x47, 0x88))
+	if !ok {
+		t.Fatal("rejected a null-scheme SUCI")
+	}
+	if string(got.SchemeOutput) != "0100007488" {
+		t.Errorf("schemeOutput = %q, want \"0100007488\". The raw octets read as "+
+			"\"1000004788\" — every digit pair transposed, which is a well-formed record "+
+			"naming a subscriber that does not exist", got.SchemeOutput)
+	}
+}
+
+func TestSchemeOutputOddDigitCount(t *testing.T) {
+	// Nine digits: the final high nibble is the 0xf filler and is dropped.
+	got, ok := suciFromNAS(suciNAS([2]byte{0xf0, 0xff}, 0x00, 0x00, 0x21, 0x43, 0x65, 0x87, 0xf9))
+	if !ok {
+		t.Fatal("rejected a null-scheme SUCI with an odd digit count")
+	}
+	if string(got.SchemeOutput) != "123456789" {
+		t.Errorf("schemeOutput = %q, want \"123456789\"", got.SchemeOutput)
+	}
+}
+
+func TestSchemeOutputPassesCiphertextThrough(t *testing.T) {
+	// Profile A/B output is ciphertext: no characters, so the octets stand.
+	got, ok := suciFromNAS(suciNAS([2]byte{0xf0, 0xff}, 0x01, 0x1B, 0xDE, 0xAD, 0xBE, 0xEF))
+	if !ok {
+		t.Fatal("rejected a protected SUCI")
+	}
+	if !bytes.Equal(got.SchemeOutput, iri.SchemeOutput{0xDE, 0xAD, 0xBE, 0xEF}) {
+		t.Errorf("schemeOutput = %x, want deadbeef unchanged", got.SchemeOutput)
+	}
+}
+
+func TestSchemeOutputRefusesMisplacedFiller(t *testing.T) {
+	// Filler in any octet but the last, or in a low nibble, is not a digit string.
+	for _, tc := range []struct {
+		name string
+		out  []byte
+	}{
+		{"filler before the final octet", []byte{0x1f, 0x23}},
+		{"filler in a low nibble", []byte{0xf1, 0x23}},
+		{"empty scheme output", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := suciNAS([2]byte{0xf0, 0xff}, 0x00, 0x00, tc.out...)
+			if got, ok := suciFromNAS(buf); ok {
+				t.Errorf("accepted %x and produced schemeOutput %q", tc.out, got.SchemeOutput)
+			}
+		})
+	}
+}
