@@ -30,7 +30,7 @@ func activateIRIReporting(t *testing.T, snd sender, supi, admfURL string) {
 	}
 	active.Store(&subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		mdf2:     "10.0.60.122:42069",
 		ids:      x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 		reporter: x1.NewReporter(admfURL, "admf-1", "amf-1", nil),
 	})
@@ -91,20 +91,20 @@ func TestASubstitutedCauseIsDistinguishableFromAGenuineUnspecified(t *testing.T)
 	substituted.CauseSubstituted = true
 	ReportHandoverRequest(substituted)
 
-	events := decodeEvents(t, snd)
-	if len(events) != 2 {
-		t.Fatalf("delivered %d records, want 2 — the substitution must not cost the record", len(events))
+	records := decodeRecords(t, snd)
+	if len(records) != 2 {
+		t.Fatalf("delivered %d records, want 2 — the substitution must not cost the record", len(records))
 	}
-	for i, ev := range events {
-		req, ok := ev.(iri.AMFRANHandoverRequest)
-		if !ok {
-			t.Fatalf("record %d is %T, want AMFRANHandoverRequest", i, ev)
+	for i, rec := range records {
+		if rec.event != eventRANHandoverRequest {
+			t.Fatalf("record %d is XIRIEvent [%d], want aMFRANHandoverRequest [%d]", i, rec.event, eventRANHandoverRequest)
 		}
-		cause, isRadio := req.HandoverCause.(iri.CauseRadioNetwork)
-		if !isRadio || cause != iri.CauseRadioNetworkUnspecified {
-			t.Errorf("record %d carries handoverCause %#v, want CauseRadioNetwork(%d): the two "+
+		// handoverCause [5] EXPLICIT around radioNetwork [1].
+		cause := only(t, "handoverCause [5]", rec.member(t, 5))
+		if cause.Tag != 1 || integer(t, cause) != int64(iri.CauseRadioNetworkUnspecified) {
+			t.Errorf("record %d carries handoverCause [%d] %d, want radioNetwork [1] %d: the two "+
 				"records must be indistinguishable in the record, which is what makes the report "+
-				"the only signal", i, req.HandoverCause, iri.CauseRadioNetworkUnspecified)
+				"the only signal", i, cause.Tag, integer(t, cause), iri.CauseRadioNetworkUnspecified)
 		}
 	}
 

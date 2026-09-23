@@ -9,7 +9,6 @@ import (
 	"time"
 
 	amfctx "github.com/omec-project/amf/context"
-	"github.com/omec-project/li/iri"
 	"github.com/omec-project/li/store"
 	"github.com/omec-project/li/types"
 	"github.com/omec-project/li/x2x3"
@@ -44,8 +43,8 @@ func countingScanFixture(t *testing.T, task types.InterceptTask) (*subsystem, *w
 	snd := &withdrawingSender{}
 	s := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
-		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: "10.0.60.122:42069",
+		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
 	awaitScans(t, s)
 
@@ -178,8 +177,8 @@ func TestConcurrentActivationScansAreBounded(t *testing.T) {
 	snd := &withdrawingSender{}
 	s := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
-		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: "10.0.60.122:42069",
+		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
 	awaitScans(t, s)
 

@@ -276,7 +276,7 @@ func TestDeliveryIsolation(t *testing.T) {
 	active.Store(&subsystem{
 		ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 		store: st, senderFor: func(string) sender { return capture },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		mdf2: "10.0.60.122:42069",
 	})
 	t.Cleanup(func() { active.Store(nil) })
 
@@ -304,12 +304,11 @@ func TestDeliveryIsolation(t *testing.T) {
 }
 
 // TestEncodeAllEvents verifies every AMF xIRI a reporter can produce encodes
-// through the real TS 33.128 context without error — i.e. mandatory members are
+// through the real TS 33.128 encoder without error — i.e. mandatory members are
 // present and CHOICE arms are registered. This is the correctness check that a
 // pure-mapping test cannot give.
 func TestEncodeAllEvents(t *testing.T) {
 	id := targetIdentity()
-	ctx := iri.NewContext()
 	events := map[string]any{
 		"registration":            amfRegistration(id),
 		"locationUpdate":          amfLocationUpdate(id),
@@ -320,7 +319,7 @@ func TestEncodeAllEvents(t *testing.T) {
 		"identifierDeassociation": amfIdentifierDeassociation(id),
 	}
 	for name, ev := range events {
-		if _, err := iri.EncodeXIRI(ctx, ev); err != nil {
+		if _, err := iri.EncodeXIRI(ev); err != nil {
 			t.Errorf("encode %s: %v", name, err)
 		}
 	}
@@ -453,7 +452,7 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 		store: st, senderFor: capture.senderFor,
 		// Configured, and deliberately neither agency's address: if the fix were absent
 		// this is where both records would arrive, and the assertion below would say so.
-		mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
+		mdf2: "10.0.60.99:42069",
 	})
 	t.Cleanup(func() { active.Store(nil) })
 
@@ -506,7 +505,7 @@ func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
 			active.Store(&subsystem{
 				ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 				store: st, senderFor: capture.senderFor,
-				mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
+				mdf2: "10.0.60.99:42069",
 			})
 			t.Cleanup(func() { active.Store(nil) })
 
@@ -550,7 +549,7 @@ func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
 			active.Store(&subsystem{
 				ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 				store: st, senderFor: func(string) sender { return capture },
-				mdf2: "10.0.60.99:42069", iriCtx: iri.NewContext(),
+				mdf2: "10.0.60.99:42069",
 			})
 			t.Cleanup(func() { active.Store(nil) })
 

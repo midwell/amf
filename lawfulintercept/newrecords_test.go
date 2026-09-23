@@ -44,38 +44,10 @@ func activateIRI(t *testing.T, snd sender, supi string) {
 	}
 	active.Store(&subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
-		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: "10.0.60.122:42069",
+		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	})
 	t.Cleanup(func() { active.Store(nil) })
-}
-
-func decodeEvents(t *testing.T, snd *captureSender) []any {
-	t.Helper()
-	out := make([]any, 0, len(snd.pdus))
-	for _, p := range snd.pdus {
-		var payload iri.XIRIPayload
-		if _, err := iri.NewContext().Decode(p.Payload, &payload); err != nil {
-			t.Fatalf("decode xIRI: %v", err)
-		}
-		out = append(out, payload.Event)
-	}
-	return out
-}
-
-// supiFrom digs the SUPI out of a UserIdentifiers list, which is how the newer
-// records carry identity — one list rather than three optional members.
-func supiFrom(t *testing.T, u iri.UserIdentifiers) string {
-	t.Helper()
-	for _, id := range u.FiveGS.IDs {
-		if arm, ok := id.(iri.SubscriberSUPI); ok {
-			if imsi, ok := arm.Value.(iri.IMSI); ok {
-				return string(imsi)
-			}
-		}
-	}
-	t.Fatalf("no sUPI in %#v", u.FiveGS.IDs)
-	return ""
 }
 
 func TestReportServiceAccept(t *testing.T) {
@@ -84,21 +56,21 @@ func TestReportServiceAccept(t *testing.T) {
 
 	ReportServiceAccept(targetUE())
 
-	events := decodeEvents(t, snd)
-	if len(events) != 1 {
-		t.Fatalf("delivered %d records, want 1", len(events))
+	records := decodeRecords(t, snd)
+	if len(records) != 1 {
+		t.Fatalf("delivered %d records, want 1", len(records))
 	}
-	rec, ok := events[0].(iri.AMFUEServiceAccept)
-	if !ok {
-		t.Fatalf("decoded a %T, want AMFUEServiceAccept", events[0])
+	rec := records[0]
+	if rec.event != eventUEServiceAccept {
+		t.Fatalf("delivered XIRIEvent [%d], want aMFUEServiceAccept [%d]", rec.event, eventUEServiceAccept)
 	}
-	if got := supiFrom(t, rec.UserIdentifiers); got != testTargetSUPI {
+	if got := supiOf(t, rec.member(t, 1)); got != testTargetSUPI {
 		t.Errorf("SUPI = %q", got)
 	}
 	// The message-type octet, per TS 24.501 clause 9.7 — not the whole PDU.
-	id, ok := rec.ServiceMessageIdentity.(iri.ServiceAcceptIdentity)
-	if !ok || len(id) != 1 {
-		t.Fatalf("serviceMessageIdentity = %#v, want a one-octet serviceAccept arm", rec.ServiceMessageIdentity)
+	id := only(t, "serviceMessageIdentity [2]", rec.member(t, 2))
+	if id.Tag != 2 || len(id.Bytes) != 1 {
+		t.Fatalf("serviceMessageIdentity holds [%d] % x, want a one-octet serviceAccept [2] arm", id.Tag, id.Bytes)
 	}
 }
 
@@ -121,13 +93,15 @@ func TestReportUEPolicyTransfer(t *testing.T) {
 	}
 	ReportUEPolicyTransfer(targetUE(), policy)
 
-	events := decodeEvents(t, snd)
-	if len(events) != 1 {
-		t.Fatalf("delivered %d records, want 1", len(events))
+	records := decodeRecords(t, snd)
+	if len(records) != 1 {
+		t.Fatalf("delivered %d records, want 1", len(records))
 	}
-	rec := events[0].(iri.AMFUEPolicyTransfer) //nolint:errcheck // asserted below
-	if !bytes.Equal(rec.UEPolicy, policy) {
-		t.Errorf("uEPolicy = % x, want % x — the payload must arrive byte-identical", rec.UEPolicy, policy)
+	if records[0].event != eventUEPolicyTransfer {
+		t.Fatalf("delivered XIRIEvent [%d], want aMFUEPolicyTransfer [%d]", records[0].event, eventUEPolicyTransfer)
+	}
+	if got := records[0].member(t, 6).Bytes; !bytes.Equal(got, policy) {
+		t.Errorf("uEPolicy = % x, want % x — the payload must arrive byte-identical", got, policy)
 	}
 }
 
@@ -169,39 +143,40 @@ func TestReportHandoverRecords(t *testing.T) {
 	ReportHandoverRequest(h)
 	ReportHandoverCommand(h)
 
-	events := decodeEvents(t, snd)
-	if len(events) != 2 {
-		t.Fatalf("delivered %d records, want 2", len(events))
+	records := decodeRecords(t, snd)
+	if len(records) != 2 {
+		t.Fatalf("delivered %d records, want 2", len(records))
 	}
 
-	req, ok := events[0].(iri.AMFRANHandoverRequest)
-	if !ok {
-		t.Fatalf("first record is %T, want AMFRANHandoverRequest", events[0])
+	req := records[0]
+	if req.event != eventRANHandoverRequest {
+		t.Fatalf("first record is XIRIEvent [%d], want aMFRANHandoverRequest [%d]", req.event, eventRANHandoverRequest)
 	}
-	if req.AMFUENGAPID != 7 || req.RANUENGAPID != 9 {
-		t.Errorf("NGAP ids = %d/%d, want 7/9", req.AMFUENGAPID, req.RANUENGAPID)
+	if amf, ran := integer(t, req.member(t, 2)), integer(t, req.member(t, 3)); amf != 7 || ran != 9 {
+		t.Errorf("NGAP ids = %d/%d, want 7/9", amf, ran)
 	}
-	if !bytes.Equal(req.SourceToTargetContainer, h.SourceToTarget) {
-		t.Errorf("sourceToTargetContainer = % x — the container carried from HANDOVER REQUIRED", req.SourceToTargetContainer)
+	if got := req.member(t, 11).Bytes; !bytes.Equal(got, h.SourceToTarget) {
+		t.Errorf("sourceToTargetContainer = % x — the container carried from HANDOVER REQUIRED", got)
 	}
-	if !bytes.Equal(req.TargetToSourceContainer, h.TargetToSource) {
-		t.Errorf("targetToSourceContainer = % x", req.TargetToSourceContainer)
+	if got := req.member(t, 9).Bytes; !bytes.Equal(got, h.TargetToSource) {
+		t.Errorf("targetToSourceContainer = % x", got)
 	}
-	if cause, isRadio := req.HandoverCause.(iri.CauseRadioNetwork); !isRadio || cause != 17 {
-		t.Errorf("handoverCause = %#v, want CauseRadioNetwork(17)", req.HandoverCause)
+	// handoverCause [5] EXPLICIT around the group's alternative: radioNetwork [1].
+	if cause := only(t, "handoverCause [5]", req.member(t, 5)); cause.Tag != 1 || integer(t, cause) != 17 {
+		t.Errorf("handoverCause holds [%d] %d, want radioNetwork [1] 17", cause.Tag, integer(t, cause))
 	}
-	if req.PDUSessionResourceInformation.PDUSessionID != 5 {
-		t.Errorf("pDUSessionResourceInformation = %+v", req.PDUSessionResourceInformation)
+	if id := only(t, "pDUSessionResourceInformation [6]", req.member(t, 6)); id.Tag != 1 || integer(t, id) != 5 {
+		t.Errorf("pDUSessionResourceInformation holds [%d] %d, want pDUSessionID [1] 5", id.Tag, integer(t, id))
 	}
 
-	cmd, ok := events[1].(iri.AMFRANHandoverCommand)
-	if !ok {
-		t.Fatalf("second record is %T, want AMFRANHandoverCommand", events[1])
+	cmd := records[1]
+	if cmd.event != eventRANHandoverCommand {
+		t.Fatalf("second record is XIRIEvent [%d], want aMFRANHandoverCommand [%d]", cmd.event, eventRANHandoverCommand)
 	}
-	if !bytes.Equal(cmd.TargetToSourceContainer, h.TargetToSource) {
-		t.Errorf("command targetToSourceContainer = % x", cmd.TargetToSourceContainer)
+	if got := cmd.member(t, 5).Bytes; !bytes.Equal(got, h.TargetToSource) {
+		t.Errorf("command targetToSourceContainer = % x", got)
 	}
-	if supiFrom(t, cmd.UserIdentifiers) != testTargetSUPI {
+	if supiOf(t, cmd.member(t, 1)) != testTargetSUPI {
 		t.Error("the two handover records must name the same subscriber")
 	}
 }
@@ -245,13 +220,13 @@ func TestHandoverCauseGroupsAreDistinguished(t *testing.T) {
 	groups := []struct {
 		group HandoverCauseGroup
 		value int64
-		want  any
+		arm   int // the HandoverCause alternative: radioNetwork [1] … misc [5]
 	}{
-		{CauseGroupRadioNetwork, 52, iri.CauseRadioNetwork(52)},
-		{CauseGroupTransport, 2, iri.CauseTransport(2)},
-		{CauseGroupNAS, 4, iri.CauseNas(4)},
-		{CauseGroupProtocol, 7, iri.CauseProtocol(7)},
-		{CauseGroupMisc, 6, iri.CauseMisc(6)},
+		{CauseGroupRadioNetwork, 52, 1},
+		{CauseGroupTransport, 2, 2},
+		{CauseGroupNAS, 4, 3},
+		{CauseGroupProtocol, 7, 4},
+		{CauseGroupMisc, 6, 5},
 	}
 	for _, g := range groups {
 		snd := &captureSender{}
@@ -260,13 +235,14 @@ func TestHandoverCauseGroupsAreDistinguished(t *testing.T) {
 		h.CauseGroup, h.CauseValue = g.group, g.value
 		ReportHandoverRequest(h)
 
-		events := decodeEvents(t, snd)
-		if len(events) != 1 {
-			t.Fatalf("group %v: delivered %d records", g.group, len(events))
+		records := decodeRecords(t, snd)
+		if len(records) != 1 {
+			t.Fatalf("group %v: delivered %d records", g.group, len(records))
 		}
-		rec := events[0].(iri.AMFRANHandoverRequest) //nolint:errcheck // asserted by construction
-		if rec.HandoverCause != g.want {
-			t.Errorf("group %v decoded as %#v, want %#v", g.group, rec.HandoverCause, g.want)
+		cause := only(t, "handoverCause [5]", records[0].member(t, 5))
+		if cause.Tag != g.arm || integer(t, cause) != g.value {
+			t.Errorf("group %v is carried as [%d] %d, want [%d] %d",
+				g.group, cause.Tag, integer(t, cause), g.arm, g.value)
 		}
 	}
 }
@@ -382,9 +358,9 @@ func TestAShortUEPolicyContainerIsRefusedAndReported(t *testing.T) {
 	// A MANAGE UE POLICY COMPLETE: extended protocol discriminator, PTI, message identity.
 	ReportUEPolicyTransfer(targetUE(), []byte{0x2e, 0x01, 0x03})
 
-	if events := decodeEvents(t, snd); len(events) != 0 {
+	if records := decodeRecords(t, snd); len(records) != 0 {
 		t.Errorf("delivered %d records for a container the definition forbids. A conformant "+
 			"mediation function discards it, and this element would believe it had delivered",
-			len(events))
+			len(records))
 	}
 }

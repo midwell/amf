@@ -11,7 +11,6 @@ import (
 	"time"
 
 	amfctx "github.com/omec-project/amf/context"
-	"github.com/omec-project/li/iri"
 	"github.com/omec-project/li/store"
 	"github.com/omec-project/li/types"
 	"github.com/omec-project/li/x2x3"
@@ -60,8 +59,8 @@ func activateIRIWithTargets(t *testing.T, snd sender, targets []types.TargetIden
 	}
 	active.Store(&subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
-		ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: "10.0.60.122:42069",
+		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	})
 	t.Cleanup(func() { active.Store(nil) })
 }
@@ -266,7 +265,7 @@ func TestDeactivationForgetsTheNumbering(t *testing.T) {
 	})
 	sub := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		mdf2: "10.0.60.122:42069",
 		neID: "amf-1", ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
 	srv := newX1Server(st, Config{NEID: "amf-1", AdmfID: admf}, sub)
@@ -406,7 +405,7 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 	})
 	sub := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069", iriCtx: iri.NewContext(),
+		mdf2: "10.0.60.122:42069",
 		neID: "amf-1", ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
 	}
 	srv := newX1Server(st, Config{NEID: "amf-1", AdmfID: admf}, sub)
