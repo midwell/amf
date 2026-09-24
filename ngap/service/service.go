@@ -11,10 +11,13 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/ishidawataru/sctp"
+	"github.com/omec-project/amf/context"
 	"github.com/omec-project/amf/logger"
+	"github.com/omec-project/amf/metrics"
 	"github.com/omec-project/ngap/v2"
 )
 
@@ -31,7 +34,60 @@ var readTimeout syscall.Timeval = syscall.Timeval{Sec: 2, Usec: 0}
 var (
 	sctpListener *sctp.SCTPListener
 	connections  sync.Map
+	countMu      sync.Mutex
+
+	// listenerMu guards sctpListener, which listenAndServe writes on the goroutine Run
+	// starts and Stop reads on the goroutine that is terminating the AMF.
+	listenerMu sync.RWMutex
+
+	// served latches when this AMF first accepts an association. It is what makes
+	// "holds none" a different state from "has never held one", and the reason a freshly
+	// deployed AMF that no gNB has reached yet is not reported unhealthy.
+	served atomic.Bool
+	// shuttingDown records that Stop was called, so that an orderly termination closing
+	// its associations does not read as the fault this detects.
+	shuttingDown atomic.Bool
+	// bindFailed records that the listener could not be created at all. Run starts exactly
+	// one listenAndServe and nothing retries it, so the failure is terminal for this socket.
+	// Whether it is terminal for the *AMF* depends on which path serves gNB traffic, which is
+	// why Healthy consults directSctpServing rather than this flag alone.
+	bindFailed atomic.Bool
+	// directSctpServing records whether gNBs reach this AMF through the listener Run starts,
+	// rather than through the SCTP load balancer. Captured once by Run instead of read at
+	// check time: the server that answers the health endpoint is started before the
+	// configuration is parsed into the AMF context (service/init.go starts it, then calls
+	// InitAmfContext), so reading that field from a probe's goroutine races the startup
+	// write. Run is called from the same goroutine as InitAmfContext and after it, so the
+	// value it captures is settled.
+	directSctpServing atomic.Bool
 )
+
+func setListener(listener *sctp.SCTPListener) {
+	listenerMu.Lock()
+	sctpListener = listener
+	listenerMu.Unlock()
+}
+
+func currentListener() *sctp.SCTPListener {
+	listenerMu.RLock()
+	defer listenerMu.RUnlock()
+
+	return sctpListener
+}
+
+// takeListener returns the listener and clears it in the same acquisition, so a second Stop
+// has nothing left to close. sctp.SCTPListener.Close is a bare syscall.Close on a descriptor
+// it does not invalidate, unlike a net.Listener, so closing the same one twice would close
+// whatever descriptor number the kernel had handed out in between.
+func takeListener() *sctp.SCTPListener {
+	listenerMu.Lock()
+	defer listenerMu.Unlock()
+
+	listener := sctpListener
+	sctpListener = nil
+
+	return listener
+}
 
 var handler NGAPHandler
 
@@ -52,8 +108,17 @@ var sctpConfig sctp.SocketConfig = sctp.SocketConfig{
 	},
 }
 
+// captureServingPath records whether this AMF's own listener is what gNBs reach. Run calls it
+// on the goroutine that has already parsed the configuration, which is what makes the read
+// safe; Healthy then consults the result rather than the context.
+func captureServingPath() {
+	directSctpServing.Store(!context.AMF_Self().EnableSctpLb)
+}
+
 func Run(addresses []string, port int, h NGAPHandler) {
 	handler = h
+
+	captureServingPath()
 
 	ips := []net.IPAddr{}
 
@@ -75,17 +140,20 @@ func Run(addresses []string, port int, h NGAPHandler) {
 }
 
 func listenAndServe(addr *sctp.SCTPAddr, handler NGAPHandler) {
-	if listener, err := sctpConfig.Listen("sctp", addr); err != nil {
+	listener, err := sctpConfig.Listen("sctp", addr)
+	if err != nil {
 		logger.NgapLog.Errorf("failed to listen: %+v", err)
+		bindFailed.Store(true)
+
 		return
-	} else {
-		sctpListener = listener
 	}
 
-	logger.NgapLog.Infof("Listen on %s", sctpListener.Addr())
+	setListener(listener)
+
+	logger.NgapLog.Infof("Listen on %s", listener.Addr())
 
 	for {
-		newConn, err := sctpListener.AcceptSCTP()
+		newConn, err := listener.AcceptSCTP()
 		if err != nil {
 			switch err {
 			case syscall.EINTR, syscall.EAGAIN:
@@ -167,20 +235,120 @@ func listenAndServe(addr *sctp.SCTPAddr, handler NGAPHandler) {
 
 		logger.NgapLog.Infof("[AMF] SCTP Accept from: %+v", newConn.RemoteAddr())
 		connections.Store(newConn, true)
+		served.Store(true)
+		reportAssociationCount()
 
 		go handleConnection(newConn, readBufSize, handler)
 	}
 }
 
+// reportAssociationCount publishes how many associations the listener holds. The map is
+// the authority for that number: AmfRanPool is keyed three ways — by connection, by remote
+// address and by GnbId — so its length counts keys rather than associations.
+//
+// The count and the publish are taken under one lock so that two associations changing at
+// once cannot leave the gauge holding the earlier of the two counts until the next event.
+func reportAssociationCount() {
+	countMu.Lock()
+	defer countMu.Unlock()
+
+	metrics.SetNgapAssociations(associationCount())
+}
+
+// associationCount reports how many SCTP associations this AMF currently terminates.
+func associationCount() int {
+	count := 0
+	connections.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+
+	return count
+}
+
+// Healthy reports whether this AMF can serve a radio access network, and why not when it
+// cannot.
+//
+// It is false in two cases, both of which a process-level check cannot see.
+//
+// The first is the one this exists for: the AMF has served at least one association and now
+// holds none, with no shutdown requested. The AMF is up, its listener is bound, its SBI
+// answers, and nobody is being served, which looks identical to an idle deployment.
+//
+// The second is the same fault reached from the other side: the listener never bound, so
+// this AMF has served nobody and never will. That one is reported only where this listener
+// is what gNBs reach, since an AMF fronted by the SCTP load balancer opens it and never
+// uses it.
+//
+// A restart recovers the element. Whether it recovers service depends on the radio access
+// network re-establishing its association, which not every implementation does, so the
+// value claimed here is that the condition ends visibly rather than that traffic resumes.
+//
+// It also cannot loop: the latch lives in the process, so a restarted AMF has served
+// nothing and reports healthy until a gNB attaches. A RAN that never comes back therefore
+// costs exactly one restart, not a restart every failureThreshold.
+//
+// The two exclusions matter as much as the rule. An AMF that has never served is healthy,
+// or a fresh deployment would restart in a loop before any gNB had the chance to connect,
+// and no initial delay can cover a rig that sits deployed for hours first. An AMF that is
+// terminating is healthy, because losing its associations is what it was asked to do.
+//
+// The latch also keeps this quiet where it does not apply: in a deployment whose gNBs
+// connect to the SCTP load balancer, this AMF accepts no associations of its own, never
+// latches, and so is never reported unhealthy by either case. What such a deployment's
+// health does rest on, the gRPC server that sctplb connects to, is not represented here.
+func Healthy() (bool, string) {
+	switch {
+	// First, and ahead of every fault below, because it is not a claim about whether this
+	// AMF can serve: it says the question is no longer being asked. A pod that was told to
+	// terminate is going away whatever the answer, so no fault of its own is worth
+	// reporting - including one that will outlive it, like a listener that never bound.
+	case shuttingDown.Load():
+		return true, "shutting down"
+	// An AMF that never bound has served nobody and never will, which is the same fault as
+	// one that has stopped serving, reached from the other side. It goes above the
+	// never-served case because that one is a phase and this one is terminal.
+	//
+	// Only where this socket is what gNBs reach, though. Run is called unconditionally, so
+	// an AMF fronted by the SCTP load balancer also opens this listener and then never uses
+	// it - associations are terminated by sctplb and reach this AMF over gRPC. Failing that
+	// unused bind says nothing about whether such an AMF can serve, and restarting it for
+	// that would be the false positive this signal exists to avoid.
+	case bindFailed.Load() && directSctpServing.Load():
+		return false, "the NGAP listener never bound"
+	case !served.Load():
+		return true, "no NGAP association has been served yet"
+	case associationCount() == 0:
+		return false, "every NGAP association has been lost"
+	default:
+		return true, "serving"
+	}
+}
+
 func Stop() {
 	logger.NgapLog.Infoln("close SCTP server...")
-	if err := sctpListener.Close(); err != nil {
-		logger.NgapLog.Error(err)
-		logger.NgapLog.Infof("SCTP server may not close normally.")
+
+	shuttingDown.Store(true)
+
+	// The listener is nil if Listen failed, if termination beat the bind, or if Stop has
+	// already run, and Stop runs before the AMF tells its peers it is unavailable, so it
+	// must not end the process.
+	if listener := takeListener(); listener != nil {
+		if err := listener.Close(); err != nil {
+			logger.NgapLog.Error(err)
+			logger.NgapLog.Infof("SCTP server may not close normally.")
+		}
+	} else {
+		logger.NgapLog.Infoln("no SCTP listener to close")
 	}
 
-	connections.Range(func(key, value interface{}) bool {
-		conn := value.(net.Conn)
+	// The association is the key of this map; its value is a bool.
+	connections.Range(func(key, _ interface{}) bool {
+		conn, ok := key.(net.Conn)
+		if !ok {
+			logger.NgapLog.Errorf("connection map holds a %T key, cannot close it", key)
+			return true
+		}
 		if err := conn.Close(); err != nil {
 			logger.NgapLog.Error(err)
 		}
@@ -195,6 +363,7 @@ func handleConnection(conn *sctp.SCTPConn, bufsize uint32, handler NGAPHandler) 
 
 	defer func() {
 		connections.Delete(conn)
+		reportAssociationCount()
 
 		// Notify the NGAP dispatcher that this RAN connection has closed so that
 		// its AmfRan entry is removed from AmfRanPool

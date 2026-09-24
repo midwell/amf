@@ -24,7 +24,7 @@ func TestWebuiUrl(t *testing.T) {
 		{
 			name:       "default webui URL",
 			configFile: "../util/testdata/amfcfg.yaml",
-			want:       "http://webui:5001",
+			want:       defaultWebuiURI,
 		},
 		{
 			name:       "custom webui URL",
@@ -59,7 +59,7 @@ func TestAmfId(t *testing.T) {
 		{
 			name:       "default AMF ID",
 			configFile: "../util/testdata/amfcfg.yaml",
-			want:       "cafe00",
+			want:       defaultAmfID,
 		},
 		{
 			name:       "custom AMF ID",
@@ -192,7 +192,7 @@ func TestValidateWebuiUri(t *testing.T) {
 		},
 		{
 			name:    "valid http URI with port",
-			uri:     "http://webui:5001",
+			uri:     defaultWebuiURI,
 			isValid: true,
 		},
 		{
@@ -253,7 +253,7 @@ func TestValidateAmfId(t *testing.T) {
 	}{
 		{
 			name:    "valid amfId",
-			amfId:   "cafe00",
+			amfId:   defaultAmfID,
 			isValid: true,
 		},
 		{

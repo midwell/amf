@@ -75,6 +75,7 @@ func HandleOAMPurgeUEContextRequest(ctx ctxt.Context, supi, reqUri string, msg i
 		switch ueFsmState {
 		case context.Deregistered:
 			logger.ProducerLog.Info("Removing the UE : ", fmt.Sprintln(ue.GetSupi()))
+			ue.PublishUeCtxtInfoOnRemoval(models.ACCESSTYPE__3_GPP_ACCESS)
 			ue.Remove()
 		case context.Registered:
 			logger.ProducerLog.Info("Deregistration triggered for the UE : ", ue.GetSupi())
@@ -106,6 +107,10 @@ func HandleOAMRegisteredUEContext(request *httpwrapper.Request) *httpwrapper.Res
 func HandleOAMActiveUEContextsFromDB(request *httpwrapper.Request) *httpwrapper.Response {
 	logger.ProducerLog.Infof("[OAM] Handle Active UE Contexts Request")
 	var ueContexts []ActiveUeContext
+	// The direct field reads below are deliberate. DbFetchAllEntries builds a fresh
+	// AmfUe per document and never puts one in the UE pool, so no other goroutine
+	// holds these and there is nothing for the identityMu accessors to guard against.
+	// buildUEContext, further down, walks the live pool instead and does use them.
 	ueList := context.DbFetchAllEntries()
 
 	for _, ue := range ueList {
@@ -118,12 +123,12 @@ func HandleOAMActiveUEContextsFromDB(request *httpwrapper.Request) *httpwrapper.
 			Tac:        ue.Tai.Tac,
 			Tmsi:       fmt.Sprintf("%08x", uint32(ue.GetTmsi())),
 		}
-		if ue.RanUe != nil && ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS] != nil {
-			ueContext.RanUeNgapId = ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS].RanUeNgapId
-			ueContext.AmfUeNgapId = ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS].AmfUeNgapId
+		if ranUe := ue.GetRanUe(models.ACCESSTYPE__3_GPP_ACCESS); ranUe != nil {
+			ueContext.RanUeNgapId = ranUe.RanUeNgapId
+			ueContext.AmfUeNgapId = ranUe.AmfUeNgapId
 
-			if ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS].Ran != nil {
-				ueContext.GnbId = ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS].Ran.GnbId
+			if ranUe.Ran != nil {
+				ueContext.GnbId = ranUe.Ran.GnbId
 			}
 		}
 		ueContext.AmfInstanceName = ue.AmfInstanceName
@@ -194,13 +199,17 @@ func OAMRegisteredUEContextProcedure(supi string) (UEContexts, *models.ProblemDe
 
 func buildUEContext(ue *context.AmfUe, accessType models.AccessType) *UEContext {
 	if ue.State[accessType].Is(context.Registered) {
+		// One snapshot, not three accessor calls: the callers walk the live UE pool on
+		// an HTTP goroutine while the UE's own procedures write Tai, so three reads
+		// could report a PLMN and a TAC from different locations.
+		tai := ue.GetTai()
 		ueContext := &UEContext{
 			AccessType: accessType,
 			Supi:       ue.GetSupi(),
 			Guti:       ue.GetGuti(),
-			Mcc:        ue.Tai.PlmnId.GetMcc(),
-			Mnc:        ue.Tai.PlmnId.GetMnc(),
-			Tac:        ue.Tai.Tac,
+			Mcc:        tai.PlmnId.GetMcc(),
+			Mnc:        tai.PlmnId.GetMnc(),
+			Tac:        tai.Tac,
 		}
 
 		ue.SmContextList.Range(func(key, value interface{}) bool {

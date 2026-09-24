@@ -28,7 +28,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-const N2SMINFO_ID = "N2SmInfo"
+const (
+	n2SmInfoId       = "N2SmInfo"
+	n1SmMsgContentId = "n1SmMsg"
+)
 
 func getServingSmfIndex(smfNum int) (servingSmfIndex int) {
 	servingSmfIndexStr := os.Getenv("SERVING_SMF_INDEX")
@@ -246,23 +249,31 @@ func SendCreateSmContextRequest(ctx context.Context, ue *amf_context.AmfUe, smCo
 			smContextRef = httpResponse.Header.Get("Location")
 		}
 	} else if httpResponse != nil {
-		if httpResponse.Status != err.Error() {
-			err1 = err
-			return response, smContextRef, errorResponse, problemDetail, err1
-		}
+		// The status carried by the response decides how to read the body. The error's message
+		// does not: the generated client replaces it with FormatErrorMessage(status, model) as soon
+		// as the body decodes, and that appends whatever a top-level Title or Detail holds. Any
+		// model with those fields -- ProblemDetails has both -- therefore produces a message that
+		// differs from the bare status, so comparing the two discarded exactly the responses that
+		// had been decoded successfully.
 		switch httpResponse.StatusCode {
 		case 400, 403, 404, 500, 503, 504:
-			if errResponse, ok := openapi.ErrorModel[models.PostSmContexts400Response](err); ok {
-				errorResponse = &errResponse
+			if errResponse, ok := decodeErrorResponseBody[models.PostSmContexts400Response](httpResponse); ok {
+				errorResponse = errResponse
+			} else if errModel, ok := openapi.ErrorModel[models.PostSmContexts400Response](err); ok {
+				errorResponse = &errModel
 			} else {
 				err1 = err
 			}
 		case 411, 413, 415, 429:
-			if problem, ok := openapi.ErrorModel[models.ProblemDetails](err); ok {
-				problemDetail = &problem
+			if problem, ok := problemDetailsFrom(err); ok {
+				problemDetail = problem
 			} else {
 				err1 = err
 			}
+		default:
+			// A status this switch does not name still failed. Returning neither a model nor an
+			// error would report the call as successful.
+			err1 = err
 		}
 	} else {
 		err1 = err
@@ -283,10 +294,17 @@ func buildCreateSmContextRequest(ue *amf_context.AmfUe, smContext *amf_context.S
 	smContextCreateData.SetDnn(smContext.Dnn())
 	smContextCreateData.SetServingNfId(context.NfId)
 	smContextCreateData.SetGuami(context.ServedGuamiList[0])
-	// take seving networking plmn from userlocation.Tai
-	if ue.Tai.PlmnId.GetMcc() != "" && ue.Tai.PlmnId.GetMnc() != "" {
-		smContextCreateData.ServingNetwork.SetMcc(ue.Tai.PlmnId.GetMcc())
-		smContextCreateData.ServingNetwork.SetMnc(ue.Tai.PlmnId.GetMnc())
+	// take serving network plmn from userlocation.Tai.
+	//
+	// Snapshots, not repeated accessor calls: this function is reached from
+	// SmContextStatusNotifyProcedure's goroutine as well as from the UE's own, so the
+	// UE's procedures can write Tai, RatType and Location while it runs. Reading each
+	// twice could serve an Mcc and an Mnc from different locations.
+	tai := ue.GetTai()
+	ratType := ue.GetRatType()
+	if tai.PlmnId.GetMcc() != "" && tai.PlmnId.GetMnc() != "" {
+		smContextCreateData.ServingNetwork.SetMcc(tai.PlmnId.GetMcc())
+		smContextCreateData.ServingNetwork.SetMnc(tai.PlmnId.GetMnc())
 	} else {
 		ue.GmmLog.Warnf("tai is not received from Serving Network, Serving Plmn [Mcc %s, Mnc: %s] is taken from Guami List", context.ServedGuamiList[0].PlmnId.GetMcc(), context.ServedGuamiList[0].PlmnId.GetMnc())
 		smContextCreateData.SetServingNetwork(context.ServedGuamiList[0].PlmnId)
@@ -294,15 +312,30 @@ func buildCreateSmContextRequest(ue *amf_context.AmfUe, smContext *amf_context.S
 	if requestType != nil {
 		smContextCreateData.SetRequestType(*requestType)
 	}
-	smContextCreateData.SetN1SmMsg(models.RefToBinaryData{ContentId: "n1SmMsg"})
+	smContextCreateData.SetN1SmMsg(models.RefToBinaryData{ContentId: n1SmMsgContentId})
 	smContextCreateData.SetAnType(smContext.AccessType())
-	if ue.RatType != "" {
-		smContextCreateData.SetRatType(ue.RatType)
+	if ratType != "" {
+		smContextCreateData.SetRatType(ratType)
+	}
+	// TS 24.501 subclause 4.23.4: "If the use of extended NAS timer for access via a satellite
+	// NG-RAN cell is indicated by the AMF ... the SMF shall calculate the value of the applicable
+	// NAS timer indicated in table 10.3.2 for access via a satellite NG-RAN cell." This is that
+	// indication, so the SMF's timers follow the access rather than configuration alone.
+	//
+	// Which accesses qualify is table 10.3.2 NOTE 5, not the subclause: NR(MEO) and NR(GEO) only.
+	// See UsesExtendedNasSmTimers, which is deliberately narrower than "is this non-terrestrial".
+	//
+	// Sent only when true. The field is optional and an SMF that reads it treats absence and false
+	// alike, so an explicit false would add a field to every request on every deployment to say
+	// nothing.
+	if amf_context.RatUsesExtendedNasSmTimers(ratType) {
+		smContextCreateData.SetExtendedNasSmTimerInd(true)
+		ue.GmmLog.Infof("signalling the extended NAS SM timer indication to the SMF for RAT type %s", ratType)
 	}
 	// Forward the UE location to the SMF at session creation, mirroring the
 	// SmContextUpdateData paths that already do so. ue.Location is populated
 	// during registration (gmm/handler.go) from NGAP UpdateLocation.
-	smContextCreateData.SetUeLocation(ue.Location)
+	smContextCreateData.SetUeLocation(ue.GetLocation())
 	smContextCreateData.SetUeTimeZone(ue.TimeZone)
 	smContextCreateData.SetSmContextStatusUri(context.GetIPv4Uri() + "/namf-callback/v1/smContextStatus/" +
 		ue.GetGuti() + "/" + strconv.Itoa(int(smContext.PduSessionID())))
@@ -334,8 +367,9 @@ func SendUpdateSmContextActivateUpCnxState(
 ) {
 	updateData := models.SmContextUpdateData{}
 	updateData.SetUpCnxState(models.UPCNXSTATE_ACTIVATING)
-	if !amf_context.CompareUserLocation(ue.Location, smContext.UserLocation()) {
-		updateData.SetUeLocation(ue.Location)
+	// A copy, not &ue.Location: that field is guarded by identityMu and read from other goroutines.
+	if location := ue.GetLocation(); !amf_context.CompareUserLocation(location, smContext.UserLocation()) {
+		updateData.SetUeLocation(location)
 	}
 	if smContext.AccessType() != accessType {
 		updateData.SetAnType(smContext.AccessType())
@@ -360,7 +394,8 @@ func SendUpdateSmContextDeactivateUpCnxState(ctx context.Context, ue *amf_contex
 	}
 	updateData := models.SmContextUpdateData{}
 	updateData.SetUpCnxState(models.UPCNXSTATE_DEACTIVATED)
-	updateData.SetUeLocation(ue.Location)
+	// A copy, not &ue.Location: that field is guarded by identityMu and read from other goroutines.
+	updateData.SetUeLocation(ue.GetLocation())
 	if cause.Cause != nil {
 		updateData.SetCause(*cause.Cause)
 	}
@@ -389,8 +424,10 @@ func SendUpdateSmContextN2Info(
 ) {
 	updateData := models.SmContextUpdateData{}
 	updateData.SetN2SmInfoType(n2SmType)
-	updateData.N2SmInfo = models.NewRefToBinaryData(N2SMINFO_ID)
-	updateData.UeLocation = &ue.Location
+	updateData.N2SmInfo = models.NewRefToBinaryData(n2SmInfoId)
+	// A copy, not &ue.Location: that field is guarded by identityMu and read from other goroutines.
+	location := ue.GetLocation()
+	updateData.UeLocation = &location
 	return SendUpdateSmContextRequest(ctx, smContext, updateData, nil, N2SmInfo)
 }
 
@@ -405,10 +442,11 @@ func SendUpdateSmContextXnHandover(
 	updateData := models.SmContextUpdateData{}
 	if n2SmType != "" {
 		updateData.N2SmInfoType = &n2SmType
-		updateData.N2SmInfo = models.NewRefToBinaryData(N2SMINFO_ID)
+		updateData.N2SmInfo = models.NewRefToBinaryData(n2SmInfoId)
 	}
 	updateData.SetToBeSwitched(true)
-	updateData.SetUeLocation(ue.Location)
+	// A copy, not &ue.Location: that field is guarded by identityMu and read from other goroutines.
+	updateData.SetUeLocation(ue.GetLocation())
 	if ladn, ok := ue.ServingAMF.LadnPool[smContext.Dnn()]; ok {
 		if amf_context.InTaiList(ue.Tai, ladn.TaiLists) {
 			updateData.SetPresenceInLadn(models.PRESENCESTATE_IN_AREA)
@@ -427,7 +465,7 @@ func SendUpdateSmContextXnHandoverFailed(
 	updateData := models.SmContextUpdateData{}
 	if n2SmType != "" {
 		updateData.SetN2SmInfoType(n2SmType)
-		updateData.N2SmInfo = models.NewRefToBinaryData(N2SMINFO_ID)
+		updateData.N2SmInfo = models.NewRefToBinaryData(n2SmInfoId)
 	}
 	updateData.SetFailedToBeSwitched(true)
 	return SendUpdateSmContextRequest(ctx, smContext, updateData, nil, N2SmInfo)
@@ -444,7 +482,7 @@ func SendUpdateSmContextN2HandoverPreparing(
 	updateData := models.SmContextUpdateData{}
 	if n2SmType != "" {
 		updateData.N2SmInfoType = &n2SmType
-		updateData.N2SmInfo = models.NewRefToBinaryData(N2SMINFO_ID)
+		updateData.N2SmInfo = models.NewRefToBinaryData(n2SmInfoId)
 	}
 	updateData.SetHoState(models.HOSTATE_PREPARING)
 	updateData.TargetId = targetId
@@ -463,7 +501,7 @@ func SendUpdateSmContextN2HandoverPrepared(
 	updateData := models.SmContextUpdateData{}
 	if n2SmType != "" {
 		updateData.SetN2SmInfoType(n2SmType)
-		updateData.N2SmInfo = models.NewRefToBinaryData(N2SMINFO_ID)
+		updateData.N2SmInfo = models.NewRefToBinaryData(n2SmInfoId)
 	}
 	updateData.SetHoState(models.HOSTATE_PREPARED)
 	return SendUpdateSmContextRequest(ctx, smContext, updateData, nil, N2SmInfo)
@@ -562,6 +600,9 @@ func SendUpdateSmContextRequest(ctx context.Context, smContext *amf_context.SmCo
 		apiUpdateSmContextRequest = apiUpdateSmContextRequest.BinaryDataN2SmInformation(tmpN2File)
 	}
 	updateSmContextReponse, httpResponse, err := client.IndividualSMContextAPI.UpdateSmContextExecute(apiUpdateSmContextRequest)
+	if httpResponse != nil {
+		defer httpResponse.Body.Close()
+	}
 	// retry on alternate SMF
 	if err != nil {
 		if errProfile := setAltSmfProfile(smContext); errProfile == nil {
@@ -610,6 +651,9 @@ func SendUpdateSmContextRequest(ctx context.Context, smContext *amf_context.SmCo
 				apiUpdateSmContextRequest = apiUpdateSmContextRequest.BinaryDataN2SmInformation(tmpN2File)
 			}
 			updateSmContextReponse, httpResponse, err = client.IndividualSMContextAPI.UpdateSmContextExecute(apiUpdateSmContextRequest)
+			if httpResponse != nil {
+				defer httpResponse.Body.Close()
+			}
 		}
 	}
 
@@ -627,28 +671,112 @@ func SendUpdateSmContextRequest(ctx context.Context, smContext *amf_context.SmCo
 			return response, errorResponse, problemDetail, nil
 		}
 	} else if httpResponse != nil {
-		if httpResponse.Status != err.Error() {
-			err1 = err
-			return response, errorResponse, problemDetail, err1
-		}
 		switch httpResponse.StatusCode {
 		case 400, 403, 404, 500, 503:
-			if errResponse, ok := openapi.ErrorModel[models.UpdateSmContext400Response](err); ok {
-				errorResponse = &errResponse
+			if errResponse, ok := decodeErrorResponseBody[models.UpdateSmContext400Response](httpResponse); ok {
+				errorResponse = errResponse
+			} else if errModel, ok := openapi.ErrorModel[models.UpdateSmContext400Response](err); ok {
+				errorResponse = &errModel
 			} else {
 				err1 = err
 			}
 		case 411, 413, 415, 429:
-			if problem, ok := openapi.ErrorModel[models.ProblemDetails](err); ok {
-				problemDetail = &problem
+			if problem, ok := problemDetailsFrom(err); ok {
+				problemDetail = problem
 			} else {
 				err1 = err
 			}
+		default:
+			// A status this switch does not name still failed. Returning neither a model nor an
+			// error would report the call as successful.
+			err1 = err
 		}
 	} else {
 		err1 = err
 	}
 	return response, errorResponse, problemDetail, err1
+}
+
+// problemDetailsFrom returns the problem the peer reported, whichever of the two shapes the
+// generated client decoded it into.
+//
+// The client chooses the model per status: 411 is decoded as models.ProblemDetails, while 413, 415
+// and 429 are decoded as models.ExtProblemDetails, which is the same object with one extra field.
+// Asking only for ProblemDetails therefore matched one status in four. That never showed, because
+// the comparison this function replaced meant the switch was not reached at all.
+//
+// RemoteError has no counterpart in ProblemDetails and is dropped. It reports which remote NF
+// produced the error, which the callers here do not use; everything the UE-facing paths read -
+// cause, title, detail, invalid parameters - is carried over.
+func problemDetailsFrom(err error) (*models.ProblemDetails, bool) {
+	if problem, ok := openapi.ErrorModel[models.ProblemDetails](err); ok {
+		return &problem, true
+	}
+	if ext, ok := openapi.ErrorModel[models.ExtProblemDetails](err); ok {
+		return &models.ProblemDetails{
+			Type:                 ext.Type,
+			Title:                ext.Title,
+			Status:               ext.Status,
+			Detail:               ext.Detail,
+			Instance:             ext.Instance,
+			Cause:                ext.Cause,
+			InvalidParams:        ext.InvalidParams,
+			SupportedFeatures:    ext.SupportedFeatures,
+			AccessTokenError:     ext.AccessTokenError,
+			AccessTokenRequest:   ext.AccessTokenRequest,
+			NrfId:                ext.NrfId,
+			SupportedApiVersions: ext.SupportedApiVersions,
+			NoProfileMatchInfo:   ext.NoProfileMatchInfo,
+		}, true
+	}
+	return nil, false
+}
+
+// decodeErrorResponseBody decodes an error response body into T, reporting whether it
+// succeeded.
+//
+// openapi.ErrorModel cannot return the multipart wrapper types. The generated client decodes a
+// 4xx body into the JSON-only error model - models.SmContextCreateError for PostSmContexts,
+// models.SmContextUpdateError for UpdateSmContext - and stores that in
+// GenericOpenAPIError.RawModel, so asserting to models.PostSmContexts400Response or
+// models.UpdateSmContext400Response never succeeds. Those wrappers are also the only models
+// carrying binaryDataN1SmMessage, which is the NAS reject the UE has to be given: the JSON-only
+// models hold n1SmMsg as a RefToBinaryData reference, not the bytes.
+//
+// The generated client leaves the body readable, so it is decoded here the same way the success
+// path does. This mirrors decodeSuccessResponseBody rather than sharing its body deliberately,
+// so that a fix for the error path cannot regress the success path.
+//
+// A decode that produced no jsonData counts as a failure. Every field on the wrappers is
+// omitempty and neither validates on unmarshal, so any JSON object decodes into an empty
+// wrapper - including the application/problem+json body TS 29.502 specifies for an error that
+// carries no N1 message. Reporting success there would hand the caller a wrapper with nothing
+// in it and a nil error, hiding the SMF's cause behind an unreadable N1 message; reporting
+// failure leaves that body to openapi.ErrorModel, which is what handles it today.
+func decodeErrorResponseBody[T any](httpResponse *http.Response) (*T, bool) {
+	if httpResponse == nil || httpResponse.Body == nil {
+		return nil, false
+	}
+	body, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		return nil, false
+	}
+	if err = httpResponse.Body.Close(); err != nil {
+		return nil, false
+	}
+	httpResponse.Body = io.NopCloser(bytes.NewBuffer(body))
+	if len(body) == 0 {
+		return nil, false
+	}
+	var target T
+	if err = openapi.Decode(&target, body, httpResponse.Header.Get("Content-Type")); err != nil {
+		return nil, false
+	}
+	wrapper, ok := any(&target).(interface{ HasJsonData() bool })
+	if !ok || !wrapper.HasJsonData() {
+		return nil, false
+	}
+	return &target, true
 }
 
 func decodeSuccessResponseBody(httpResponse *http.Response, target any) error {
@@ -736,6 +864,9 @@ func SendReleaseSmContextRequest(ue *amf_context.AmfUe, smContext *amf_context.S
 	apiReleaseSmContextRequest := client.IndividualSMContextAPI.ReleaseSmContext(ctx, smContext.SmContextRef())
 	apiReleaseSmContextRequest = apiReleaseSmContextRequest.SmContextReleaseData(releaseData)
 	_, response, err1 := client.IndividualSMContextAPI.ReleaseSmContextExecute(apiReleaseSmContextRequest)
+	if response != nil {
+		defer response.Body.Close()
+	}
 
 	if err1 == nil {
 		ue.SmContextList.Delete(smContext.PduSessionID())
@@ -771,7 +902,7 @@ func buildReleaseSmContextRequest(
 	}
 	if n2Info != nil {
 		releaseData.SetN2SmInfoType(n2SmInfoType)
-		releaseData.SetN2SmInfo(models.RefToBinaryData{ContentId: N2SMINFO_ID})
+		releaseData.SetN2SmInfo(models.RefToBinaryData{ContentId: n2SmInfoId})
 	}
 	// TODO: other param(ueLocation...)
 	return

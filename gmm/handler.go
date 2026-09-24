@@ -12,14 +12,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/mohae/deepcopy"
 	"github.com/omec-project/amf/consumer"
 	"github.com/omec-project/amf/context"
 	gmm_message "github.com/omec-project/amf/gmm/message"
@@ -52,6 +50,9 @@ const (
 var (
 	sendDLNASTransport                    = gmm_message.SendDLNASTransport
 	sendReleaseSmContextRequest           = consumer.SendReleaseSmContextRequest
+	selectSmf                             = consumer.SelectSmf
+	sendCreateSmContextRequest            = consumer.SendCreateSmContextRequest
+	sendUpdateSmContextRequest            = consumer.SendUpdateSmContextRequest
 	getSubscribedNssaiForRegistration     = getSubscribedNssai
 	communicateWithUDMForRegistration     = communicateWithUDM
 	handleRequestedNssaiForRegistration   = handleRequestedNssai
@@ -61,20 +62,27 @@ var (
 	sendRegistrationAcceptForRegistration = gmm_message.SendRegistrationAccept
 )
 
-func readBinaryResponseFile(file *os.File) ([]byte, error) {
-	if file == nil {
-		return nil, nil
+// removePendingPayloadFiles deletes the temp files openapi.Decode created for a pending
+// message's binary parts.
+//
+// Payloads prefers the bytes captured when the message was stored and may never touch the
+// files, but nothing else removes them: the producer already drains and removes them for
+// the common case, so finding them gone here is expected, not a leak to warn about. One
+// file per paged UE that predates payload capture, and a UE paged repeatedly leaves one per
+// attempt.
+func removePendingPayloadFiles(m *context.N1N2Message) {
+	if m == nil {
+		return
 	}
-	if _, err := file.Seek(0, io.SeekStart); err == nil {
-		data, readErr := io.ReadAll(file)
-		if readErr == nil {
-			return data, nil
+
+	for _, f := range []*os.File{
+		m.Request.GetBinaryDataN1Message(),
+		m.Request.GetBinaryDataN2Information(),
+	} {
+		if err := util.CleanupBinaryTempFile(f); err != nil {
+			logger.GmmLog.Warnf("could not remove a pending N1N2 message temp file: %+v", err)
 		}
 	}
-	if file.Name() == "" {
-		return nil, fmt.Errorf("unable to read binary response file")
-	}
-	return os.ReadFile(file.Name())
 }
 
 func HandleULNASTransport(ctx ctxt.Context, ue *context.AmfUe, anType models.AccessType,
@@ -155,7 +163,19 @@ func transport5GSMMessage(
 		return nil
 	}
 
-	if has && isInitialRequest(requestType) {
+	// A Request type of "initial request" only means "establish a new session" when the
+	// payload actually is one. Per TS 24.501 subclause 5.4.5.2.2 the Request type IE is carried
+	// on a PDU SESSION MODIFICATION REQUEST as well, so a UE that sets "initial request" there
+	// would otherwise have its established session discarded here and released below.
+	//
+	// Guarded on `has` as well as on the Request type, and in that order: only a request against
+	// a session that already exists can be misclassified, and both readers below are reached only
+	// when one does. A genuine first establishment is the common case on this hot path and must
+	// not pay for a decode whose answer it never consults.
+	establishmentOnExistingSession := has && isInitialRequest(requestType) &&
+		isEstablishmentRequestFromUE(smMsg, ue)
+
+	if establishmentOnExistingSession {
 		ue.SmContextList.Delete(pduID)
 		has, smCtx = false, nil
 	}
@@ -171,6 +191,19 @@ func transport5GSMMessage(
 
 		switch requestType.GetRequestTypeValue() {
 		case nasMessage.ULNASTransportRequestTypeInitialRequest:
+			if !establishmentOnExistingSession {
+				// Request type says "initial request" but the payload is not an establishment
+				// request. Forward it and let the SMF answer; releasing the session here would
+				// punish the subscriber for the UE's malformed signalling.
+				//
+				// This condition is always true as the code stands: an establishment request on an
+				// existing session is consumed by the delete above, which clears `has` and so skips
+				// this switch entirely. It is written as a condition rather than dropped because
+				// what follows it tears down a working session, and that call should depend on the
+				// payload check explicitly rather than on the reachability of a block above it.
+				ue.GmmLog.Warnf("request type is initial request but payload is not a PDU session establishment request (pdu session id: %d); forwarding to SMF", pduID)
+				return forward5GSMMessageToSMF(ctx, ue, anType, pduID, smCtx, smMsg)
+			}
 			return releaseDuplicatePDUSession(ctx, ue, anType, pduID, smCtx, smMsg, ulNasTransport)
 
 		case nasMessage.ULNASTransportRequestTypeExistingPduSession:
@@ -201,7 +234,7 @@ func transport5GSMMessage(
 		}
 		dnn := pickDNN(ulNasTransport, ue, snssai)
 
-		newSmCtx, cause, err := consumer.SelectSmf(ctx, ue, anType, pduID, snssai, dnn)
+		newSmCtx, cause, err := selectSmf(ctx, ue, anType, pduID, snssai, dnn)
 		if err != nil {
 			ue.GmmLog.Errorf("select SMF failed: %+v", err)
 			m := new(nas.Message)
@@ -233,7 +266,7 @@ func transport5GSMMessage(
 			return nil
 		}
 
-		_, smCtxRef, errResp, prob, err := consumer.SendCreateSmContextRequest(ctx, ue, newSmCtx, nil, smMsg)
+		_, smCtxRef, errResp, prob, err := sendCreateSmContextRequest(ctx, ue, newSmCtx, nil, smMsg)
 		if err != nil {
 			ue.GmmLog.Errorf("createSmContextRequest Error: %+v", err)
 			return nil
@@ -243,10 +276,17 @@ func transport5GSMMessage(
 		}
 		if errResp != nil {
 			ue.GmmLog.Warnf("pdu session establishment request is rejected by SMF[pduSessionId:%d]", pduID)
-			binaryDataN1SmMessage, err := io.ReadAll(errResp.GetBinaryDataN1SmMessage())
+			binaryDataN1SmMessage, err := util.ReadAndCleanupBinaryTempFile(errResp.GetBinaryDataN1SmMessage())
 			if err != nil {
 				ue.GmmLog.Errorf("could not read N1 SM message: %v", err)
 				return fmt.Errorf("could not read N1 SM message: %w", err)
+			}
+			// The SMF can refuse without attaching a reject, in which case its response
+			// carries jsonData alone. There is nothing to relay then, and an empty
+			// payload container is not a message the UE can act on.
+			if len(binaryDataN1SmMessage) == 0 {
+				ue.GmmLog.Warnf("SMF rejection carries no N1 SM message[pduSessionId:%d]", pduID)
+				return nil
 			}
 			sendDLNASTransport(ue.GetRanUe(anType), anType, nasMessage.PayloadContainerTypeN1SMInfo,
 				binaryDataN1SmMessage, pduID, 0, nil, 0)
@@ -254,10 +294,10 @@ func transport5GSMMessage(
 		}
 
 		newSmCtx.SetSmContextRef(smCtxRef)
-		newSmCtx.SetUserLocation(deepcopy.Copy(ue.Location).(models.UserLocation))
+		newSmCtx.SetUserLocation(ue.GetLocation())
 		ue.StoreSmContext(pduID, newSmCtx)
 		ue.GmmLog.Infof("create smContext[pduSessionID: %d] Success", pduID)
-		ue.PublishUeCtxtInfo()
+		ue.PublishUeCtxtInfo(anType)
 		return nil
 
 	case nasMessage.ULNASTransportRequestTypeModificationRequest,
@@ -331,6 +371,26 @@ func is5GSMStatusFromUE(smMsg []byte, ue *context.AmfUe) bool {
 	return false
 }
 
+// isEstablishmentRequestFromUE reports whether the N1 SM payload is a PDU SESSION
+// ESTABLISHMENT REQUEST. The Request type IE alone cannot answer that: it is carried on a
+// PDU SESSION MODIFICATION REQUEST too, and only the payload says which procedure the UE
+// is running.
+func isEstablishmentRequestFromUE(smMsg []byte, ue *context.AmfUe) bool {
+	if len(smMsg) == 0 {
+		return false
+	}
+	msg := new(nas.Message)
+	if err := msg.PlainNasDecode(&smMsg); err != nil {
+		ue.GmmLog.Errorf("could not decode Nas message: %v", err)
+		return false
+	}
+	// The order of these two operands is load-bearing. nas.Message embeds *GsmMessage, which
+	// embeds GsmHeader by value, so msg.GsmHeader dereferences the pointer — reading it when
+	// GsmMessage is nil panics. The short circuit is the nil check.
+	return msg.GsmMessage != nil &&
+		msg.GsmHeader.GetMessageType() == nas.MsgTypePDUSessionEstablishmentRequest
+}
+
 func sendNotForwarded(ue *context.AmfUe, anType models.AccessType, smMsg []byte, pduID int32) error {
 	ranUe := ue.GetRanUe(anType)
 	if ranUe == nil {
@@ -375,8 +435,8 @@ func releaseDuplicatePDUSession(
 		return nil
 	}
 
-	smCtx.SetUserLocation(ue.Location)
-	n2, err := io.ReadAll(resp.GetBinaryDataN2SmInformation())
+	smCtx.SetUserLocation(ue.GetLocation())
+	n2, err := util.ReadAndCleanupBinaryTempFile(resp.GetBinaryDataN2SmInformation())
 	if err != nil {
 		ue.GmmLog.Errorf("could not read N2 SM information: %v", err)
 		return fmt.Errorf("could not read N2 SM information: %w", err)
@@ -397,7 +457,7 @@ func pickSnssai(ulNasTransport *nasMessage.ULNASTransport, ue *context.AmfUe, an
 	if ulNasTransport.SNSSAI != nil {
 		return nasConvert.SnssaiToModels(ulNasTransport.SNSSAI), nil
 	}
-	if allowed, ok := ue.AllowedNssai[anType]; ok && len(allowed) > 0 {
+	if allowed := ue.GetAllowedNssai(anType); len(allowed) > 0 {
 		return allowed[0].AllowedSnssai, nil
 	}
 	return models.Snssai{}, errors.New("ue doesn't have allowedNssai")
@@ -440,15 +500,16 @@ func forward5GSMMessageToSMF(
 		N1SmMsg: n1SmMsg,
 	}
 	smContextUpdateData.SetPei(ue.GetPei())
-	if !context.CompareUserLocation(ue.Location, smContext.UserLocation()) {
-		smContextUpdateData.SetUeLocation(ue.Location)
+	// A copy, not &ue.Location: that field is guarded by identityMu and read from other goroutines.
+	if location := ue.GetLocation(); !context.CompareUserLocation(location, smContext.UserLocation()) {
+		smContextUpdateData.SetUeLocation(location)
 	}
 
 	if accessType != smContext.AccessType() {
 		smContextUpdateData.SetAnType(accessType)
 	}
 
-	response, errResponse, problemDetail, err := consumer.SendUpdateSmContextRequest(ctx, smContext,
+	response, errResponse, problemDetail, err := sendUpdateSmContextRequest(ctx, smContext,
 		smContextUpdateData, smMessage, nil)
 
 	if err != nil {
@@ -460,14 +521,14 @@ func forward5GSMMessageToSMF(
 		return nil
 	} else if errResponse != nil {
 		errJSON := errResponse.GetJsonData()
-		n1Msg, err := io.ReadAll(errResponse.GetBinaryDataN1SmMessage())
+		n1Msg, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN1SmMessage())
 		if err != nil {
 			ue.GmmLog.Errorf("could not read N1 SM message: %v", err)
 			return fmt.Errorf("could not read N1 SM message: %w", err)
 		}
 		ue.GmmLog.Warnf("PDU Session Modification Procedure is rejected by SMF[pduSessionId:%d], Error[%s]",
 			pduSessionID, errJSON.Error.GetCause())
-		if n1Msg != nil {
+		if len(n1Msg) > 0 {
 			sendDLNASTransport(ue.GetRanUe(accessType), accessType, nasMessage.PayloadContainerTypeN1SMInfo,
 				n1Msg, pduSessionID, 0, nil, 0)
 		}
@@ -475,18 +536,18 @@ func forward5GSMMessageToSMF(
 	} else if response != nil {
 		// update SmContext in AMF
 		smContext.SetAccessType(accessType)
-		smContext.SetUserLocation(ue.Location)
+		smContext.SetUserLocation(ue.GetLocation())
 
 		responseData := response.GetJsonData()
 		var n1Msg []byte
-		n2SmInfo, err := readBinaryResponseFile(response.GetBinaryDataN2SmInformation())
+		n2SmInfo, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 		if err != nil {
 			ue.GmmLog.Errorf("could not read N2 SM information: %v", err)
 			return fmt.Errorf("could not read N2 SM information: %w", err)
 		}
 		if response.GetBinaryDataN1SmMessage() != nil {
 			ue.GmmLog.Debug("Receive N1 SM Message from SMF")
-			binaryDataN1SmMessage, err := readBinaryResponseFile(response.GetBinaryDataN1SmMessage())
+			binaryDataN1SmMessage, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN1SmMessage())
 			if err != nil {
 				ue.GmmLog.Errorf("could not read N1 SM message: %v", err)
 				return fmt.Errorf("could not read N1 SM message: %w", err)
@@ -517,7 +578,7 @@ func forward5GSMMessageToSMF(
 			ngap_message.SendDownlinkNasTransport(ue.GetRanUe(accessType), n1Msg, nil)
 		}
 	}
-	ue.PublishUeCtxtInfo()
+	ue.PublishUeCtxtInfo(accessType)
 	return nil
 }
 
@@ -679,43 +740,52 @@ func HandleRegistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType model
 		ue.NgKsi.Ksi = 0
 	}
 
-	// Copy UserLocation from ranUe
-	ue.Location = ranUe.Location
-	ue.Tai = ranUe.Tai
+	// Copy UserLocation from ranUe. The setters take identityMu, because the
+	// Namf_EventExposure, Namf_Location, Namf_MT and OAM handlers read these fields
+	// on their own HTTP goroutines while this procedure runs.
+	ue.SetLocation(ranUe.Location)
+	ue.SetTai(ranUe.Tai)
 
 	// Set ue.RatType from the access type. Without this, ue.RatType stays
 	// empty during normal registration and downstream SBI consumers
 	// (Nsmf_PDUSession CreateSMContext, Namf_Communication, location and
 	// MT services) send an empty ratType.
+	//
+	// Decided from ranUe rather than from ue, whose copies were just taken from it,
+	// so that the derivation does not read fields this goroutine has published to
+	// the handlers. Seeded with the current value because neither switch has a
+	// default: an access type that matches no arm must leave RatType as it was.
+	ratType := ue.GetRatType()
 	switch anType {
 	case models.ACCESSTYPE__3_GPP_ACCESS:
 		switch {
-		case ue.Location.NrLocation != nil:
-			ue.SetRatType(models.RATTYPE_NR)
-		case ue.Location.EutraLocation != nil:
-			ue.SetRatType(models.RATTYPE_EUTRA)
+		case ranUe.Location.NrLocation != nil:
+			ratType = models.RATTYPE_NR
+		case ranUe.Location.EutraLocation != nil:
+			ratType = models.RATTYPE_EUTRA
 		}
 	case models.ACCESSTYPE_NON_3_GPP_ACCESS:
-		ue.SetRatType(models.RATTYPE_WLAN)
+		ratType = models.RATTYPE_WLAN
 	}
 
 	// Rel-18 NR-NTN: if the serving RAN advertised RATInformation for this
 	// TAC at NGSetup, upgrade the generic NR RatType to the orbit-specific
 	// value (NR_LEO/NR_MEO/NR_GEO/NR_OTHER_SAT) per 3GPP TS 29.571.
-	if ue.RatType == models.RATTYPE_NR && ranUe.Ran != nil {
-		if ratInfo := ranUe.Ran.RatInformationForTAC(ue.Tai.Tac); ratInfo != nil {
+	if ratType == models.RATTYPE_NR && ranUe.Ran != nil {
+		if ratInfo := ranUe.Ran.RatInformationForTAC(ranUe.Tai.Tac); ratInfo != nil {
 			switch ratInfo.Value {
 			case ngapType.RATInformationPresentNRLEO:
-				ue.SetRatType(models.RATTYPE_NR_LEO)
+				ratType = models.RATTYPE_NR_LEO
 			case ngapType.RATInformationPresentNRMEO:
-				ue.SetRatType(models.RATTYPE_NR_MEO)
+				ratType = models.RATTYPE_NR_MEO
 			case ngapType.RATInformationPresentNRGEO:
-				ue.SetRatType(models.RATTYPE_NR_GEO)
+				ratType = models.RATTYPE_NR_GEO
 			case ngapType.RATInformationPresentNROTHERSAT:
-				ue.SetRatType(models.RATTYPE_NR_OTHER_SAT)
+				ratType = models.RATTYPE_NR_OTHER_SAT
 			}
 		}
 	}
+	ue.SetRatType(ratType)
 
 	// Check TAI
 	taiList := make([]models.Tai, len(amfSelf.SupportTaiLists))
@@ -813,17 +883,18 @@ func HandleInitialRegistration(ctx ctxt.Context, ue *context.AmfUe, anType model
 		ue.Capability5GMM = *registrationRequest.Capability5GMM
 	}
 
-	if len(ue.AllowedNssai[anType]) == 0 {
+	if ue.AllowedNssaiLen(anType) == 0 {
 		gmm_message.SendRegistrationReject(ranUe, nasMessage.Cause5GMM5GSServicesNotAllowed, "")
 		ngap_message.SendUEContextReleaseCommand(ranUe, context.UeContextN2NormalRelease,
 			ngapType.CausePresentNas, ngapType.CauseNasPresentNormalRelease)
+		ue.PublishUeCtxtInfoOnRemoval(anType)
 		ue.Remove()
 		return fmt.Errorf("allowed nssai list is nil")
 	}
 
 	//TODO: this is commented because Radysis USIM is not sending this IE
 	/*else {
-		gmm_message.SendRegistrationReject(ue.RanUe[anType], nasMessage.Cause5GMMProtocolErrorUnspecified, "")
+		gmm_message.SendRegistrationReject(ue.GetRanUe(anType), nasMessage.Cause5GMMProtocolErrorUnspecified, "")
 		return fmt.Errorf("Capability5GMM is nil")
 	}*/
 
@@ -858,7 +929,7 @@ func HandleInitialRegistration(ctx ctxt.Context, ue *context.AmfUe, anType model
 
 	// TODO: Not supporting IMEI check with EIR. please uncomment when we support EIR check
 	/*if len(ue.Pei) == 0 {
-		gmm_message.SendIdentityRequest(ue.RanUe[anType], nasMessage.MobileIdentity5GSTypeImei)
+		gmm_message.SendIdentityRequest(ue.GetRanUe(anType), nasMessage.MobileIdentity5GSTypeImei)
 		return nil
 	}*/
 
@@ -1092,11 +1163,11 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 								ue.GmmLog.Errorf("update SmContext Error[%v]", err)
 							}
 						} else {
-							binaryDataN1SmMessage, err := io.ReadAll(response.GetBinaryDataN1SmMessage())
+							binaryDataN1SmMessage, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN1SmMessage())
 							if err != nil {
 								ue.GmmLog.Errorf("could not read N1 SM message: %v", err)
 							}
-							binaryDataN2SmInformation, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
+							binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 							if err != nil {
 								ue.GmmLog.Errorf("could not read N2 SM information: %v", err)
 							}
@@ -1148,34 +1219,18 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 		n1n2Message := ue.N1N2Message
 		if n1n2Message != nil {
 			requestData := n1n2Message.Request.JsonData
-			n1MsgFile := n1n2Message.Request.GetBinaryDataN1Message()
-			n2InfoFile := n1n2Message.Request.GetBinaryDataN2Information()
 
-			if requestData.HasN1MessageContainer() && n1MsgFile == nil {
-				logger.GmmLog.Errorf("N1MessageContainer present but BinaryDataN1Message is missing")
-				return fmt.Errorf("N1MessageContainer present but BinaryDataN1Message is missing")
-			}
-			if requestData.HasN2InfoContainer() && n2InfoFile == nil {
-				logger.GmmLog.Errorf("N2InfoContainer present but BinaryDataN2Information is missing")
-				return fmt.Errorf("N2InfoContainer present but BinaryDataN2Information is missing")
+			// Take the payloads captured when the message was stored. Re-reading the
+			// request's binary fields returns nothing and no error, so an empty
+			// payload used to travel to the RAN as a PDU Session Resource Setup with
+			// no transfer in it.
+			n1Msg, n2Info, err := n1n2Message.Payloads()
+			if err != nil {
+				logger.GmmLog.Errorf("pending N1N2 message unusable: %+v", err)
+				return err
 			}
 
-			var n1Msg, n2Info []byte
-			var err error
-			if n1MsgFile != nil {
-				n1Msg, err = io.ReadAll(n1MsgFile)
-				if err != nil {
-					logger.GmmLog.Errorf("error reading BinaryDataN1Message: %+v", err)
-					return err
-				}
-			}
-			if n2InfoFile != nil {
-				n2Info, err = io.ReadAll(n2InfoFile)
-				if err != nil {
-					logger.GmmLog.Errorf("error reading BinaryDataN2Information: %+v", err)
-					return err
-				}
-			}
+			removePendingPayloadFiles(n1n2Message)
 			// downlink signalling
 			if n2Info == nil {
 				if len(suList.List) != 0 {
@@ -1236,11 +1291,11 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 						}
 						errCause = append(errCause, cause)
 					} else {
-						smContext.SetUserLocation(deepcopy.Copy(ue.Location).(models.UserLocation))
+						smContext.SetUserLocation(ue.GetLocation())
 						smContext.SetAccessType(models.ACCESSTYPE__3_GPP_ACCESS)
 						if response.GetBinaryDataN2SmInformation() != nil &&
 							response.JsonData.GetN2SmInfoType() == models.N2SMINFOTYPE_PDU_RES_SETUP_REQ {
-							binaryDataN2SmInformation, readErr := io.ReadAll(response.GetBinaryDataN2SmInformation())
+							binaryDataN2SmInformation, readErr := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 							if readErr != nil {
 								ue.GmmLog.Errorf("could not read N2 SM information: %+v", readErr)
 							}
@@ -1272,7 +1327,9 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 	if ue.LocationChanged && ue.RequestTriggerLocationChange {
 		updateReq := models.PolicyAssociationUpdateRequest{}
 		updateReq.Triggers = append(updateReq.Triggers, models.REQUESTTRIGGER_LOC_CH)
-		updateReq.UserLoc = &ue.Location
+		// A copy, not &ue.Location: that field is guarded by identityMu and read from other goroutines.
+		location := ue.GetLocation()
+		updateReq.UserLoc = &location
 		problemDetails, err := consumer.AMPolicyControlUpdate(ctx, ue, updateReq)
 		if problemDetails != nil {
 			ue.GmmLog.Errorf("AM Policy Control Update Failed Problem[%+v]", problemDetails)
@@ -1589,8 +1646,8 @@ func handleRequestedNssai(ctx ctxt.Context, ue *context.AmfUe, registrationReque
 				ueContext := consumer.BuildUeContextModel(ue)
 				ranId := ranUe.Ran.RanId
 				ranNodeId := models.NewNullableGlobalRanNodeId(ranId)
-				allowedNssai := models.NewAllowedNssai(ue.AllowedNssai[anType], anType)
-				registerContext := models.NewRegistrationContextContainer(ueContext, anType, int32(ranUe.RanUeNgapId), *ranNodeId, amfSelf.Name, ue.Location)
+				allowedNssai := models.NewAllowedNssai(ue.GetAllowedNssai(anType), anType)
+				registerContext := models.NewRegistrationContextContainer(ueContext, anType, int32(ranUe.RanUeNgapId), *ranNodeId, amfSelf.Name, ue.GetLocation())
 				registerContext.SetRrcEstCause(ranUe.RRCEstablishmentCause)
 				registerContext.SetUeContextRequest(ranUe.UeContextRequest)
 				registerContext.SetAnN2IPv4Addr(ranUe.Ran.GnbIp)
@@ -1608,7 +1665,7 @@ func handleRequestedNssai(ctx ctxt.Context, ue *context.AmfUe, registrationReque
 				callback.SendN1MessageNotifyAtAMFReAllocation(ue, n1Message.Bytes(), registerContext)
 			} else {
 				// Condition (B) Step 7: initial AMF can not find Target AMF via NRF -> Send Reroute NAS Request to RAN
-				allowedNssaiNgap := ngapConvert.AllowedNssaiToNgap(ue.AllowedNssai[anType])
+				allowedNssaiNgap := ngapConvert.AllowedNssaiToNgap(ue.GetAllowedNssai(anType))
 				ngap_message.SendRerouteNasRequest(ue, anType, nil, ranUe.InitialUEMessage, &allowedNssaiNgap)
 			}
 			return nil
@@ -1617,14 +1674,14 @@ func handleRequestedNssai(ctx ctxt.Context, ue *context.AmfUe, registrationReque
 
 	// if registration request has no requested nssai, or non of snssai in requested nssai is permitted by nssf
 	// then use ue subscribed snssai which is marked as default as allowed nssai
-	if len(ue.AllowedNssai[anType]) == 0 {
+	if ue.AllowedNssaiLen(anType) == 0 {
 		for _, snssai := range ue.SubscribedNssai {
 			if snssai.GetDefaultIndication() {
 				if amfSelf.InPlmnSupportList(snssai.GetSubscribedSnssai()) {
 					allowedSnssai := models.AllowedSnssai{
 						AllowedSnssai: snssai.GetSubscribedSnssai(),
 					}
-					ue.AllowedNssai[anType] = append(ue.AllowedNssai[anType], allowedSnssai)
+					ue.AppendAllowedNssai(anType, allowedSnssai)
 				}
 			}
 		}
@@ -1637,7 +1694,7 @@ func rebuildAllowedNssaiFromRequested(
 	anType models.AccessType,
 	requestedNssai []models.MappingOfSnssai,
 ) bool {
-	ue.AllowedNssai[anType] = nil
+	ue.SetAllowedNssai(anType, nil)
 
 	for _, requestedSnssai := range requestedNssai {
 		if !ue.InSubscribedNssai(&requestedSnssai.ServingSnssai) {
@@ -1652,7 +1709,7 @@ func rebuildAllowedNssaiFromRequested(
 			MappedHomeSnssai: &requestedSnssai.HomeSnssai,
 		}
 		if !ue.InAllowedNssai(allowedSnssai.AllowedSnssai, anType) {
-			ue.AllowedNssai[anType] = append(ue.AllowedNssai[anType], allowedSnssai)
+			ue.AppendAllowedNssai(anType, allowedSnssai)
 		}
 	}
 
@@ -1975,6 +2032,7 @@ func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe
 				context.UeContextReleaseDueToNwInitiatedDeregistraion, ngapType.CausePresentNas, ngapType.CauseNasPresentDeregister)
 		} else {
 			ue.GmmLog.Infof("Removing UE Context")
+			ue.PublishUeCtxtInfoOnRemoval(accessType)
 			ue.Remove()
 		}
 	}
@@ -2127,16 +2185,16 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 						}
 						errCause = append(errCause, cause)
 					} else if ranUe.UeContextRequest {
-						binaryDataN2SmInformation, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
+						binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 						if err != nil {
-							ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", response.GetBinaryDataN2SmInformation())
+							ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", err)
 						}
 						ngap_message.AppendPDUSessionResourceSetupListCxtReq(&ctxList,
 							pduSessionID, smContext.Snssai(), nil, binaryDataN2SmInformation)
 					} else {
-						binaryDataN2SmInformation, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
+						binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 						if err != nil {
-							ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", response.GetBinaryDataN2SmInformation())
+							ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", err)
 						}
 						ngap_message.AppendPDUSessionResourceSetupListSUReq(&suList,
 							pduSessionID, smContext.Snssai(), nil, binaryDataN2SmInformation)
@@ -2175,34 +2233,18 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 	case nasMessage.ServiceTypeMobileTerminatedServices: // Trigger by Network
 		if n1n2Message != nil {
 			requestData := n1n2Message.Request.JsonData
-			n1MsgFile := n1n2Message.Request.GetBinaryDataN1Message()
-			n2InfoFile := n1n2Message.Request.GetBinaryDataN2Information()
 
-			if requestData.HasN1MessageContainer() && n1MsgFile == nil {
-				logger.GmmLog.Errorf("N1MessageContainer present but BinaryDataN1Message is missing")
-				return fmt.Errorf("N1MessageContainer present but BinaryDataN1Message is missing")
-			}
-			if requestData.HasN2InfoContainer() && n2InfoFile == nil {
-				logger.GmmLog.Errorf("N2InfoContainer present but BinaryDataN2Information is missing")
-				return fmt.Errorf("N2InfoContainer present but BinaryDataN2Information is missing")
+			// Take the payloads captured when the message was stored. Re-reading the
+			// request's binary fields returns nothing and no error, so an empty
+			// payload used to travel to the RAN as a PDU Session Resource Setup with
+			// no transfer in it.
+			n1Msg, n2Info, err := n1n2Message.Payloads()
+			if err != nil {
+				logger.GmmLog.Errorf("pending N1N2 message unusable: %+v", err)
+				return err
 			}
 
-			var n1Msg, n2Info []byte
-			var err error
-			if n1MsgFile != nil {
-				n1Msg, err = io.ReadAll(n1MsgFile)
-				if err != nil {
-					logger.GmmLog.Errorf("error reading BinaryDataN1Message: %+v", err)
-					return err
-				}
-			}
-			if n2InfoFile != nil {
-				n2Info, err = io.ReadAll(n2InfoFile)
-				if err != nil {
-					logger.GmmLog.Errorf("error reading BinaryDataN2Information: %+v", err)
-					return err
-				}
-			}
+			removePendingPayloadFiles(n1n2Message)
 			// downlink signalling
 			if n2Info == nil {
 				err = sendServiceAccept(ue, anType, ctxList, suList, acceptPduSessionPsi,
@@ -2258,21 +2300,21 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 							}
 							errCause = append(errCause, cause)
 						} else {
-							smContext.SetUserLocation(deepcopy.Copy(ue.Location).(models.UserLocation))
+							smContext.SetUserLocation(ue.GetLocation())
 							smContext.SetAccessType(models.ACCESSTYPE__3_GPP_ACCESS)
 							if response.GetBinaryDataN2SmInformation() != nil &&
 								response.JsonData.GetN2SmInfoType() == models.N2SMINFOTYPE_PDU_RES_SETUP_REQ {
 								if ranUe.UeContextRequest {
-									binaryDataN2SmInformation, err1 := io.ReadAll(response.GetBinaryDataN2SmInformation())
+									binaryDataN2SmInformation, err1 := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 									if err1 != nil {
-										ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", response.GetBinaryDataN2SmInformation())
+										ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", err1)
 									}
 									ngap_message.AppendPDUSessionResourceSetupListCxtReq(&ctxList,
 										requestData.GetPduSessionId(), smContext.Snssai(), nil, binaryDataN2SmInformation)
 								} else {
-									binaryDataN2SmInformation, err1 := io.ReadAll(response.GetBinaryDataN2SmInformation())
+									binaryDataN2SmInformation, err1 := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 									if err1 != nil {
-										ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", response.GetBinaryDataN2SmInformation())
+										ue.GmmLog.Errorf("error reading BinaryDataN2SmInformation: %+v", err1)
 									}
 									ngap_message.AppendPDUSessionResourceSetupListSUReq(&suList,
 										requestData.GetPduSessionId(), smContext.Snssai(), nil, binaryDataN2SmInformation)
@@ -2469,11 +2511,19 @@ func HandleAuthenticationResponse(ctx ctxt.Context, ue *context.AmfUe, accessTyp
 		}
 		switch response.AuthResult {
 		case models.AUTHRESULT_AUTHENTICATION_SUCCESS:
+			supiWasEmpty := ue.GetSupi() == ""
 			ue.UnauthenticatedSupi = false
 			ue.Kseaf = response.GetKseaf()
 			ue.SetSupi(response.GetSupi())
 			ue.DerivateKamf()
 			ue.GmmLog.Debugln("ue.DerivateKamf()", ue.Kamf)
+			// Publish the Add here, while state is still Authentication, so Kafka never sees a Mod
+			// before the Add for this subscriber; only the first resolution publishes here --
+			// Authentication's entry callback already published the Add for a re-authentication that
+			// started with a known SUPI.
+			if supiWasEmpty {
+				ue.PublishUeCtxtInfo(accessType)
+			}
 			return GmmFSM.SendEvent(ctx, ue.State[accessType], AuthSuccessEvent, fsm.ArgsType{
 				ArgAmfUe:      ue,
 				ArgAccessType: accessType,
@@ -2503,13 +2553,24 @@ func HandleAuthenticationResponse(ctx ctxt.Context, ue *context.AmfUe, accessTyp
 
 		switch response.GetAuthResult() {
 		case models.AUTHRESULT_AUTHENTICATION_SUCCESS:
+			supiWasEmpty := ue.GetSupi() == ""
 			ue.UnauthenticatedSupi = false
 			ue.Kseaf = response.GetKSeaf()
 			ue.SetSupi(response.GetSupi())
 			ue.DerivateKamf()
+			// Publish the Add here, while state is still Authentication, so Kafka never sees a Mod
+			// before the Add for this subscriber; only the first resolution publishes here --
+			// Authentication's entry callback already published the Add for a re-authentication that
+			// started with a known SUPI.
+			if supiWasEmpty {
+				ue.PublishUeCtxtInfo(accessType)
+			}
 			// TODO: select enc/int algorithm based on ue security capability & amf's policy,
 			// then generate KnasEnc, KnasInt
-			return GmmFSM.SendEvent(ctx, ue.State[accessType], SecurityModeSuccessEvent, fsm.ArgsType{
+			// AuthSuccessEvent (not SecurityModeSuccessEvent, only valid from SecurityMode) drives
+			// Authentication->SecurityMode; SecurityMode's entry uses ArgEAPSuccess/ArgEAPMessage to
+			// embed the EAP result in the Security Mode Command.
+			return GmmFSM.SendEvent(ctx, ue.State[accessType], AuthSuccessEvent, fsm.ArgsType{
 				ArgAmfUe:      ue,
 				ArgAccessType: accessType,
 				ArgEAPSuccess: true,

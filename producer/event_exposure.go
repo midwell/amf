@@ -61,8 +61,20 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 
 	// store subscription in context
 	ueEventSubscription := context.AmfUeEventSubscription{}
+	// The UE's copy gets a list of its own. NewExtAmfEventSubscription stores the slice it is
+	// handed, so passing the subscription's own list would leave the two sharing one array -- and
+	// a patch of that subscription writes into it: "replace" assigns an element in place, "remove"
+	// shifts the elements down. A UE's list would change underneath whoever is reading it, with
+	// nothing ordering the two, and be persisted half-patched.
+	//
+	// It is the list that is copied, not what each event points at. That is the depth the patching
+	// works at: it replaces and moves whole events, and never reaches inside one.
+	subscribedEvents := contextEventSubscription.EventSubscription.GetEventList()
+	ueEvents := make([]models.AmfEvent, len(subscribedEvents))
+	copy(ueEvents, subscribedEvents)
+
 	// TODO: GA: Review the constructor of NewExtAmfEventSubscription. Is there anything else missing?
-	extAmfEventSubscription := models.NewExtAmfEventSubscription(contextEventSubscription.EventSubscription.GetEventList(), contextEventSubscription.EventSubscription.GetEventNotifyUri(), contextEventSubscription.EventSubscription.GetNotifyCorrelationId(), contextEventSubscription.EventSubscription.GetNfId())
+	extAmfEventSubscription := models.NewExtAmfEventSubscription(ueEvents, contextEventSubscription.EventSubscription.GetEventNotifyUri(), contextEventSubscription.EventSubscription.GetNotifyCorrelationId(), contextEventSubscription.EventSubscription.GetNfId())
 	ueEventSubscription.EventSubscription = extAmfEventSubscription
 	ueEventSubscription.Timestamp = time.Now().UTC()
 
@@ -87,8 +99,8 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 		ueEventSubscription.AnyUe = true
 		amfSelf.UePool.Range(func(key, value interface{}) bool {
 			ue := value.(*context.AmfUe)
-			ue.EventSubscriptionsInfo[newSubscriptionID] = new(context.AmfUeEventSubscription)
-			*ue.EventSubscriptionsInfo[newSubscriptionID] = ueEventSubscription
+			ueSubscription := ueEventSubscription
+			ue.SetEventSubscription(newSubscriptionID, &ueSubscription)
 			contextEventSubscription.UeSupiList = append(contextEventSubscription.UeSupiList, ue.GetSupi())
 			return true
 		})
@@ -98,8 +110,8 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 		amfSelf.UePool.Range(func(key, value interface{}) bool {
 			ue := value.(*context.AmfUe)
 			if ue.GroupID == subscription.GetGroupId() {
-				ue.EventSubscriptionsInfo[newSubscriptionID] = new(context.AmfUeEventSubscription)
-				*ue.EventSubscriptionsInfo[newSubscriptionID] = ueEventSubscription
+				ueSubscription := ueEventSubscription
+				ue.SetEventSubscription(newSubscriptionID, &ueSubscription)
 				contextEventSubscription.UeSupiList = append(contextEventSubscription.UeSupiList, ue.GetSupi())
 			}
 			return true
@@ -109,8 +121,8 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 			problemDetails := utils.ProblemDetailsWithCause("UE not served by AMF", http.StatusForbidden, "UE is not served by this AMF", utils.CauseUeNotServedByAmf)
 			return nil, problemDetails
 		} else {
-			ue.EventSubscriptionsInfo[newSubscriptionID] = new(context.AmfUeEventSubscription)
-			*ue.EventSubscriptionsInfo[newSubscriptionID] = ueEventSubscription
+			ueSubscription := ueEventSubscription
+			ue.SetEventSubscription(newSubscriptionID, &ueSubscription)
 			contextEventSubscription.UeSupiList = append(contextEventSubscription.UeSupiList, ue.GetSupi())
 		}
 	}
@@ -133,7 +145,7 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 			}
 			for i, flag := range immediateFlags {
 				if flag {
-					report, ok := NewAmfEventReport(ue, (subscription.EventList)[i].Type, newSubscriptionID)
+					report, ok := NewAmfEventReport(ue, subscription.EventList[i].Type, newSubscriptionID)
 					if ok {
 						reportlist = append(reportlist, report)
 					}
@@ -141,7 +153,7 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 			}
 			// delete subscription
 			if reportlistLen := len(reportlist); reportlistLen > 0 && (!reportlist[reportlistLen-1].State.Active) {
-				delete(ue.EventSubscriptionsInfo, newSubscriptionID)
+				ue.DeleteEventSubscription(newSubscriptionID)
 			}
 			return true
 		})
@@ -154,7 +166,7 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 			if ue.GroupID == subscription.GetGroupId() {
 				for i, flag := range immediateFlags {
 					if flag {
-						report, ok := NewAmfEventReport(ue, (subscription.EventList)[i].Type, newSubscriptionID)
+						report, ok := NewAmfEventReport(ue, subscription.EventList[i].Type, newSubscriptionID)
 						if ok {
 							reportlist = append(reportlist, report)
 						}
@@ -162,7 +174,7 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 				}
 				// delete subscription
 				if reportlistLen := len(reportlist); reportlistLen > 0 && (!reportlist[reportlistLen-1].State.Active) {
-					delete(ue.EventSubscriptionsInfo, newSubscriptionID)
+					ue.DeleteEventSubscription(newSubscriptionID)
 				}
 			}
 			return true
@@ -174,7 +186,7 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 		}
 		for i, flag := range immediateFlags {
 			if flag {
-				report, ok := NewAmfEventReport(ue, (subscription.EventList)[i].Type, newSubscriptionID)
+				report, ok := NewAmfEventReport(ue, subscription.EventList[i].Type, newSubscriptionID)
 				if ok {
 					reportlist = append(reportlist, report)
 				}
@@ -182,7 +194,7 @@ func CreateAMFEventSubscriptionProcedure(createEventSubscription models.AmfCreat
 		}
 		// delete subscription
 		if reportlistLen := len(reportlist); reportlistLen > 0 && (!reportlist[reportlistLen-1].State.Active) {
-			delete(ue.EventSubscriptionsInfo, newSubscriptionID)
+			ue.DeleteEventSubscription(newSubscriptionID)
 		}
 	}
 	if len(reportlist) > 0 {
@@ -220,7 +232,7 @@ func DeleteAMFEventSubscriptionProcedure(subscriptionID string) *models.ProblemD
 
 	for _, supi := range subscription.UeSupiList {
 		if ue, ok := amfSelf.AmfUeFindBySupi(supi); ok {
-			delete(ue.EventSubscriptionsInfo, subscriptionID)
+			ue.DeleteEventSubscription(subscriptionID)
 		}
 	}
 	amfSelf.DeleteEventSubscription(subscriptionID)
@@ -277,25 +289,54 @@ func ModifyAMFEventSubscriptionProcedure(
 			problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Invalid subscription patch path")
 			return nil, problemDetails
 		}
-		index, err := strconv.Atoi(path[len(pathPrefix):])
-		if err != nil {
-			problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Invalid subscription patch path index")
-			return nil, problemDetails
+		lists := subscription.GetEventList()
+		eventlistLen := len(lists)
+
+		indexStr := path[len(pathPrefix):]
+		var index int
+		if indexStr == "-" {
+			// RFC 6902: "-" refers to the (nonexistent) member after the last array element and is only valid for "add"
+			if op != "add" {
+				problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Invalid subscription patch path index")
+				return nil, problemDetails
+			}
+			index = eventlistLen
+		} else {
+			var err error
+			index, err = strconv.Atoi(indexStr)
+			if err != nil || index < 0 {
+				problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Invalid subscription patch path index")
+				return nil, problemDetails
+			}
 		}
-		lists := (subscription.EventList)
-		eventlistLen := len(subscription.EventList)
 		switch op {
 		case "replace":
-			event := arrayOfAmfUpdateEventSubscriptionItem.GetValue()
-			if index < eventlistLen {
-				(subscription.EventList)[index] = event
+			if index >= eventlistLen {
+				problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Invalid subscription patch path index")
+				return nil, problemDetails
 			}
+			lists[index] = arrayOfAmfUpdateEventSubscriptionItem.GetValue()
+			subscription.SetEventList(lists)
 		case "remove":
-			if index < eventlistLen {
-				subscription.EventList = append(lists[:index], lists[index+1:]...)
+			if index >= eventlistLen {
+				problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Invalid subscription patch path index")
+				return nil, problemDetails
 			}
+			subscription.SetEventList(append(lists[:index], lists[index+1:]...))
 		case "add":
-			subscription.EventList = append(lists, arrayOfAmfUpdateEventSubscriptionItem.GetValue())
+			// index == eventlistLen appends to the end of the array; RFC 6902 also allows the "-" path segment for this
+			if index > eventlistLen {
+				problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Invalid subscription patch path index")
+				return nil, problemDetails
+			}
+			updatedList := make([]models.AmfEvent, 0, eventlistLen+1)
+			updatedList = append(updatedList, lists[:index]...)
+			updatedList = append(updatedList, arrayOfAmfUpdateEventSubscriptionItem.GetValue())
+			updatedList = append(updatedList, lists[index:]...)
+			subscription.SetEventList(updatedList)
+		default:
+			problemDetails := utils.ProblemDetailsMandatoryIeIncorrect("Unsupported subscription patch operation")
+			return nil, problemDetails
 		}
 	}
 
@@ -304,18 +345,18 @@ func ModifyAMFEventSubscriptionProcedure(
 }
 
 func subReports(ue *context.AmfUe, subscriptionId string) {
-	remainReport := ue.EventSubscriptionsInfo[subscriptionId].RemainReports
-	if remainReport == nil {
-		return
-	}
-	*remainReport--
+	// Through the context rather than through the subscription this function used to fetch:
+	// the counter is shared with the encoder that persists the UE, and a decrement applied
+	// outside ue.Mutex raced it. It is also a read-modify-write, so two reports raised at
+	// once could lose one.
+	ue.DecrementRemainReports(subscriptionId)
 }
 
 // DO NOT handle AMFEVENTTYPE_PRESENCE_IN_AOI_REPORT and AMFEVENTTYPE_UES_IN_AREA_REPORT(about area)
 func NewAmfEventReport(ue *context.AmfUe, Type models.AmfEventType, subscriptionId string) (
 	report models.AmfEventReport, ok bool,
 ) {
-	ueSubscription, ok := ue.EventSubscriptionsInfo[subscriptionId]
+	ueSubscription, ok := ue.GetEventSubscription(subscriptionId)
 	if !ok {
 		return report, ok
 	}
@@ -345,7 +386,7 @@ func NewAmfEventReport(ue *context.AmfUe, Type models.AmfEventType, subscription
 
 	switch Type {
 	case models.AMFEVENTTYPE_LOCATION_REPORT:
-		report.SetLocation(ue.Location)
+		report.SetLocation(ue.GetLocation())
 	// case models.AMFEVENTTYPE_PRESENCE_IN_AOI_REPORT:
 	// report.AreaList = (*subscription.EventList)[eventIndex].AreaList
 	case models.AMFEVENTTYPE_TIMEZONE_REPORT:
@@ -372,7 +413,7 @@ func NewAmfEventReport(ue *context.AmfUe, Type models.AmfEventType, subscription
 	case models.AMFEVENTTYPE_CONNECTIVITY_STATE_REPORT:
 		report.SetCmInfoList(ue.GetCmInfo())
 	case models.AMFEVENTTYPE_REACHABILITY_REPORT:
-		report.SetReachability(ue.Reachability)
+		report.SetReachability(ue.GetReachability())
 	// TODO: GA: Need to check the content of SubscribedData
 	// case models.AMFEVENTTYPE_SUBSCRIBED_DATA_REPORT:
 	// 	report.SubscribedData = &ue.SubscribedData

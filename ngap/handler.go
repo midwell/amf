@@ -10,7 +10,6 @@ package ngap
 import (
 	ctxt "context"
 	"encoding/hex"
-	"io"
 	"os"
 	"strconv"
 
@@ -48,6 +47,39 @@ func findRanUeByAmfNgapID(ran *context.AmfRan, aMFUENGAPID *ngapType.AMFUENGAPID
 		return nil
 	}
 	return context.AMF_Self().RanUeFindByAmfUeNgapID(aMFUENGAPID.Value)
+}
+
+// recordUnknownSmContext records a RAN message that named a PDU session this AMF holds no SM
+// context for. Every place in this file that reaches that condition comes through here, so that
+// what the AMF does about it is decided once.
+//
+// It deliberately does not try to resolve the condition, because neither route is open. The
+// session management function cannot be told: its URI lives in the SM context that is missing.
+// And the session cannot be released RAN-side by this element alone: TS 38.413 clause 9.2.1.3
+// carries the PDU Session Resource Release Command Transfer as mandatory in that message, and
+// clause 9.3.4.12 declares that IE transparent to the AMF - so the AMF relays one the SMF
+// authored rather than writing its own.
+//
+// So the obligation is to leave the condition discoverable instead of dropping it: the counter
+// says how often and for which message, and the log line names the UE and the session. A RAN
+// holding a tunnel and an SMF holding a pending session are then both findable, which is what
+// this element can honestly offer.
+//
+// A caller must not carry on to the session management function with the context it just failed
+// to find: SendUpdateSmContextRequest reads the SMF's URI out of it while opening its trace
+// span, before it builds anything, so a nil one ends the process rather than the message. No
+// caller does.
+func recordUnknownSmContext(ranUe *context.RanUe, message string, pduSessionID int32) {
+	metrics.IncrementUnknownSmContext(message)
+
+	// Nil-safe on purpose: this function exists because a missing pointer was dropped silently,
+	// and it must not become a second one.
+	log := logger.NgapLog
+	if ranUe != nil && ranUe.Log != nil {
+		log = ranUe.Log
+	}
+
+	log.Errorf("SmContext[PDU Session ID:%d] not found, named by %s", pduSessionID, message)
 }
 
 func FetchRanUeContext(ran *context.AmfRan, message *ngapType.NGAPPDU) (*context.RanUe, *ngapType.AMFUENGAPID) {
@@ -530,9 +562,20 @@ func HandleNGSetupRequest(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 		return
 	}
 	sendResponse := false
+	// The tracking areas this setup replaces, and the identity they were published under, kept
+	// so their exported state can be retired once the RAN's lock is released - RetireDepartedTacs
+	// takes the read lock through statsSnapshot, which cannot be acquired from inside the write
+	// lock held below.
+	var departedTAList []context.SupportedTAI
+	var previousName, previousGnbIP string
 	shouldSend := func() bool {
 		ran.LockRanState()
 		defer ran.UnlockRanState()
+
+		// Captured before the RAN Node Name IE below can rename the RAN: the gauge's id label
+		// is this name, and a rename means nothing ever writes the old one again.
+		previousName = ran.Name
+		previousGnbIP = ran.GnbIp
 
 		initiatingMessage := message.InitiatingMessage
 		if initiatingMessage == nil {
@@ -599,11 +642,21 @@ func HandleNGSetupRequest(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 			ran.Log.Warnln("NG-Setup failure: SupportedTAList is missing")
 			cause.Present = ngapType.CausePresentMisc
 			cause.Misc = &ngapType.CauseMisc{Value: ngapType.CauseMiscPresentUnspecified}
+			// The RAN Node Name IE above may already have renamed ran, but this failure
+			// leaves ran.SupportedTAList untouched: publish it as "departed" so
+			// RetireDepartedTacs still retires the old name's series on a rename, and
+			// is a no-op otherwise since the TAC list did not actually change.
+			if len(ran.SupportedTAList) != 0 {
+				departedTAList = make([]context.SupportedTAI, len(ran.SupportedTAList))
+				copy(departedTAList, ran.SupportedTAList)
+			}
 			return true
 		}
 
 		// Clearing any existing contents of ran.SupportedTAList
 		if len(ran.SupportedTAList) != 0 {
+			departedTAList = make([]context.SupportedTAI, len(ran.SupportedTAList))
+			copy(departedTAList, ran.SupportedTAList)
 			ran.SupportedTAList = context.NewSupportedTAIList()
 		}
 
@@ -694,6 +747,13 @@ func HandleNGSetupRequest(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 	if !shouldSend {
 		return
 	}
+
+	// Replacing the list is only half of it: the gauge is written from the list, so a tracking
+	// area that has just left it would never be written again and would keep its last sample for
+	// ever. This is outside the "did the setup succeed" question below, because the list is
+	// replaced before the AMF decides that - and a refused setup is the case where nothing writes
+	// the gauge at all.
+	ran.RetireDepartedTacs(previousName, previousGnbIP, departedTAList)
 
 	ran.RLockRanState()
 	gnbID := ran.GnbId
@@ -1145,7 +1205,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 
 	// for each pduSessionID invoke Nsmf_PDUSession_UpdateSMContext Request
 	var cause context.CauseAll
-	if tmp, exist := amfUe.ReleaseCause[ran.AnType]; exist {
+	if tmp, exist := amfUe.GetReleaseCause(ran.AnType); exist {
 		if tmp != nil {
 			cause = *tmp
 		}
@@ -1163,7 +1223,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 					pduSessionID := int32(pduSessionReourceItem.PDUSessionID.Value)
 					smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 					if !ok {
-						ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+						recordUnknownSmContext(ranUe, "UEContextReleaseComplete", pduSessionID)
 						continue
 					}
 					response, _, _, err := consumer.SendUpdateSmContextDeactivateUpCnxState(ctx, amfUe, smContext, cause)
@@ -1190,7 +1250,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 	}
 
 	// Remove UE N2 Connection
-	amfUe.ReleaseCause[ran.AnType] = nil
+	amfUe.SetReleaseCause(ran.AnType, nil)
 	switch ranUe.ReleaseAction {
 	case context.UeContextN2NormalRelease:
 		ran.Log.Infof("Release UE[%s] Context : N2 Connection Release", amfUe.GetSupi())
@@ -1199,7 +1259,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		if err != nil {
 			ran.Log.Errorln(err.Error())
 		}
-		amfUe.PublishUeCtxtInfo()
+		amfUe.PublishUeCtxtInfo(ran.AnType)
 		context.StoreContextInDB(amfUe)
 	case context.UeContextReleaseUeContext:
 		ran.Log.Infof("Release UE[%s] Context : Release Ue Context", amfUe.GetSupi())
@@ -1211,11 +1271,12 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		// Valid Security is not exist for this UE then only delete AMfUe Context
 		if !amfUe.SecurityContextAvailable {
 			ran.Log.Infof("Valid Security is not exist for the UE[%s], so deleting AmfUe Context", amfUe.GetSupi())
-			amfUe.PublishUeCtxtInfo()
+			// Remove() tears down every access, so force Del regardless of the other access's state.
+			amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
 			amfUe.Remove()
 			context.DeleteContextFromDB(amfUe)
 		} else {
-			amfUe.PublishUeCtxtInfo()
+			amfUe.PublishUeCtxtInfo(ran.AnType)
 			context.StoreContextInDB(amfUe)
 		}
 	case context.UeContextReleaseDueToNwInitiatedDeregistraion:
@@ -1224,7 +1285,8 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		if err != nil {
 			ran.Log.Errorln(err.Error())
 		}
-		amfUe.PublishUeCtxtInfo()
+		// Remove() tears down every access, so force Del regardless of the other access's state.
+		amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
 		amfUe.Remove()
 		context.DeleteContextFromDB(amfUe)
 	case context.UeContextReleaseHandover:
@@ -1247,7 +1309,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 			ran.Log.Errorln(err.Error())
 		}
 		amfUe.AttachRanUe(targetRanUe)
-		amfUe.PublishUeCtxtInfo()
+		amfUe.PublishUeCtxtInfo(ran.AnType)
 		// Todo: remove indirect tunnel
 	default:
 		ran.Log.Errorf("Invalid Release Action[%d]", ranUe.ReleaseAction)
@@ -1342,7 +1404,7 @@ func HandlePDUSessionResourceReleaseResponse(ctx ctxt.Context, ran *context.AmfR
 			transfer := item.PDUSessionResourceReleaseResponseTransfer
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 			if !ok {
-				ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+				recordUnknownSmContext(ranUe, "PDUSessionResourceReleaseResponse", pduSessionID)
 				continue
 			}
 			_, responseErr, problemDetail, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -1571,8 +1633,8 @@ func HandleInitialUEMessage(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 			ran.Log.Debugln("decode IE RanUeNgapID")
 			if rANUENGAPID == nil {
 				ran.Log.Errorln("RanUeNgapID is nil")
-				item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-					ngapType.ProtocolIEIDRANUENGAPID, ngapType.TypeOfErrorPresentMissing)
+				item := buildCriticalityDiagnosticsIEItem(
+					ngapType.ProtocolIEIDRANUENGAPID)
 				iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 			}
 		case ngapType.ProtocolIEIDNASPDU: // reject
@@ -1580,8 +1642,7 @@ func HandleInitialUEMessage(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 			ran.Log.Debugln("decode IE NasPdu")
 			if nASPDU == nil {
 				ran.Log.Errorln("NasPdu is nil")
-				item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject, ngapType.ProtocolIEIDNASPDU,
-					ngapType.TypeOfErrorPresentMissing)
+				item := buildCriticalityDiagnosticsIEItem(ngapType.ProtocolIEIDNASPDU)
 				iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 			}
 		case ngapType.ProtocolIEIDUserLocationInformation: // reject
@@ -1589,8 +1650,8 @@ func HandleInitialUEMessage(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 			ran.Log.Debugln("decode IE UserLocationInformation")
 			if userLocationInformation == nil {
 				ran.Log.Errorln("UserLocationInformation is nil")
-				item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-					ngapType.ProtocolIEIDUserLocationInformation, ngapType.TypeOfErrorPresentMissing)
+				item := buildCriticalityDiagnosticsIEItem(
+					ngapType.ProtocolIEIDUserLocationInformation)
 				iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 			}
 		case ngapType.ProtocolIEIDRRCEstablishmentCause: // ignore
@@ -1833,7 +1894,7 @@ func HandlePDUSessionResourceSetupResponse(ctx ctxt.Context, ran *context.AmfRan
 				transfer := item.PDUSessionResourceSetupResponseTransfer
 				smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 				if !ok {
-					ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+					recordUnknownSmContext(ranUe, "PDUSessionResourceSetupResponse", pduSessionID)
 					continue
 				}
 				response, errResponse, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -1849,11 +1910,11 @@ func HandlePDUSessionResourceSetupResponse(ctx ctxt.Context, ran *context.AmfRan
 					ranUe.Log.Errorf("SendUpdateSmContextN2Info[PDUSessionResourceSetupResponseTransfer] Error: received error response from SMF")
 					if errResponse != nil {
 						responseData := errResponse.GetJsonData()
-						n1Msg, err := io.ReadAll(errResponse.GetBinaryDataN1SmMessage())
+						n1Msg, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN1SmMessage())
 						if err != nil {
 							ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err)
 						}
-						n2Info, err := io.ReadAll(errResponse.GetBinaryDataN2SmInformation())
+						n2Info, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN2SmInformation())
 						if err != nil {
 							ranUe.Log.Errorf("readAll BinaryDataN2SmInformation failed: %v", err)
 						}
@@ -1871,7 +1932,7 @@ func HandlePDUSessionResourceSetupResponse(ctx ctxt.Context, ran *context.AmfRan
 				transfer := item.PDUSessionResourceSetupUnsuccessfulTransfer
 				smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 				if !ok {
-					ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+					recordUnknownSmContext(ranUe, "PDUSessionResourceSetupResponse", pduSessionID)
 					continue
 				}
 				_, _, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -1889,7 +1950,7 @@ func HandlePDUSessionResourceSetupResponse(ctx ctxt.Context, ran *context.AmfRan
 		}
 
 		// store context in DB. PDU Establishment is complete.
-		amfUe.PublishUeCtxtInfo()
+		amfUe.PublishUeCtxtInfo(ran.AnType)
 		context.StoreContextInDB(amfUe)
 	}
 
@@ -2003,7 +2064,8 @@ func HandlePDUSessionResourceModifyResponse(ctx ctxt.Context, ran *context.AmfRa
 				transfer := item.PDUSessionResourceModifyResponseTransfer
 				smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 				if !ok {
-					ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+					recordUnknownSmContext(ranUe, "PDUSessionResourceModifyResponse", pduSessionID)
+					continue
 				}
 				_, _, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
 					models.N2SMINFOTYPE_PDU_RES_MOD_RSP, transfer)
@@ -2026,7 +2088,8 @@ func HandlePDUSessionResourceModifyResponse(ctx ctxt.Context, ran *context.AmfRa
 				transfer := item.PDUSessionResourceModifyUnsuccessfulTransfer
 				smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 				if !ok {
-					ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+					recordUnknownSmContext(ranUe, "PDUSessionResourceModifyResponse", pduSessionID)
+					continue
 				}
 				// response, _, _, err := consumer.SendUpdateSmContextN2Info(amfUe, pduSessionID,
 				_, _, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -2148,7 +2211,8 @@ func HandlePDUSessionResourceNotify(ctx ctxt.Context, ran *context.AmfRan, messa
 		transfer := item.PDUSessionResourceNotifyTransfer
 		smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 		if !ok {
-			ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+			recordUnknownSmContext(ranUe, "PDUSessionResourceNotify", pduSessionID)
+			continue
 		}
 		response, errResponse, problemDetail, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
 			models.N2SMINFOTYPE_PDU_RES_NTY, transfer)
@@ -2158,11 +2222,11 @@ func HandlePDUSessionResourceNotify(ctx ctxt.Context, ran *context.AmfRan, messa
 
 		if response != nil {
 			responseData := response.GetJsonData()
-			n2Info, err1 := io.ReadAll(response.GetBinaryDataN1SmMessage())
+			n1Msg, err1 := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN1SmMessage())
 			if err1 != nil {
 				ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err1)
 			}
-			n1Msg, err2 := io.ReadAll(response.GetBinaryDataN2SmInformation())
+			n2Info, err2 := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 			if err2 != nil {
 				ranUe.Log.Errorf("readAll BinaryDataN2SmInformation failed: %v", err2)
 			}
@@ -2185,14 +2249,13 @@ func HandlePDUSessionResourceNotify(ctx ctxt.Context, ran *context.AmfRan, messa
 			}
 		} else if errResponse != nil {
 			errJSON := errResponse.GetJsonData()
-			n1Msg := errResponse.BinaryDataN2SmInformation
+			binaryDataN1SmMessage, err1 := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN1SmMessage())
+			if err1 != nil {
+				ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err1)
+			}
 			ranUe.Log.Warnf("PDU Session Modification is rejected by SMF[pduSessionId:%d], Error[%s]",
 				pduSessionID, errJSON.Error.GetCause())
-			if n1Msg != nil {
-				binaryDataN1SmMessage, err1 := io.ReadAll(errResponse.GetBinaryDataN1SmMessage())
-				if err1 != nil {
-					ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err1)
-				}
+			if binaryDataN1SmMessage != nil {
 				gmm_message.SendDLNASTransport(
 					ranUe, ran.AnType, nasMessage.PayloadContainerTypeN1SMInfo, binaryDataN1SmMessage, pduSessionID, 0, nil, 0)
 			}
@@ -2213,7 +2276,8 @@ func HandlePDUSessionResourceNotify(ctx ctxt.Context, ran *context.AmfRan, messa
 			transfer := item.PDUSessionResourceNotifyReleasedTransfer
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 			if !ok {
-				ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+				recordUnknownSmContext(ranUe, "PDUSessionResourceNotify", pduSessionID)
+				continue
 			}
 			response, errResponse, problemDetail, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
 				models.N2SMINFOTYPE_PDU_RES_NTY_REL, transfer)
@@ -2222,25 +2286,24 @@ func HandlePDUSessionResourceNotify(ctx ctxt.Context, ran *context.AmfRan, messa
 			}
 			if response != nil {
 				responseData := response.GetJsonData()
-				n2Info, err1 := io.ReadAll(response.GetBinaryDataN1SmMessage())
+				n1Msg, err1 := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN1SmMessage())
 				if err1 != nil {
 					ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err1)
 				}
-				n1Msg, err2 := io.ReadAll(response.GetBinaryDataN2SmInformation())
+				n2Info, err2 := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 				if err2 != nil {
 					ranUe.Log.Errorf("readAll BinaryDataN2SmInformation failed: %v", err2)
 				}
 				BuildAndSendN1N2Msg(ranUe, ran.AnType, n1Msg, n2Info, responseData.GetN2SmInfoType(), pduSessionID)
 			} else if errResponse != nil {
 				errJSON := errResponse.JsonData
-				n1Msg := errResponse.BinaryDataN2SmInformation
+				binaryDataN1SmMessage, err1 := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN1SmMessage())
+				if err1 != nil {
+					ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err1)
+				}
 				ranUe.Log.Warnf("PDU Session Release is rejected by SMF[pduSessionId:%d], Error[%s]",
 					pduSessionID, errJSON.Error.Cause)
-				if n1Msg != nil {
-					binaryDataN1SmMessage, err1 := io.ReadAll(errResponse.GetBinaryDataN1SmMessage())
-					if err1 != nil {
-						ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err1)
-					}
+				if binaryDataN1SmMessage != nil {
 					gmm_message.SendDLNASTransport(ranUe, ran.AnType, nasMessage.PayloadContainerTypeN1SMInfo, binaryDataN1SmMessage, pduSessionID, 0, nil, 0)
 				}
 			} else if err != nil {
@@ -2301,8 +2364,8 @@ func HandlePDUSessionResourceModifyIndication(ctx ctxt.Context, ran *context.Amf
 			ran.Log.Debugln("decode IE AmfUeNgapID")
 			if aMFUENGAPID == nil {
 				ran.Log.Errorln("AmfUeNgapID is nil")
-				item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-					ngapType.ProtocolIEIDAMFUENGAPID, ngapType.TypeOfErrorPresentMissing)
+				item := buildCriticalityDiagnosticsIEItem(
+					ngapType.ProtocolIEIDAMFUENGAPID)
 				iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 			}
 		case ngapType.ProtocolIEIDRANUENGAPID: // reject
@@ -2310,8 +2373,8 @@ func HandlePDUSessionResourceModifyIndication(ctx ctxt.Context, ran *context.Amf
 			ran.Log.Debugln("decode IE RanUeNgapID")
 			if rANUENGAPID == nil {
 				ran.Log.Errorln("RanUeNgapID is nil")
-				item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-					ngapType.ProtocolIEIDRANUENGAPID, ngapType.TypeOfErrorPresentMissing)
+				item := buildCriticalityDiagnosticsIEItem(
+					ngapType.ProtocolIEIDRANUENGAPID)
 				iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 			}
 		case ngapType.ProtocolIEIDPDUSessionResourceModifyListModInd: // reject
@@ -2319,8 +2382,8 @@ func HandlePDUSessionResourceModifyIndication(ctx ctxt.Context, ran *context.Amf
 			ran.Log.Debugln("decode IE PDUSessionResourceModifyListModInd")
 			if pduSessionResourceModifyIndicationList == nil {
 				ran.Log.Errorln("PDUSessionResourceModifyListModInd is nil")
-				item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-					ngapType.ProtocolIEIDPDUSessionResourceModifyListModInd, ngapType.TypeOfErrorPresentMissing)
+				item := buildCriticalityDiagnosticsIEItem(
+					ngapType.ProtocolIEIDPDUSessionResourceModifyListModInd)
 				iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 			}
 		}
@@ -2376,7 +2439,7 @@ func HandlePDUSessionResourceModifyIndication(ctx ctxt.Context, ran *context.Amf
 		transfer := item.PDUSessionResourceModifyIndicationTransfer
 		smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 		if !ok {
-			ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+			recordUnknownSmContext(ranUe, "PDUSessionResourceModifyIndication", pduSessionID)
 			continue
 		}
 		response, errResponse, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -2386,7 +2449,7 @@ func HandlePDUSessionResourceModifyIndication(ctx ctxt.Context, ran *context.Amf
 		}
 
 		if response != nil && response.BinaryDataN2SmInformation != nil {
-			binaryDataN2SmInformation, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
+			binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 			if err != nil {
 				ranUe.Log.Errorf("readAll BinaryDataN2SmInformation failed: %v", err)
 			}
@@ -2394,7 +2457,7 @@ func HandlePDUSessionResourceModifyIndication(ctx ctxt.Context, ran *context.Amf
 				binaryDataN2SmInformation)
 		}
 		if errResponse != nil && errResponse.BinaryDataN2SmInformation != nil {
-			binaryDataN2SmInformation, err := io.ReadAll(errResponse.GetBinaryDataN2SmInformation())
+			binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN2SmInformation())
 			if err != nil {
 				ranUe.Log.Errorf("readAll BinaryDataN2SmInformation failed: %v", err)
 			}
@@ -2492,8 +2555,8 @@ func HandleInitialContextSetupResponse(ctx ctxt.Context, ran *context.AmfRan, me
 			transfer := item.PDUSessionResourceSetupResponseTransfer
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 			if !ok {
-				ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
-				return
+				recordUnknownSmContext(ranUe, "InitialContextSetupResponse", pduSessionID)
+				continue
 			}
 			// response, _, _, err := consumer.SendUpdateSmContextN2Info(amfUe, pduSessionID,
 			response, errResponse, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -2509,11 +2572,11 @@ func HandleInitialContextSetupResponse(ctx ctxt.Context, ran *context.AmfRan, me
 				ranUe.Log.Errorf("SendUpdateSmContextN2Info[PDUSessionResourceSetupResponseTransfer] Error: received error response from SMF")
 				if errResponse != nil {
 					responseData := errResponse.GetJsonData()
-					n1Msg, err := io.ReadAll(errResponse.GetBinaryDataN1SmMessage())
+					n1Msg, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN1SmMessage())
 					if err != nil {
 						ranUe.Log.Errorf("readAll BinaryDataN1SmMessage failed: %v", err)
 					}
-					n2Info, err := io.ReadAll(errResponse.GetBinaryDataN2SmInformation())
+					n2Info, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN2SmInformation())
 					if err != nil {
 						ranUe.Log.Errorf("readAll BinaryDataN2SmInformation failed: %v", err)
 					}
@@ -2531,8 +2594,8 @@ func HandleInitialContextSetupResponse(ctx ctxt.Context, ran *context.AmfRan, me
 			transfer := item.PDUSessionResourceSetupUnsuccessfulTransfer
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 			if !ok {
-				ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
-				return
+				recordUnknownSmContext(ranUe, "InitialContextSetupResponse", pduSessionID)
+				continue
 			}
 			// response, _, _, err := consumer.SendUpdateSmContextN2Info(amfUe, pduSessionID,
 			_, _, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -2557,7 +2620,7 @@ func HandleInitialContextSetupResponse(ctx ctxt.Context, ran *context.AmfRan, me
 		printCriticalityDiagnostics(ran, criticalityDiagnostics)
 	}
 	ranUe.RecvdInitialContextSetupResponse = true
-	amfUe.PublishUeCtxtInfo()
+	amfUe.PublishUeCtxtInfo(ran.AnType)
 	context.StoreContextInDB(amfUe)
 }
 
@@ -2656,7 +2719,10 @@ func HandleInitialContextSetupFailure(ctx ctxt.Context, ran *context.AmfRan, mes
 			transfer := item.PDUSessionResourceSetupUnsuccessfulTransfer
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 			if !ok {
-				ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found. No need to send UpdateSmContext message to SMF", pduSessionID)
+				// Expected here rather than a fault: the context setup failed, so there
+				// is no established session to reconcile and nothing to tell the SMF.
+				// Counted under this message so it can be excluded from an alert.
+				recordUnknownSmContext(ranUe, "InitialContextSetupFailure", pduSessionID)
 				continue
 			}
 			_, _, _, err := consumer.SendUpdateSmContextN2Info(ctx, amfUe, smContext,
@@ -2771,7 +2837,7 @@ func HandleUEContextReleaseRequest(ctx ctxt.Context, ran *context.AmfRan, messag
 					pduSessionID := int32(pduSessionReourceItem.PDUSessionID.Value)
 					smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 					if !ok {
-						ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+						recordUnknownSmContext(ranUe, "UEContextReleaseRequest", pduSessionID)
 						continue
 					}
 					response, _, _, err := consumer.SendUpdateSmContextDeactivateUpCnxState(ctx, amfUe, smContext, causeAll)
@@ -3157,7 +3223,8 @@ func HandleHandoverNotify(ctx ctxt.Context, ran *context.AmfRan, message *ngapTy
 		for _, pduSessionid := range targetUe.SuccessPduSessionId {
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionid)
 			if !ok {
-				sourceUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionid)
+				recordUnknownSmContext(sourceUe, "HandoverNotify", pduSessionid)
+				continue
 			}
 			_, _, _, err := consumer.SendUpdateSmContextN2HandoverComplete(ctx, amfUe, smContext, "", nil)
 			if err != nil {
@@ -3300,7 +3367,8 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 			transfer := item.PathSwitchRequestTransfer
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 			if !ok {
-				ranUe.Log.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionID)
+				recordUnknownSmContext(ranUe, "PathSwitchRequest", pduSessionID)
+				continue
 			}
 			response, errResponse, _, err := consumer.SendUpdateSmContextXnHandover(ctx, amfUe, smContext,
 				models.N2SMINFOTYPE_PATH_SWITCH_REQ, transfer)
@@ -3310,7 +3378,7 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 			if response != nil && response.GetBinaryDataN2SmInformation() != nil {
 				pduSessionResourceSwitchedItem := ngapType.PDUSessionResourceSwitchedItem{}
 				pduSessionResourceSwitchedItem.PDUSessionID.Value = int64(pduSessionID)
-				binaryDataN2SmInformation, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
+				binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 				if err != nil {
 					ranUe.Log.Errorf("readAll from response.BinaryDataN2SmInformation error: %v", err)
 				}
@@ -3320,7 +3388,7 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 			if errResponse != nil && errResponse.GetBinaryDataN2SmInformation() != nil {
 				pduSessionResourceReleasedItem := ngapType.PDUSessionResourceReleasedItemPSFail{}
 				pduSessionResourceReleasedItem.PDUSessionID.Value = int64(pduSessionID)
-				binaryDataN2SmInformation, err := io.ReadAll(errResponse.GetBinaryDataN2SmInformation())
+				binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN2SmInformation())
 				if err != nil {
 					ranUe.Log.Errorf("readAll from errResponse.BinaryDataN2SmInformation error: %v", err)
 				}
@@ -3337,7 +3405,8 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 			transfer := item.PathSwitchRequestSetupFailedTransfer
 			smContext, ok := amfUe.SmContextFindByPDUSessionID(pduSessionID)
 			if !ok {
-				ranUe.Log.Errorf("SmContext[PDU Session ID: %d] not found", pduSessionID)
+				recordUnknownSmContext(ranUe, "PathSwitchRequest", pduSessionID)
+				continue
 			}
 			response, errResponse, _, err := consumer.SendUpdateSmContextXnHandoverFailed(ctx, amfUe, smContext,
 				models.N2SMINFOTYPE_PATH_SWITCH_SETUP_FAIL, transfer)
@@ -3347,18 +3416,18 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 			if response != nil && response.GetBinaryDataN2SmInformation() != nil {
 				pduSessionResourceReleasedItem := ngapType.PDUSessionResourceReleasedItemPSAck{}
 				pduSessionResourceReleasedItem.PDUSessionID.Value = int64(pduSessionID)
-				bynaryDataN2SmInformation, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
+				binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 				if err != nil {
 					ranUe.Log.Errorf("readAll from response.BinaryDataN2SmInformation error: %v", err)
 				}
-				pduSessionResourceReleasedItem.PathSwitchRequestUnsuccessfulTransfer = bynaryDataN2SmInformation
+				pduSessionResourceReleasedItem.PathSwitchRequestUnsuccessfulTransfer = binaryDataN2SmInformation
 				pduSessionResourceReleasedListPSAck.List = append(pduSessionResourceReleasedListPSAck.List,
 					pduSessionResourceReleasedItem)
 			}
 			if errResponse != nil && errResponse.GetBinaryDataN2SmInformation() != nil {
 				pduSessionResourceReleasedItem := ngapType.PDUSessionResourceReleasedItemPSFail{}
 				pduSessionResourceReleasedItem.PDUSessionID.Value = int64(pduSessionID)
-				binaryDataN2SmInformation, err := io.ReadAll(errResponse.GetBinaryDataN2SmInformation())
+				binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN2SmInformation())
 				if err != nil {
 					ranUe.Log.Errorf("readAll from errResponse.BinaryDataN2SmInformation error: %v", err)
 				}
@@ -3440,8 +3509,8 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 	}
 	if targetToSourceTransparentContainer == nil {
 		ran.Log.Errorln("TargetToSourceTransparentContainer is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-			ngapType.ProtocolIEIDTargetToSourceTransparentContainer, ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(
+			ngapType.ProtocolIEIDTargetToSourceTransparentContainer)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 	if len(iesCriticalityDiagnostics.List) > 0 {
@@ -3492,36 +3561,40 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 			pduSessionID := item.PDUSessionID.Value
 			transfer := item.HandoverRequestAcknowledgeTransfer
 			pduSessionId := int32(pduSessionID)
-			if smContext, exist := amfUe.SmContextFindByPDUSessionID(pduSessionId); exist {
-				response, errResponse, problemDetails, err := consumer.SendUpdateSmContextN2HandoverPrepared(ctx, amfUe,
-					smContext, models.N2SMINFOTYPE_HANDOVER_REQ_ACK, transfer)
+			smContext, exist := amfUe.SmContextFindByPDUSessionID(pduSessionId)
+			if !exist {
+				recordUnknownSmContext(targetUe, "HandoverRequestAcknowledge", pduSessionId)
+				continue
+			}
+
+			response, errResponse, problemDetails, err := consumer.SendUpdateSmContextN2HandoverPrepared(ctx, amfUe,
+				smContext, models.N2SMINFOTYPE_HANDOVER_REQ_ACK, transfer)
+			if err != nil {
+				targetUe.Log.Errorf("send HandoverRequestAcknowledgeTransfer error: %v", err)
+			}
+			if problemDetails != nil {
+				targetUe.Log.Warnf("ProblemDetails[status: %d, Cause: %s]", problemDetails.GetStatus(), problemDetails.GetCause())
+			}
+			if response != nil && response.GetBinaryDataN2SmInformation() != nil {
+				handoverItem := ngapType.PDUSessionResourceHandoverItem{}
+				handoverItem.PDUSessionID = item.PDUSessionID
+				binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 				if err != nil {
-					targetUe.Log.Errorf("send HandoverRequestAcknowledgeTransfer error: %v", err)
+					targetUe.Log.Errorf("readAll from response.BinaryDataN2SmInformation error: %v", err)
 				}
-				if problemDetails != nil {
-					targetUe.Log.Warnf("ProblemDetails[status: %d, Cause: %s]", problemDetails.GetStatus(), problemDetails.GetCause())
+				handoverItem.HandoverCommandTransfer = binaryDataN2SmInformation
+				pduSessionResourceHandoverList.List = append(pduSessionResourceHandoverList.List, handoverItem)
+				targetUe.SuccessPduSessionId = append(targetUe.SuccessPduSessionId, pduSessionId)
+			}
+			if errResponse != nil && errResponse.GetBinaryDataN2SmInformation() != nil {
+				releaseItem := ngapType.PDUSessionResourceToReleaseItemHOCmd{}
+				releaseItem.PDUSessionID = item.PDUSessionID
+				binaryDataN2SmInformation, err := util.ReadAndCleanupBinaryTempFile(errResponse.GetBinaryDataN2SmInformation())
+				if err != nil {
+					targetUe.Log.Errorf("readAll from errResponse.BinaryDataN2SmInformation error: %v", err)
 				}
-				if response != nil && response.GetBinaryDataN2SmInformation() != nil {
-					handoverItem := ngapType.PDUSessionResourceHandoverItem{}
-					handoverItem.PDUSessionID = item.PDUSessionID
-					binaryDataN2SmInformation, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
-					if err != nil {
-						targetUe.Log.Errorf("readAll from response.BinaryDataN2SmInformation error: %v", err)
-					}
-					handoverItem.HandoverCommandTransfer = binaryDataN2SmInformation
-					pduSessionResourceHandoverList.List = append(pduSessionResourceHandoverList.List, handoverItem)
-					targetUe.SuccessPduSessionId = append(targetUe.SuccessPduSessionId, pduSessionId)
-				}
-				if errResponse != nil && errResponse.GetBinaryDataN2SmInformation() != nil {
-					releaseItem := ngapType.PDUSessionResourceToReleaseItemHOCmd{}
-					releaseItem.PDUSessionID = item.PDUSessionID
-					binaryDataN2SmInformation, err := io.ReadAll(errResponse.GetBinaryDataN2SmInformation())
-					if err != nil {
-						targetUe.Log.Errorf("readAll from errResponse.BinaryDataN2SmInformation error: %v", err)
-					}
-					releaseItem.HandoverPreparationUnsuccessfulTransfer = binaryDataN2SmInformation
-					pduSessionResourceToReleaseList.List = append(pduSessionResourceToReleaseList.List, releaseItem)
-				}
+				releaseItem.HandoverPreparationUnsuccessfulTransfer = binaryDataN2SmInformation
+				pduSessionResourceToReleaseList.List = append(pduSessionResourceToReleaseList.List, releaseItem)
 			}
 		}
 	}
@@ -3531,15 +3604,19 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 			pduSessionID := item.PDUSessionID.Value
 			transfer := item.HandoverResourceAllocationUnsuccessfulTransfer
 			pduSessionId := int32(pduSessionID)
-			if smContext, exist := amfUe.SmContextFindByPDUSessionID(pduSessionId); exist {
-				_, _, problemDetails, err := consumer.SendUpdateSmContextN2HandoverPrepared(ctx, amfUe, smContext,
-					models.N2SMINFOTYPE_HANDOVER_RES_ALLOC_FAIL, transfer)
-				if err != nil {
-					targetUe.Log.Errorf("Send HandoverResourceAllocationUnsuccessfulTransfer error: %v", err)
-				}
-				if problemDetails != nil {
-					targetUe.Log.Warnf("ProblemDetails[status: %d, Cause: %s]", problemDetails.Status, problemDetails.Cause)
-				}
+			smContext, exist := amfUe.SmContextFindByPDUSessionID(pduSessionId)
+			if !exist {
+				recordUnknownSmContext(targetUe, "HandoverRequestAcknowledge", pduSessionId)
+				continue
+			}
+
+			_, _, problemDetails, err := consumer.SendUpdateSmContextN2HandoverPrepared(ctx, amfUe, smContext,
+				models.N2SMINFOTYPE_HANDOVER_RES_ALLOC_FAIL, transfer)
+			if err != nil {
+				targetUe.Log.Errorf("Send HandoverResourceAllocationUnsuccessfulTransfer error: %v", err)
+			}
+			if problemDetails != nil {
+				targetUe.Log.Warnf("ProblemDetails[status: %d, Cause: %s]", problemDetails.Status, problemDetails.Cause)
 			}
 		}
 	}
@@ -3824,39 +3901,35 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 
 	if aMFUENGAPID == nil {
 		ran.Log.Errorln("AmfUeNgapID is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject, ngapType.ProtocolIEIDAMFUENGAPID,
-			ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(ngapType.ProtocolIEIDAMFUENGAPID)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 	if rANUENGAPID == nil {
 		ran.Log.Errorln("RanUeNgapID is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject, ngapType.ProtocolIEIDRANUENGAPID,
-			ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(ngapType.ProtocolIEIDRANUENGAPID)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 
 	if handoverType == nil {
 		ran.Log.Errorln("handoverType is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject, ngapType.ProtocolIEIDHandoverType,
-			ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(ngapType.ProtocolIEIDHandoverType)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 	if targetID == nil {
 		ran.Log.Errorln("targetID is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject, ngapType.ProtocolIEIDTargetID,
-			ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(ngapType.ProtocolIEIDTargetID)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 	if pDUSessionResourceListHORqd == nil {
 		ran.Log.Errorln("pDUSessionResourceListHORqd is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-			ngapType.ProtocolIEIDPDUSessionResourceListHORqd, ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(
+			ngapType.ProtocolIEIDPDUSessionResourceListHORqd)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 	if sourceToTargetTransparentContainer == nil {
 		ran.Log.Errorln("sourceToTargetTransparentContainer is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject,
-			ngapType.ProtocolIEIDSourceToTargetTransparentContainer, ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(
+			ngapType.ProtocolIEIDSourceToTargetTransparentContainer)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 
@@ -3952,23 +4025,27 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 		var pduSessionReqList ngapType.PDUSessionResourceSetupListHOReq
 		for _, pDUSessionResourceHoItem := range pDUSessionResourceListHORqd.List {
 			pduSessionId := int32(pDUSessionResourceHoItem.PDUSessionID.Value)
-			if smContext, exist := amfUe.SmContextFindByPDUSessionID(pduSessionId); exist {
-				response, _, _, err := consumer.SendUpdateSmContextN2HandoverPreparing(ctx, amfUe, smContext,
-					models.N2SMINFOTYPE_HANDOVER_REQUIRED, pDUSessionResourceHoItem.HandoverRequiredTransfer, "", &targetId)
+			smContext, exist := amfUe.SmContextFindByPDUSessionID(pduSessionId)
+			if !exist {
+				recordUnknownSmContext(sourceUe, "HandoverRequired", pduSessionId)
+				continue
+			}
+
+			response, _, _, err := consumer.SendUpdateSmContextN2HandoverPreparing(ctx, amfUe, smContext,
+				models.N2SMINFOTYPE_HANDOVER_REQUIRED, pDUSessionResourceHoItem.HandoverRequiredTransfer, "", &targetId)
+			if err != nil {
+				sourceUe.Log.Errorf("consumer.SendUpdateSmContextN2HandoverPreparing Error: %+v", err)
+			}
+			if response == nil {
+				sourceUe.Log.Errorf("SendUpdateSmContextN2HandoverPreparing Error for PduSessionId[%d]", pduSessionId)
+				continue
+			} else if response.GetBinaryDataN2SmInformation() != nil {
+				binaryData, err := util.ReadAndCleanupBinaryTempFile(response.GetBinaryDataN2SmInformation())
 				if err != nil {
-					sourceUe.Log.Errorf("consumer.SendUpdateSmContextN2HandoverPreparing Error: %+v", err)
+					sourceUe.Log.Errorf("readAll from response.BinaryDataN2SmInformation error: %v", err)
 				}
-				if response == nil {
-					sourceUe.Log.Errorf("SendUpdateSmContextN2HandoverPreparing Error for PduSessionId[%d]", pduSessionId)
-					continue
-				} else if response.GetBinaryDataN2SmInformation() != nil {
-					binaryData, err := io.ReadAll(response.GetBinaryDataN2SmInformation())
-					if err != nil {
-						sourceUe.Log.Errorf("readAll from response.BinaryDataN2SmInformation error: %v", err)
-					}
-					ngap_message.AppendPDUSessionResourceSetupListHOReq(&pduSessionReqList, pduSessionId,
-						smContext.Snssai(), binaryData)
-				}
+				ngap_message.AppendPDUSessionResourceSetupListHOReq(&pduSessionReqList, pduSessionId,
+					smContext.Snssai(), binaryData)
 			}
 		}
 		if len(pduSessionReqList.List) == 0 {
@@ -4273,9 +4350,18 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 	}
 
 	sendAcknowledge := false
+	// The tracking areas this update replaces, and the identity they were published under, kept
+	// so their exported state can be retired once the RAN's lock is released - SetRanStats and
+	// the metrics helpers take the read lock, which cannot be acquired from inside the write lock
+	// held below.
+	var departedTAList []context.SupportedTAI
+	var previousName, previousGnbIP string
 	shouldSend := func() bool {
 		ran.LockRanState()
 		defer ran.UnlockRanState()
+
+		previousName = ran.Name
+		previousGnbIP = ran.GnbIp
 
 		initiatingMessage := message.InitiatingMessage
 		if initiatingMessage == nil {
@@ -4318,8 +4404,21 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 			ran.Log.Warnln("RanConfigurationUpdate failure: Supported TA List is missing")
 			cause.Present = ngapType.CausePresentMisc
 			cause.Misc = &ngapType.CauseMisc{Value: ngapType.CauseMiscPresentUnspecified}
+			// Neither ran.Name nor ran.SupportedTAList is touched by this failure, so
+			// there is nothing departed to retire: a refused update must leave the RAN's
+			// current identity and list, and what they published, exactly as they were.
 			return true
 		}
+
+		// Built without touching ran.Name or ran.SupportedTAList: whether this update is
+		// accepted is decided below from this candidate, and a refused update - RAN
+		// Configuration Update Failure - must leave the RAN's current identity and list,
+		// and what they published, exactly as they were. TS 38.413 clause 9.2.6.9 has the
+		// RAN Node Name IE, when present, replace the value previously provided - same
+		// semantics as NG Setup - but only once the update as a whole is accepted; staging
+		// it here keeps a rename and a rejected TA list from being applied independently
+		// of each other.
+		candidateTAList := context.NewSupportedTAIList()
 
 		for i := 0; i < len(supportedTAList.List); i++ {
 			supportedTAItem := supportedTAList.List[i]
@@ -4335,7 +4434,7 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 					ratInformation = &ngapType.RATInformation{Value: found.Value}
 				}
 			}
-			capOfSupportTai := cap(ran.SupportedTAList)
+			capOfSupportTai := cap(candidateTAList)
 			for j := 0; j < len(supportedTAItem.BroadcastPLMNList.List); j++ {
 				supportedTAI := context.NewSupportedTAI()
 				supportedTAI.Tai.Tac = tac
@@ -4363,15 +4462,15 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 					}
 				}
 				ran.Log.Debugf("PLMN_ID %+v TAC %s", plmnId, tac)
-				if len(ran.SupportedTAList) < capOfSupportTai {
-					ran.SupportedTAList = append(ran.SupportedTAList, supportedTAI)
+				if len(candidateTAList) < capOfSupportTai {
+					candidateTAList = append(candidateTAList, supportedTAI)
 				} else {
 					break
 				}
 			}
 		}
 
-		if len(ran.SupportedTAList) == 0 {
+		if len(candidateTAList) == 0 {
 			ran.Log.Warnln("RanConfigurationUpdate failure: No supported TA exist in RanConfigurationUpdate")
 			cause.Present = ngapType.CausePresentMisc
 			cause.Misc = &ngapType.CauseMisc{
@@ -4385,7 +4484,7 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 				taiList[i].Tac = util.TACConfigToModels(taiList[i].Tac)
 				ran.Log.Infof("Supported Tai List in AMF Plmn: %v, Tac: %v", taiList[i].PlmnId, taiList[i].Tac)
 			}
-			for i, tai := range ran.SupportedTAList {
+			for i, tai := range candidateTAList {
 				if context.InTaiList(tai.Tai, taiList) {
 					found = true
 					ran.Log.Debugf("SERVED_TAI_INDEX[%d]", i)
@@ -4402,13 +4501,41 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 		}
 
 		sendAcknowledge = cause.Present == ngapType.CausePresentNothing
+
+		// TS 38.413 clause 8.7.2.2 says that when the Supported TA List IE is included, the
+		// AMF shall overwrite the whole list of supported TAs and the slices of each - but
+		// only once it has decided to accept the update. Committing the candidate name and
+		// list ahead of that decision would have applied a rename, discarded the current
+		// list, and retired their metrics, on an update the AMF went on to refuse.
+		if sendAcknowledge {
+			if len(ran.SupportedTAList) != 0 {
+				departedTAList = make([]context.SupportedTAI, len(ran.SupportedTAList))
+				copy(departedTAList, ran.SupportedTAList)
+			}
+			ran.SupportedTAList = candidateTAList
+			if rANNodeName != nil {
+				ran.Name = rANNodeName.Value
+			}
+		}
+
 		return true
 	}()
 	if !shouldSend {
 		return
 	}
 
+	// Replacing the list is only half of it: the gauge is written from the list, so a
+	// tracking area that has just left it would never be written again and would keep its
+	// last sample for ever. Retiring them here, outside the RAN's write lock.
+	ran.RetireDepartedTacs(previousName, previousGnbIP, departedTAList)
+
 	if sendAcknowledge {
+		// Unlike NG Setup, this procedure has no response that republishes the gauge - and a
+		// rename or list change just retired above may have deleted every series this RAN
+		// had, old and new identity alike. The gNB sent this because it is still connected,
+		// so publish that under whatever identity and list are now current, or the RAN goes
+		// unrepresented until an unrelated connect or disconnect happens to touch it.
+		ran.SetRanStats(context.RanConnected)
 		ran.Log.Infoln("handle RanConfigurationUpdateAcknowledge")
 		ngap_message.SendRanConfigurationUpdateAcknowledge(ran, nil)
 	} else {
@@ -4965,7 +5092,120 @@ func HandleErrorIndication(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 		printCriticalityDiagnostics(ran, criticalityDiagnostics)
 	}
 
-	// TODO: handle error based on cause/criticalityDiagnostics
+	recoverPendingMessageAfterStaleUeNgapID(ran, aMFUENGAPID, rANUENGAPID, cause)
+
+	// TODO: handle the remaining causes and criticalityDiagnostics
+}
+
+// causeIsUnknownUeNgapID reports whether the gNB is saying it does not recognise the UE
+// this message was about -- as opposed to any of the many other things an error
+// indication can carry, none of which mean the UE context is stale.
+func causeIsUnknownUeNgapID(cause *ngapType.Cause) bool {
+	if cause == nil || cause.Present != ngapType.CausePresentRadioNetwork || cause.RadioNetwork == nil {
+		return false
+	}
+
+	switch cause.RadioNetwork.Value {
+	case ngapType.CauseRadioNetworkPresentUnknownLocalUENGAPID,
+		ngapType.CauseRadioNetworkPresentInconsistentRemoteUENGAPID:
+		return true
+	default:
+		return false
+	}
+}
+
+// recoverPendingMessageAfterStaleUeNgapID pages a UE whose gNB has just said it does not
+// know the UE-NGAP-ID the AMF addressed it by.
+//
+// This is the only notice the AMF gets. The procedure that chose to send over N2 rather
+// than page did so because this UE looked connected, the write to the gNB succeeded, and
+// it answered its caller N1N2_TRANSFER_INITIATED -- so nothing upstream is waiting, and
+// nothing will retry. Meanwhile the message the SMF handed over is still held here, and
+// the UE stays unreachable until it happens to come back on its own; observed once as
+// PDUSessionResourceSetupRequest followed by this indication, with the UE recovering 35 s
+// later by its own service request.
+//
+// No lock on this side could have prevented it: the AMF's view was self-consistent, and
+// it was the peer that had released the UE. Repairing the outcome is the remedy, not
+// trying to win a race that is not ours to win.
+func recoverPendingMessageAfterStaleUeNgapID(
+	ran *context.AmfRan,
+	amfUeNgapID *ngapType.AMFUENGAPID,
+	ranUeNgapID *ngapType.RANUENGAPID,
+	cause *ngapType.Cause,
+) {
+	if !causeIsUnknownUeNgapID(cause) {
+		return
+	}
+
+	ranUe := findRanUeByAmfNgapID(ran, amfUeNgapID)
+	if ranUe == nil {
+		ranUe = findRanUeByRanNgapID(ran, ranUeNgapID)
+	}
+
+	if ranUe == nil {
+		// Both sides agree the UE is not here, which is the one case where there is
+		// nothing to repair.
+		ran.Log.Infoln("error indication reports an unknown UE-NGAP-ID that this AMF does not hold either")
+		return
+	}
+
+	// The AMF-assigned id is unique across this AMF, not within one gNB, so the lookup
+	// above can land on a UE belonging to a different gNB. Removing that one and paging
+	// its subscriber on the word of an unrelated peer is worse than doing nothing.
+	if ranUe.Ran != ran {
+		ran.Log.Warnln("error indication names a UE-NGAP-ID held for a different gNB, ignoring it")
+		return
+	}
+
+	// Capture before removing: Remove clears the link in both directions.
+	amfUe := ranUe.AmfUe
+
+	// Remove first. The choice between sending over N2 and paging is made by asking
+	// whether this UE has a live connection, and that has to stop answering yes for a
+	// gNB that just said it does not know the UE -- otherwise the next transfer repeats
+	// this failure, and the paging below would be built for a UE that still looks
+	// connected.
+	if err := ranUe.Remove(); err != nil {
+		ran.Log.Errorf("could not remove the stale UE context: %v", err)
+	}
+
+	if amfUe == nil {
+		ran.Log.Infoln("released a stale UE context the gNB no longer knows; it carried no UE")
+		return
+	}
+
+	pending := amfUe.N1N2Message
+	if pending == nil {
+		amfUe.GmmLog.Infoln("released a stale UE context the gNB no longer knows; nothing was pending for it")
+		return
+	}
+
+	anType := ran.AnType
+	if onGoing := amfUe.GetOnGoing(anType); onGoing.Procedure == context.OnGoingProcedurePaging {
+		amfUe.GmmLog.Infoln("released a stale UE context; a paging procedure is already running for it")
+		return
+	}
+
+	amfUe.SetOnGoing(anType, &context.OnGoingProcedureWithPrio{
+		Procedure: context.OnGoingProcedurePaging,
+	})
+
+	pkg, err := ngap_message.BuildPaging(amfUe, nil, anType == models.ACCESSTYPE_NON_3_GPP_ACCESS)
+	if err != nil {
+		amfUe.GmmLog.Errorf("build paging after a stale UE-NGAP-ID failed: %v", err)
+		// Paging was never sent, so no T3513 will fire to clear the transient state set
+		// above; reset it so the UE is not left in an OnGoingProcedurePaging conflict.
+		amfUe.N1N2Message = nil
+		amfUe.SetOnGoing(anType, &context.OnGoingProcedureWithPrio{
+			Procedure: context.OnGoingProcedureNothing,
+		})
+
+		return
+	}
+
+	amfUe.GmmLog.Infoln("gNB does not know this UE; released the stale context and paging for the pending message")
+	ngap_message.SendPaging(amfUe, pkg)
 }
 
 func HandleCellTrafficTrace(ran *context.AmfRan, message *ngapType.NGAPPDU) {
@@ -5018,14 +5258,12 @@ func HandleCellTrafficTrace(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 	}
 	if aMFUENGAPID == nil {
 		ran.Log.Errorln("AmfUeNgapID is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject, ngapType.ProtocolIEIDAMFUENGAPID,
-			ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(ngapType.ProtocolIEIDAMFUENGAPID)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 	if rANUENGAPID == nil {
 		ran.Log.Errorln("RanUeNgapID is nil")
-		item := buildCriticalityDiagnosticsIEItem(ngapType.CriticalityPresentReject, ngapType.ProtocolIEIDRANUENGAPID,
-			ngapType.TypeOfErrorPresentMissing)
+		item := buildCriticalityDiagnosticsIEItem(ngapType.ProtocolIEIDRANUENGAPID)
 		iesCriticalityDiagnostics.List = append(iesCriticalityDiagnostics.List, item)
 	}
 
@@ -5216,18 +5454,18 @@ func buildCriticalityDiagnostics(
 	return criticalityDiagnostics
 }
 
-func buildCriticalityDiagnosticsIEItem(ieCriticality aper.Enumerated, ieID int64, typeOfErr aper.Enumerated) (
+func buildCriticalityDiagnosticsIEItem(ieID int64) (
 	item ngapType.CriticalityDiagnosticsIEItem,
 ) {
 	item = ngapType.CriticalityDiagnosticsIEItem{
 		IECriticality: ngapType.Criticality{
-			Value: ieCriticality,
+			Value: ngapType.CriticalityPresentReject,
 		},
 		IEID: ngapType.ProtocolIEID{
 			Value: ieID,
 		},
 		TypeOfError: ngapType.TypeOfError{
-			Value: typeOfErr,
+			Value: ngapType.TypeOfErrorPresentMissing,
 		},
 	}
 

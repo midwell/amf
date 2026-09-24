@@ -4,12 +4,208 @@
 package producer
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/omec-project/amf/context"
 	"github.com/omec-project/openapi/v2/models"
 )
+
+// setupAmfEventSubscription registers a subscription with the given event types in the AMF context
+// and removes it once the test completes.
+func setupAmfEventSubscription(t *testing.T, subscriptionID string, eventTypes []models.AmfEventType) {
+	t.Helper()
+	events := make([]models.AmfEvent, len(eventTypes))
+	for i, eventType := range eventTypes {
+		events[i] = models.AmfEvent{Type: eventType}
+	}
+	amfSelf := context.AMF_Self()
+	amfSelf.NewEventSubscription(subscriptionID, &context.AMFContextEventSubscription{
+		IsAnyUe: true,
+		EventSubscription: models.AmfEventSubscription{
+			EventList:           events,
+			EventNotifyUri:      "http://callback.example.test",
+			NotifyCorrelationId: "corr-id",
+			NfId:                "nf-id",
+		},
+	})
+	t.Cleanup(func() { amfSelf.DeleteEventSubscription(subscriptionID) })
+}
+
+func newEventListPatchRequest(op, path string, value *models.AmfEvent) models.ModifySubscriptionRequest {
+	item := models.NewAmfUpdateEventSubscriptionItem(op, path)
+	if value != nil {
+		item.SetValue(*value)
+	}
+	items := []models.AmfUpdateEventSubscriptionItem{*item}
+	return models.ArrayOfAmfUpdateEventSubscriptionItemAsModifySubscriptionRequest(&items)
+}
+
+func eventTypesOf(events []models.AmfEvent) []models.AmfEventType {
+	types := make([]models.AmfEventType, len(events))
+	for i, event := range events {
+		types[i] = event.Type
+	}
+	return types
+}
+
+func TestModifyAMFEventSubscriptionProcedureAddInsertsAtRequestedIndex(t *testing.T) {
+	tests := []struct {
+		name    string
+		initial []models.AmfEventType
+		index   int
+		want    []models.AmfEventType
+	}{
+		{
+			name:    "add at beginning",
+			initial: []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT},
+			index:   0,
+			want: []models.AmfEventType{
+				models.AMFEVENTTYPE_LOCATION_REPORT, models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT,
+			},
+		},
+		{
+			name:    "add in middle",
+			initial: []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT},
+			index:   1,
+			want: []models.AmfEventType{
+				models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_LOCATION_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT,
+			},
+		},
+		{
+			name:    "add at end",
+			initial: []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT},
+			index:   2,
+			want: []models.AmfEventType{
+				models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT, models.AMFEVENTTYPE_LOCATION_REPORT,
+			},
+		},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			subscriptionID := fmt.Sprintf("9001%d", i)
+			setupAmfEventSubscription(t, subscriptionID, tc.initial)
+
+			newEvent := models.AmfEvent{Type: models.AMFEVENTTYPE_LOCATION_REPORT}
+			request := newEventListPatchRequest("add", fmt.Sprintf("/eventList/%d", tc.index), &newEvent)
+
+			updated, problemDetails := ModifyAMFEventSubscriptionProcedure(subscriptionID, request)
+			if problemDetails != nil {
+				t.Fatalf("expected success, got problem details: %+v", problemDetails)
+			}
+			got := eventTypesOf(updated.Subscription.GetEventList())
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("event list = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestModifyAMFEventSubscriptionProcedureAddAppendsWithDashPath(t *testing.T) {
+	subscriptionID := "90024"
+	setupAmfEventSubscription(t, subscriptionID,
+		[]models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT})
+
+	newEvent := models.AmfEvent{Type: models.AMFEVENTTYPE_LOCATION_REPORT}
+	request := newEventListPatchRequest("add", "/eventList/-", &newEvent)
+
+	updated, problemDetails := ModifyAMFEventSubscriptionProcedure(subscriptionID, request)
+	if problemDetails != nil {
+		t.Fatalf("expected success, got problem details: %+v", problemDetails)
+	}
+	want := []models.AmfEventType{
+		models.AMFEVENTTYPE_TIMEZONE_REPORT, models.AMFEVENTTYPE_ACCESS_TYPE_REPORT, models.AMFEVENTTYPE_LOCATION_REPORT,
+	}
+	got := eventTypesOf(updated.Subscription.GetEventList())
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("event list = %v, want %v", got, want)
+	}
+}
+
+func TestModifyAMFEventSubscriptionProcedureDashPathRejectedForNonAddOps(t *testing.T) {
+	for _, op := range []string{"replace", "remove"} {
+		t.Run(op, func(t *testing.T) {
+			subscriptionID := fmt.Sprintf("9002%s", op)
+			setupAmfEventSubscription(t, subscriptionID, []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT})
+
+			newEvent := models.AmfEvent{Type: models.AMFEVENTTYPE_LOCATION_REPORT}
+			request := newEventListPatchRequest(op, "/eventList/-", &newEvent)
+
+			updated, problemDetails := ModifyAMFEventSubscriptionProcedure(subscriptionID, request)
+			if problemDetails == nil {
+				t.Fatalf("expected problem details for %q op with dash path", op)
+			}
+			if updated != nil {
+				t.Fatal("expected no updated subscription on error")
+			}
+		})
+	}
+}
+
+func TestModifyAMFEventSubscriptionProcedureNegativeIndexReturnsError(t *testing.T) {
+	subscriptionID := "90025"
+	setupAmfEventSubscription(t, subscriptionID, []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT})
+
+	newEvent := models.AmfEvent{Type: models.AMFEVENTTYPE_LOCATION_REPORT}
+	request := newEventListPatchRequest("replace", "/eventList/-1", &newEvent)
+
+	updated, problemDetails := ModifyAMFEventSubscriptionProcedure(subscriptionID, request)
+	if problemDetails == nil {
+		t.Fatal("expected problem details for negative patch path index")
+	}
+	if updated != nil {
+		t.Fatal("expected no updated subscription on error")
+	}
+}
+
+func TestModifyAMFEventSubscriptionProcedureReplaceOutOfRangeReturnsError(t *testing.T) {
+	subscriptionID := "90021"
+	setupAmfEventSubscription(t, subscriptionID, []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT})
+
+	newEvent := models.AmfEvent{Type: models.AMFEVENTTYPE_LOCATION_REPORT}
+	request := newEventListPatchRequest("replace", "/eventList/5", &newEvent)
+
+	updated, problemDetails := ModifyAMFEventSubscriptionProcedure(subscriptionID, request)
+	if problemDetails == nil {
+		t.Fatal("expected problem details for out-of-range replace index")
+	}
+	if updated != nil {
+		t.Fatal("expected no updated subscription on error")
+	}
+}
+
+func TestModifyAMFEventSubscriptionProcedureRemoveOutOfRangeReturnsError(t *testing.T) {
+	subscriptionID := "90022"
+	setupAmfEventSubscription(t, subscriptionID, []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT})
+
+	request := newEventListPatchRequest("remove", "/eventList/5", nil)
+
+	updated, problemDetails := ModifyAMFEventSubscriptionProcedure(subscriptionID, request)
+	if problemDetails == nil {
+		t.Fatal("expected problem details for out-of-range remove index")
+	}
+	if updated != nil {
+		t.Fatal("expected no updated subscription on error")
+	}
+}
+
+func TestModifyAMFEventSubscriptionProcedureUnsupportedOpReturnsError(t *testing.T) {
+	subscriptionID := "90023"
+	setupAmfEventSubscription(t, subscriptionID, []models.AmfEventType{models.AMFEVENTTYPE_TIMEZONE_REPORT})
+
+	request := newEventListPatchRequest("move", "/eventList/0", nil)
+
+	updated, problemDetails := ModifyAMFEventSubscriptionProcedure(subscriptionID, request)
+	if problemDetails == nil {
+		t.Fatal("expected problem details for unsupported patch operation")
+	}
+	if updated != nil {
+		t.Fatal("expected no updated subscription on error")
+	}
+}
 
 func TestNewAmfEventReportHandlesContinuousModeWithoutOptionalLimits(t *testing.T) {
 	ue := &context.AmfUe{
@@ -42,5 +238,62 @@ func TestNewAmfEventReportHandlesContinuousModeWithoutOptionalLimits(t *testing.
 	}
 	if report.State.HasRemainReports() {
 		t.Fatal("expected remainReports to be omitted when maxReports is not set")
+	}
+}
+
+// A UE's subscription is given a list of its own when it is created. Handing it the subscription's
+// own slice left the two sharing one array, and patching the subscription writes into that array:
+// "replace" assigns an element in place and "remove" shifts the rest down. The UE's list would
+// then change underneath whoever was reading it, with nothing ordering the two, and be persisted
+// half-patched.
+func TestAUeSubscriptionKeepsItsOwnEventList(t *testing.T) {
+	amfSelf := context.AMF_Self()
+
+	ue := &context.AmfUe{
+		Supi:                   "imsi-208930000000077",
+		EventSubscriptionsInfo: make(map[string]*context.AmfUeEventSubscription),
+	}
+	amfSelf.UePool.Store(ue.Supi, ue)
+
+	t.Cleanup(func() { amfSelf.UePool.Delete(ue.Supi) })
+
+	// Through the procedure itself: what is under test is the list the UE's subscription is built
+	// with, and building one in the test would assert nothing about how the AMF builds it.
+	anyUe := true
+	created, problem := CreateAMFEventSubscriptionProcedure(models.AmfCreateEventSubscription{
+		Subscription: models.AmfEventSubscription{
+			AnyUE: &anyUe,
+			EventList: []models.AmfEvent{
+				{Type: models.AMFEVENTTYPE_LOCATION_REPORT},
+				{Type: models.AMFEVENTTYPE_REGISTRATION_STATE_REPORT},
+			},
+			EventNotifyUri:      "http://callback.example.test",
+			NotifyCorrelationId: "corr-id",
+			NfId:                "nf-id",
+		},
+	})
+	if problem != nil {
+		t.Fatalf("creating the subscription: %v", problem)
+	}
+
+	subscriptionID := created.GetSubscriptionId()
+	t.Cleanup(func() { amfSelf.DeleteEventSubscription(subscriptionID) })
+
+	// The stored subscription, not GetEventSubscription's: that hands back a snapshot with a list
+	// of its own, which is the right thing for a reader and would hide exactly what this asserts.
+	ueSubscription, held := ue.EventSubscriptionsInfo[subscriptionID]
+	if !held {
+		t.Fatal("the UE was given no subscription to keep a list for")
+	}
+
+	replacement := models.AmfEvent{Type: models.AMFEVENTTYPE_SUBSCRIPTION_ID_CHANGE}
+	if _, patchProblem := ModifyAMFEventSubscriptionProcedure(subscriptionID,
+		newEventListPatchRequest("replace", "/eventList/0", &replacement)); patchProblem != nil {
+		t.Fatalf("patching the subscription: %v", patchProblem)
+	}
+
+	if got := ueSubscription.EventSubscription.EventList[0].Type; got != models.AMFEVENTTYPE_LOCATION_REPORT {
+		t.Errorf("the UE's first event became %v, want the %v it was created with: the UE and the subscription share one array",
+			got, models.AMFEVENTTYPE_LOCATION_REPORT)
 	}
 }

@@ -182,8 +182,8 @@ func (context *AMFContext) ReAllocateGutiToUe(ue *AmfUe) {
 
 func (context *AMFContext) AllocateRegistrationArea(ue *AmfUe, anType models.AccessType) {
 	// clear the previous registration area if need
-	if len(ue.RegistrationArea[anType]) > 0 {
-		ue.SetRegistrationAreaLocked(anType, nil)
+	if ue.RegistrationAreaLen(anType) > 0 {
+		ue.SetRegistrationArea(anType, nil)
 	}
 
 	// allocate a new tai list as a registration area to ue
@@ -201,9 +201,7 @@ func (context *AMFContext) AllocateRegistrationArea(ue *AmfUe, anType models.Acc
 	}
 	for _, supportTai := range taiList {
 		if reflect.DeepEqual(supportTai, ue.Tai) {
-			// Through the accessor: the LI start-of-interception scan reads this entry
-			// via IdentitySnapshot on its own goroutine.
-			ue.SetRegistrationAreaLocked(anType, append(ue.RegistrationArea[anType], supportTai))
+			ue.AppendRegistrationArea(anType, supportTai)
 			break
 		}
 	}
@@ -335,7 +333,7 @@ func (context *AMFContext) AmfUeFindBySupi(supi string) (ue *AmfUe, ok bool) {
 func (context *AMFContext) AmfUeFindByPei(pei string) (ue *AmfUe, ok bool) {
 	context.UePool.Range(func(key, value interface{}) bool {
 		candidate := value.(*AmfUe)
-		if ok = (candidate.Pei == pei); ok {
+		if ok = (candidate.GetPei() == pei); ok {
 			ue = candidate
 			return false
 		}
@@ -360,7 +358,7 @@ func (context *AMFContext) AmfUeDeleteBySuci(suci string) (ue *AmfUe, ok bool) {
 	context.UePool.Range(func(key, value interface{}) bool {
 		candidate := value.(*AmfUe)
 		if ok = (candidate.Suci == suci); ok {
-			context.UePool.Delete(candidate.Supi)
+			context.UePool.Delete(candidate.GetSupi())
 			candidate.TxLog.Infof("uecontext removed based on suci")
 			candidate.Remove()
 			return false
@@ -409,11 +407,46 @@ func (context *AMFContext) NewAmfRanId(GnbId string) *AmfRan {
 	return &ran
 }
 
+// AmfRanFindByGnbId returns the RAN with this GnbId, in either SCTP mode.
+//
+// AmfRanPool is keyed three ways: by net.Conn when the AMF terminates SCTP itself
+// (NewAmfRan), by remote address (NewAmfRanAddr), and by GnbId string only on the sctplb
+// path (NewAmfRanId). A Load therefore hits on the sctplb path and can never hit on the
+// direct-SCTP one -- even though SetRanId has populated GnbId there just the same. So the
+// Load is the fast path and the range is what makes the answer correct in both modes;
+// HandleSCTPNotificationLb already walks the pool on this same field.
+//
+// The range is skipped for an id that cannot identify one gNB, because a loose match on such
+// an id is worse than no match. SetRanId builds GnbId as "<mcc>:<mnc>:" and then appends the
+// gNB value, and ngapConvert.RanIdToModels leaves that value empty -- without returning an
+// error -- whenever the GNBID arrives on the CHOICE's extension arm rather than
+// GNBIDPresentGNBID. The result is a trailing colon: non-empty, and shared by every gNB on
+// that PLMN whose id degenerated the same way. An empty GnbId is the same problem from the
+// other side: a RAN that has not yet completed NG Setup has none.
+//
+// The Load is left unguarded. That key is whatever the caller stored, so its behaviour is
+// unchanged from before this fallback existed.
 func (context *AMFContext) AmfRanFindByGnbId(gnbId string) (*AmfRan, bool) {
 	if value, ok := context.AmfRanPool.Load(gnbId); ok {
 		return value.(*AmfRan), ok
 	}
-	return nil, false
+
+	if gnbId == "" || strings.HasSuffix(gnbId, ":") {
+		return nil, false
+	}
+
+	var ran *AmfRan
+	var found bool
+	context.AmfRanPool.Range(func(_, value any) bool {
+		amfRan := value.(*AmfRan)
+		if amfRan.GnbId == gnbId {
+			ran, found = amfRan, true
+			return false
+		}
+		return true
+	})
+
+	return ran, found
 }
 
 // use ranNodeID to find RAN context, return *AmfRan and ok bit
@@ -477,7 +510,7 @@ func mapToByte(data map[string]interface{}) (ret []byte) {
 func (context *AMFContext) AmfUeFindByGutiLocal(guti string) (ue *AmfUe, ok bool) {
 	context.UePool.Range(func(key, value interface{}) bool {
 		candidate := value.(*AmfUe)
-		if ok = (candidate.Guti == guti); ok {
+		if ok = (candidate.GetGuti() == guti); ok {
 			ue = candidate
 			return false
 		}
@@ -490,7 +523,7 @@ func (context *AMFContext) AmfUeFindByGutiLocal(guti string) (ue *AmfUe, ok bool
 func (context *AMFContext) AmfUeFindBySupiLocal(supi string) (ue *AmfUe, ok bool) {
 	context.UePool.Range(func(key, value interface{}) bool {
 		candidate := value.(*AmfUe)
-		if ok = (candidate.Supi == supi); ok {
+		if ok = (candidate.GetSupi() == supi); ok {
 			ue = candidate
 			return false
 		}

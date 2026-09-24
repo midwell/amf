@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mohae/deepcopy"
@@ -66,8 +67,12 @@ type RanUe struct {
 	LastActTime       *time.Time `json:"-"`
 
 	/* Related Context*/
-	AmfUe *AmfUe `json:"-"`
-	Ran   *AmfRan
+	// AmfUe is cleared from other goroutines (Remove, DetachAmfUe) while the NGAP
+	// read loop is still dispatching messages for this RanUe, so it is guarded by
+	// amfUeMu and must be reached through GetAmfUe/SetAmfUe rather than directly.
+	AmfUe   *AmfUe `json:"-"`
+	amfUeMu sync.RWMutex
+	Ran     *AmfRan
 
 	/* Routing ID */
 	RoutingID string
@@ -119,15 +124,12 @@ func (ranUe *RanUe) Remove() error {
 	if ran == nil {
 		return fmt.Errorf("RanUe not found in Ran")
 	}
-	if ranUe.AmfUe != nil {
-		amfUe := ranUe.AmfUe
+	if amfUe := ranUe.GetAmfUe(); amfUe != nil {
 		amfUe.Mutex.Lock()
 		if amfUe.RanUe[ran.AnType] == ranUe {
 			delete(amfUe.RanUe, ran.AnType)
 		}
-		if ranUe.AmfUe == amfUe {
-			ranUe.AmfUe = nil
-		}
+		ranUe.DetachAmfUeIf(amfUe)
 		amfUe.Mutex.Unlock()
 	}
 
@@ -146,8 +148,58 @@ func (ranUe *RanUe) Remove() error {
 	return nil
 }
 
+// GetAmfUe returns the AmfUe this RanUe belongs to, or nil once the association has
+// been dropped. Callers must keep the returned pointer instead of re-reading the
+// field. Every re-read is a fresh chance to observe the nil that Remove writes, and
+// the NGAP read loop that reads it runs with no recover(), so one badly-timed re-read
+// ends the whole AMF process rather than one procedure.
+func (ranUe *RanUe) GetAmfUe() *AmfUe {
+	if ranUe == nil {
+		return nil
+	}
+
+	ranUe.amfUeMu.RLock()
+	defer ranUe.amfUeMu.RUnlock()
+
+	return ranUe.AmfUe
+}
+
+// SetAmfUe associates this RanUe with amfUe.
+func (ranUe *RanUe) SetAmfUe(amfUe *AmfUe) {
+	if ranUe == nil {
+		return
+	}
+
+	ranUe.amfUeMu.Lock()
+	defer ranUe.amfUeMu.Unlock()
+
+	ranUe.AmfUe = amfUe
+}
+
 func (ranUe *RanUe) DetachAmfUe() {
+	if ranUe == nil {
+		return
+	}
+
+	ranUe.amfUeMu.Lock()
+	defer ranUe.amfUeMu.Unlock()
+
 	ranUe.AmfUe = nil
+}
+
+// DetachAmfUeIf drops the association only while it still points at amfUe, so a
+// release that overlaps a re-attach to a different context cannot undo the newer one.
+func (ranUe *RanUe) DetachAmfUeIf(amfUe *AmfUe) {
+	if ranUe == nil {
+		return
+	}
+
+	ranUe.amfUeMu.Lock()
+	defer ranUe.amfUeMu.Unlock()
+
+	if ranUe.AmfUe == amfUe {
+		ranUe.AmfUe = nil
+	}
 }
 
 func (ranUe *RanUe) SwitchToRan(newRan *AmfRan, ranUeNgapId int64) error {
@@ -177,6 +229,25 @@ func (ranUe *RanUe) SwitchToRan(newRan *AmfRan, ranUeNgapId int64) error {
 
 	logger.ContextLog.Infof("RanUe[RanUeNgapID: %d] Switch to new Ran[Name: %s]", ranUe.RanUeNgapId, ranUe.Ran.Name)
 	return nil
+}
+
+// sameTai reports whether two TAIs name the same tracking area. models.Tai carries Nid as a
+// pointer, so == compares pointer identity for it: two TAIs with equal values but built from
+// separate copies never match, and in an SNPN deployment every location update then looked
+// like a change and asked the policy function for a fresh decision.
+func sameTai(a, b models.Tai) bool {
+	if a.PlmnId != b.PlmnId || a.Tac != b.Tac {
+		return false
+	}
+
+	switch {
+	case a.Nid == nil && b.Nid == nil:
+		return true
+	case a.Nid == nil || b.Nid == nil:
+		return false
+	default:
+		return *a.Nid == *b.Nid
+	}
 }
 
 func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocationInformation) {
@@ -221,11 +292,15 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 				locationInfoEUTRA.TimeStamp.Value))
 		}
 		if ranUe.AmfUe != nil {
-			if ranUe.AmfUe.Tai != ranUe.Tai {
+			// LocationChanged stays a direct write: its only readers are in
+			// HandleMobilityAndPeriodicRegistrationUpdating, on this UE's own
+			// goroutine, so unlike Location and Tai it has no cross-goroutine reader
+			// to guard against.
+			if !sameTai(ranUe.AmfUe.GetTai(), ranUe.Tai) {
 				ranUe.AmfUe.LocationChanged = true
 			}
-			ranUe.AmfUe.Location = deepcopy.Copy(ranUe.Location).(models.UserLocation)
-			ranUe.AmfUe.Tai = deepcopy.Copy(ranUe.AmfUe.Location.EutraLocation.Tai).(models.Tai)
+			ranUe.AmfUe.SetLocation(ranUe.Location)
+			ranUe.AmfUe.SetTai(ranUe.Location.EutraLocation.Tai)
 		}
 	case ngapType.UserLocationInformationPresentUserLocationInformationNR:
 		locationInfoNR := userLocationInformation.UserLocationInformationNR
@@ -260,11 +335,11 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 			ranUe.Location.NrLocation.SetAgeOfLocationInformation(ngapConvert.TimeStampToInt32(locationInfoNR.TimeStamp.Value))
 		}
 		if ranUe.AmfUe != nil {
-			if ranUe.AmfUe.Tai != ranUe.Tai {
+			if !sameTai(ranUe.AmfUe.GetTai(), ranUe.Tai) {
 				ranUe.AmfUe.LocationChanged = true
 			}
-			ranUe.AmfUe.Location = deepcopy.Copy(ranUe.Location).(models.UserLocation)
-			ranUe.AmfUe.Tai = deepcopy.Copy(ranUe.AmfUe.Location.NrLocation.Tai).(models.Tai)
+			ranUe.AmfUe.SetLocation(ranUe.Location)
+			ranUe.AmfUe.SetTai(ranUe.Location.NrLocation.Tai)
 		}
 	case ngapType.UserLocationInformationPresentUserLocationInformationN3IWF:
 		locationInfoN3IWF := userLocationInformation.UserLocationInformationN3IWF
@@ -294,8 +369,8 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 		ranUe.Tai = deepcopy.Copy(ranUe.Location.N3gaLocation.GetN3gppTai()).(models.Tai)
 
 		if ranUe.AmfUe != nil {
-			ranUe.AmfUe.Location = deepcopy.Copy(ranUe.Location).(models.UserLocation)
-			ranUe.AmfUe.Tai = ranUe.Location.N3gaLocation.GetN3gppTai()
+			ranUe.AmfUe.SetLocation(ranUe.Location)
+			ranUe.AmfUe.SetTai(ranUe.Location.N3gaLocation.GetN3gppTai())
 		}
 	case ngapType.UserLocationInformationPresentNothing:
 	}

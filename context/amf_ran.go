@@ -52,6 +52,16 @@ type AmfRan struct {
 	Log *zap.SugaredLogger `json:"-"`
 
 	ranStateMu sync.RWMutex
+	// statsMu makes "read the list, then write the gauge from it" one step. Every NGAP
+	// message is dispatched in its own goroutine, so a configuration update replacing the
+	// list can otherwise land between another goroutine's snapshot and its write, and that
+	// goroutine then republishes the series this one just retired.
+	statsMu sync.Mutex
+	// removed is set once, under statsMu, by Remove. NGAP handlers run in their own
+	// goroutine and can still be publishing Connected after the SCTP association's teardown
+	// has independently called Remove on this same RAN; without this, that publication lands
+	// after Remove's Disconnected write and resurrects Connected metrics for a dead RAN.
+	removed bool
 }
 
 type SupportedTAI struct {
@@ -112,7 +122,7 @@ func (ran *AmfRan) Remove() {
 		}
 	}
 
-	ran.SetRanStats(RanDisconnected)
+	ran.markRemoved()
 	ran.Log.Infof("remove RAN Context[ID: %+v]", ran.RanID())
 	ran.RemoveAllUeInRan()
 	if AMF_Self().EnableSctpLb {
@@ -285,13 +295,113 @@ func (ran *AmfRan) RanID() string {
 	}
 }
 
+// RetireDepartedTacs removes the exported state of tracking areas the gNB has stopped
+// broadcasting. SetRanStats only ever walks the RAN's *current* list under the RAN's *current*
+// name, so a tracking area dropped by a RAN configuration update is never written again and
+// keeps its last Connected sample for the life of the process - exported state outliving the
+// condition it describes, which is the same fault as a departed gNB still reporting Connected,
+// one level down.
+//
+// previousName and previousGnbIP are the identity the departed list was published under, taken
+// before the caller applied whatever changed. A RAN Node Name IE can rename the RAN in the same
+// request that replaces its TA list, and the gauge's id label is that name: once it changes,
+// nothing ever writes the old name again, so every series under it is orphaned, not only the
+// TACs that left the list. Comparing against the *current* identity therefore decides how much
+// of previous to retire - all of it on a rename, only the departed TACs otherwise - rather than
+// assuming the caller's rename and TA list changes are independent.
+//
+// The series is deleted rather than zeroed: this gNB is still connected, so neither state the
+// label carries is true of a tracking area it no longer serves, or of a name it no longer has.
+func (ran *AmfRan) RetireDepartedTacs(previousName, previousGnbIP string, previous []SupportedTAI) {
+	if len(previous) == 0 {
+		return
+	}
+
+	ran.statsMu.Lock()
+	defer ran.statsMu.Unlock()
+
+	snapshot := ran.statsSnapshot()
+
+	renamed := previousName != snapshot.name || previousGnbIP != snapshot.gnbIP
+
+	kept := make(map[string]struct{}, len(snapshot.supportedTAList))
+	if !renamed {
+		for _, tai := range snapshot.supportedTAList {
+			kept[tai.Tai.Tac] = struct{}{}
+		}
+	}
+
+	for _, tai := range previous {
+		if _, stillServed := kept[tai.Tai.Tac]; stillServed {
+			continue
+		}
+
+		metrics.DeleteGnbSessProfileStats(previousName, previousGnbIP, RanConnected, tai.Tai.Tac)
+		metrics.DeleteGnbSessProfileStats(previousName, previousGnbIP, RanDisconnected, tai.Tai.Tac)
+	}
+}
+
+// SetRanStats records the RAN's connection state on the gnb_session_profile gauge.
+//
+// The state is a label, so writing only the series for the state being entered leaves the
+// series for the state being left at whatever it last held: a gNB that connected and then
+// disconnected went on reporting Connected=1 for the life of the process, and a dashboard
+// summing that series could not see the gNB go away. Both series are written on every
+// transition so that each one means what it says.
+//
+// Once Remove has run, this is a no-op: NGAP handlers run in their own goroutine and a
+// Connected publication already in flight when the association tears down would otherwise
+// land after Remove's Disconnected write and resurrect metrics for a RAN that no longer exists.
 func (ran *AmfRan) SetRanStats(state string) {
+	ran.statsMu.Lock()
+	defer ran.statsMu.Unlock()
+
+	if ran.removed {
+		logger.ContextLog.Debugf("RAN %q was removed, dropping stale %q publication on gnb_session_profile",
+			ran.RanID(), state)
+		return
+	}
+
+	var connected, disconnected uint64
+
+	switch state {
+	case RanConnected:
+		connected, disconnected = 1, 0
+	case RanDisconnected:
+		connected, disconnected = 0, 1
+	default:
+		// Writing both series means the state has to be one of the two the gauge
+		// describes. Treating anything else as disconnected would record a state nobody
+		// asked for, which is the same class of quiet wrongness as the stale series.
+		logger.ContextLog.Warnf("RAN %q state %q is not recorded on gnb_session_profile",
+			ran.RanID(), state)
+		return
+	}
+
 	snapshot := ran.statsSnapshot()
 	for _, tai := range snapshot.supportedTAList {
-		if state == RanConnected {
-			metrics.SetGnbSessProfileStats(snapshot.name, snapshot.gnbIP, state, tai.Tai.Tac, 1)
-		} else {
-			metrics.SetGnbSessProfileStats(snapshot.name, snapshot.gnbIP, state, tai.Tai.Tac, 0)
-		}
+		metrics.SetGnbSessProfileStats(snapshot.name, snapshot.gnbIP, RanConnected, tai.Tai.Tac, connected)
+		metrics.SetGnbSessProfileStats(snapshot.name, snapshot.gnbIP, RanDisconnected, tai.Tai.Tac, disconnected)
+	}
+}
+
+// markRemoved records this RAN as torn down and publishes Disconnected one final time, both
+// under statsMu so the two are one step: without that, a concurrent SetRanStats(RanConnected)
+// could interleave between the flag and the write and still publish Connected after removal.
+// Once set, SetRanStats refuses every further publication, including this RAN's own repeated
+// Disconnected writes from an idempotent Remove.
+func (ran *AmfRan) markRemoved() {
+	ran.statsMu.Lock()
+	defer ran.statsMu.Unlock()
+
+	if ran.removed {
+		return
+	}
+	ran.removed = true
+
+	snapshot := ran.statsSnapshot()
+	for _, tai := range snapshot.supportedTAList {
+		metrics.SetGnbSessProfileStats(snapshot.name, snapshot.gnbIP, RanConnected, tai.Tai.Tac, 0)
+		metrics.SetGnbSessProfileStats(snapshot.name, snapshot.gnbIP, RanDisconnected, tai.Tai.Tac, 1)
 	}
 }

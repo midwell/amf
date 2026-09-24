@@ -9,7 +9,6 @@ package producer
 
 import (
 	ctxt "context"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/omec-project/amf/logger"
 	ngap_message "github.com/omec-project/amf/ngap/message"
 	"github.com/omec-project/amf/producer/callback"
+	"github.com/omec-project/amf/util"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/ngap/v2/aper"
 	"github.com/omec-project/ngap/v2/ngapType"
@@ -29,14 +29,19 @@ import (
 func ProducerHandler(ctx ctxt.Context, s1, s2 string, msg interface{}) (interface{}, string, interface{}, interface{}) {
 	if msg == nil {
 		r1, r2 := N1N2MessageTransferStatusProcedure(s1, s2)
-		return r1, "", r2, nil
+		// &r1, not r1: N1N2MessageTransferCause is a string type, so boxing the value
+		// gives the caller an interface that is never nil and that its
+		// .(*models.N1N2MessageTransferCause) assertion cannot satisfy -- a panic on
+		// every call, recovered by gin as a 500. The caller wants the pointer.
+		return &r1, "", anyOrNil(r2), nil
 	}
 	switch msg := msg.(type) {
 	case models.N1N2MessageTransferRequest:
-		return N1N2MessageTransferProcedure(s1, s2, msg)
+		rspData, locationHeader, problemDetails, transferErr := N1N2MessageTransferProcedure(s1, s2, msg)
+		return anyOrNil(rspData), locationHeader, anyOrNil(problemDetails), anyOrNil(transferErr)
 	case models.UeN1N2InfoSubscriptionCreateData:
 		r1, r2 := N1N2MessageSubscribeProcedure(s1, msg)
-		return r1, "", r2, nil
+		return anyOrNil(r1), "", anyOrNil(r2), nil
 	}
 
 	return nil, "", nil, nil
@@ -76,7 +81,7 @@ func HandleN1N2MessageTransferRequest(request *httpwrapper.Request) *httpwrapper
 			case models.N1N2MESSAGETRANSFERCAUSE_N1_N2_TRANSFER_INITIATED:
 				return httpwrapper.NewResponse(http.StatusOK, nil, rspData)
 			case models.N1N2MESSAGETRANSFERCAUSE_ATTEMPTING_TO_REACH_UE:
-				headers := http.Header{"Location": {locHeader}}
+				headers := http.Header{headerLocation: {locHeader}}
 				return httpwrapper.NewResponse(http.StatusAccepted, headers, rspData)
 			}
 		}
@@ -120,7 +125,7 @@ func HandleN1N2MessageTransferRequest(request *httpwrapper.Request) *httpwrapper
 			return httpwrapper.NewResponse(http.StatusOK, nil, n1n2MessageTransferRspData)
 		case models.N1N2MESSAGETRANSFERCAUSE_ATTEMPTING_TO_REACH_UE:
 			headers := http.Header{
-				"Location": {locationHeader},
+				headerLocation: {locationHeader},
 			}
 			return httpwrapper.NewResponse(http.StatusAccepted, headers, n1n2MessageTransferRspData)
 		}
@@ -164,7 +169,7 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 	var n2Info []byte
 	if requestData.N2InfoContainer != nil {
 		if binaryDataN2Information := n1n2MessageTransferRequest.GetBinaryDataN2Information(); binaryDataN2Information != nil {
-			binaryN2Info, err := io.ReadAll(binaryDataN2Information)
+			binaryN2Info, err := util.ReadAndCleanupBinaryTempFile(binaryDataN2Information)
 			if err != nil {
 				ue.ProducerLog.Errorf("read binaryDataN2Information failed: %+v", err)
 				n2Info = nil
@@ -177,7 +182,7 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 	var n1Msg []byte
 	if requestData.N1MessageContainer != nil {
 		if binaryDataN1Message := n1n2MessageTransferRequest.GetBinaryDataN1Message(); binaryDataN1Message != nil {
-			binaryN1Msg, err := io.ReadAll(binaryDataN1Message)
+			binaryN1Msg, err := util.ReadAndCleanupBinaryTempFile(binaryDataN1Message)
 			if err != nil {
 				ue.ProducerLog.Errorf("read binaryDataN1Message failed: %+v", err)
 				n1Msg = nil
@@ -259,7 +264,21 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 	}
 
 	// UE is CM-Connected
-	if ue.CmConnect(anType) {
+	if ue.HasLiveRanConnection(anType) {
+		// One read of the association, used for the whole branch. The guard above tests and
+		// discards, so without this the branch below reads ue.RanUe[anType] directly, on an SBI
+		// goroutine, while the NGAP side may be releasing the UE.
+		//
+		// The nil check is not redundant with the guard: the guard's answer is already stale by
+		// the time this acts on it, so the read has to be checked on its own terms.
+		ranUe := ue.GetRanUe(anType)
+		if ranUe == nil {
+			ue.ProducerLog.Warnln("UE's RAN connection was released while transferring; cannot transfer")
+			problemDetails = utils.ProblemDetailsSystemFailure("UE has no RAN connection")
+
+			return nil, "", problemDetails, nil
+		}
+
 		var (
 			nasPdu []byte
 			err    error
@@ -273,7 +292,7 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 			}
 			if n2Info == nil {
 				ue.ProducerLog.Debugln("forward N1 Message to UE")
-				ngap_message.SendDownlinkNasTransport(ue.RanUe[anType], nasPdu, nil)
+				ngap_message.SendDownlinkNasTransport(ranUe, nasPdu, nil)
 				n1n2MessageTransferRspData = models.NewN1N2MessageTransferRspData(models.N1N2MESSAGETRANSFERCAUSE_N1_N2_TRANSFER_INITIATED)
 				return n1n2MessageTransferRspData, "", nil, nil
 			}
@@ -285,15 +304,15 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 			switch smInfo.N2InfoContent.GetNgapIeType() {
 			case models.NGAPIETYPE_PDU_RES_SETUP_REQ:
 				ue.ProducerLog.Debugln("AMF Transfer NGAP PDU Session Resource Setup Request from SMF")
-				if ue.RanUe[anType].SentInitialContextSetupRequest {
+				if ranUe.SentInitialContextSetupRequest {
 					list := ngapType.PDUSessionResourceSetupListSUReq{}
 					ngap_message.AppendPDUSessionResourceSetupListSUReq(&list, smInfo.PduSessionId, *smInfo.SNssai, nasPdu, n2Info)
-					ngap_message.SendPDUSessionResourceSetupRequest(ue.RanUe[anType], nil, list)
+					ngap_message.SendPDUSessionResourceSetupRequest(ranUe, nil, list)
 				} else {
 					list := ngapType.PDUSessionResourceSetupListCxtReq{}
 					ngap_message.AppendPDUSessionResourceSetupListCxtReq(&list, smInfo.PduSessionId, *smInfo.SNssai, nasPdu, n2Info)
 					ngap_message.SendInitialContextSetupRequest(ue, anType, nil, &list, nil, nil, nil)
-					ue.RanUe[anType].SentInitialContextSetupRequest = true
+					ranUe.SentInitialContextSetupRequest = true
 				}
 				n1n2MessageTransferRspData = models.NewN1N2MessageTransferRspData(models.N1N2MESSAGETRANSFERCAUSE_N1_N2_TRANSFER_INITIATED)
 				// context.StoreContextInDB(ue)
@@ -302,7 +321,7 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 				ue.ProducerLog.Debugln("AMF Transfer NGAP PDU Session Resource Modify Request from SMF")
 				list := ngapType.PDUSessionResourceModifyListModReq{}
 				ngap_message.AppendPDUSessionResourceModifyListModReq(&list, smInfo.PduSessionId, nasPdu, n2Info)
-				ngap_message.SendPDUSessionResourceModifyRequest(ue.RanUe[anType], list)
+				ngap_message.SendPDUSessionResourceModifyRequest(ranUe, list)
 				n1n2MessageTransferRspData = models.NewN1N2MessageTransferRspData(models.N1N2MESSAGETRANSFERCAUSE_N1_N2_TRANSFER_INITIATED)
 				// context.StoreContextInDB(ue)
 				return n1n2MessageTransferRspData, "", nil, nil
@@ -310,7 +329,7 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 				ue.ProducerLog.Debugln("AMF Transfer NGAP PDU Session Resource Release Command from SMF")
 				list := ngapType.PDUSessionResourceToReleaseListRelCmd{}
 				ngap_message.AppendPDUSessionResourceToReleaseListRelCmd(&list, smInfo.PduSessionId, n2Info)
-				ngap_message.SendPDUSessionResourceReleaseCommand(ue.RanUe[anType], nasPdu, list)
+				ngap_message.SendPDUSessionResourceReleaseCommand(ranUe, nasPdu, list)
 				n1n2MessageTransferRspData = models.NewN1N2MessageTransferRspData(models.N1N2MESSAGETRANSFERCAUSE_N1_N2_TRANSFER_INITIATED)
 				// context.StoreContextInDB(ue)
 				return n1n2MessageTransferRspData, "", nil, nil
@@ -363,6 +382,8 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 				Request:     n1n2MessageTransferRequest,
 				Status:      n1n2MessageTransferRspData.Cause,
 				ResourceUri: locationHeader,
+				N1Msg:       n1Msg,
+				N2Info:      n2Info,
 			}
 			ue.N1N2Message = &message
 			ue.SetOnGoing(anType, &context.OnGoingProcedureWithPrio{
@@ -394,10 +415,21 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 	} else {
 		// Case B (UE is CM-IDLE in Non-3GPP access but CM-CONNECTED in 3GPP access and the associated
 		// access type is Non-3GPP access)in subclause 5.2.2.3.1.2 of TS29518
-		if ue.CmConnect(models.ACCESSTYPE__3_GPP_ACCESS) {
+		if ue.HasLiveRanConnection(models.ACCESSTYPE__3_GPP_ACCESS) {
+			// One read of the association, used for the whole branch: the guard above is
+			// already stale by the time this acts on it, since the NGAP reader can release
+			// the 3GPP RanUe concurrently with this SBI goroutine.
+			ranUe := ue.GetRanUe(models.ACCESSTYPE__3_GPP_ACCESS)
+			if ranUe == nil {
+				ue.ProducerLog.Warnln("UE's 3GPP RAN connection was released while transferring; cannot transfer")
+				problemDetails = utils.ProblemDetailsSystemFailure("UE has no RAN connection")
+
+				return nil, "", problemDetails, nil
+			}
+
 			if n2Info == nil {
 				n1n2MessageTransferRspData.Cause = models.N1N2MESSAGETRANSFERCAUSE_N1_N2_TRANSFER_INITIATED
-				gmm_message.SendDLNASTransport(ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS], models.ACCESSTYPE__3_GPP_ACCESS,
+				gmm_message.SendDLNASTransport(ranUe, models.ACCESSTYPE__3_GPP_ACCESS,
 					nasMessage.PayloadContainerTypeN1SMInfo, n1Msg, requestData.GetPduSessionId(), 0, nil, 0)
 			} else {
 				n1n2MessageTransferRspData.Cause = models.N1N2MESSAGETRANSFERCAUSE_ATTEMPTING_TO_REACH_UE
@@ -405,6 +437,8 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 					Request:     n1n2MessageTransferRequest,
 					Status:      n1n2MessageTransferRspData.Cause,
 					ResourceUri: locationHeader,
+					N1Msg:       n1Msg,
+					N2Info:      n2Info,
 				}
 				ue.N1N2Message = &message
 				nasMsg, err := gmm_message.BuildNotification(ue, models.ACCESSTYPE_NON_3_GPP_ACCESS)
@@ -416,7 +450,7 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 					problemDetails = utils.ProblemDetailsSystemFailure(err.Error())
 					return nil, "", problemDetails, nil
 				}
-				gmm_message.SendNotification(ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS], nasMsg)
+				gmm_message.SendNotification(ranUe, nasMsg)
 			}
 			return n1n2MessageTransferRspData, locationHeader, nil, nil
 		} else {
@@ -427,6 +461,8 @@ func N1N2MessageTransferProcedure(ueContextID string, reqUri string,
 				Request:     n1n2MessageTransferRequest,
 				Status:      n1n2MessageTransferRspData.Cause,
 				ResourceUri: locationHeader,
+				N1Msg:       n1Msg,
+				N2Info:      n2Info,
 			}
 			ue.N1N2Message = &message
 

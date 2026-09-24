@@ -9,13 +9,11 @@ package producer
 import (
 	ctxt "context"
 	"fmt"
-	"io"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
 
-	"github.com/mohae/deepcopy"
 	"github.com/omec-project/amf/consumer"
 	"github.com/omec-project/amf/context"
 	gmm_message "github.com/omec-project/amf/gmm/message"
@@ -42,13 +40,13 @@ func SmContextHandler(ctx ctxt.Context, s1, s2 string, msg interface{}) (interfa
 			pduSessionID = pduSessionIDTmp
 		}
 		r1 := SmContextStatusNotifyProcedure(ctx, s1, int32(pduSessionID), msg)
-		return nil, "", r1, nil
+		return nil, "", anyOrNil(r1), nil
 	case models.PolicyUpdate:
 		r1 := AmPolicyControlUpdateNotifyUpdateProcedure(s1, msg)
-		return nil, "", r1, nil
+		return nil, "", anyOrNil(r1), nil
 	case models.TerminationNotification:
 		r1 := AmPolicyControlUpdateNotifyTerminateProcedure(ctx, s1, msg)
-		return nil, "", r1, nil
+		return nil, "", anyOrNil(r1), nil
 	}
 
 	return nil, "", nil, nil
@@ -76,9 +74,7 @@ func HandleSmContextStatusNotify(request *httpwrapper.Request) *httpwrapper.Resp
 		Msg:         smContextStatusNotification,
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
-	ue.EventChannel.UpdateSbiHandler(SmContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(SmContextHandler, sbiMsg)
 	// problemDetails := SmContextStatusNotifyProcedure(guti, int32(pduSessionID), smContextStatusNotification)
 	if msg.ProblemDetails != nil {
 		return httpwrapper.NewResponse(int(msg.ProblemDetails.(*models.ProblemDetails).GetStatus()), nil, msg.ProblemDetails.(*models.ProblemDetails))
@@ -123,7 +119,7 @@ func SmContextStatusNotifyProcedure(ctx ctxt.Context, guti string, pduSessionID 
 				if smContext.ULNASTransport().SNSSAI != nil {
 					snssai = nasConvert.SnssaiToModels(smContext.ULNASTransport().SNSSAI)
 				} else {
-					if allowedNssai, ok := ue.AllowedNssai[anType]; ok {
+					if allowedNssai := ue.GetAllowedNssai(anType); allowedNssai != nil {
 						snssai = allowedNssai[0].AllowedSnssai
 					} else {
 						ue.GmmLog.Errorln("UE doesn't have allowedNssai")
@@ -153,7 +149,7 @@ func SmContextStatusNotifyProcedure(ctx ctxt.Context, guti string, pduSessionID 
 				newSmContext, cause, err := consumer.SelectSmf(ctx, ue, anType, pduSessionID, snssai, dnn)
 				if err != nil {
 					logger.CallbackLog.Error(err)
-					gmm_message.SendDLNASTransport(ue.RanUe[anType], anType,
+					gmm_message.SendDLNASTransport(ue.GetRanUe(anType), anType,
 						nasMessage.PayloadContainerTypeN1SMInfo,
 						smContext.ULNASTransport().GetPayloadContainerContents(), pduSessionID, cause, nil, 0)
 					return
@@ -163,18 +159,29 @@ func SmContextStatusNotifyProcedure(ctx ctxt.Context, guti string, pduSessionID 
 					ctx, ue, newSmContext, nil, smMessage)
 				if response != nil {
 					newSmContext.SetSmContextRef(smContextRef)
-					newSmContext.SetUserLocation(deepcopy.Copy(ue.Location).(models.UserLocation))
+					newSmContext.SetUserLocation(ue.GetLocation())
 					ue.GmmLog.Infof("create smContext[pduSessionID: %d] Success", pduSessionID)
 					ue.StoreSmContext(pduSessionID, newSmContext)
 					// TODO: handle response(response N2SmInfo to RAN if exists)
 				} else if errResponse != nil {
 					ue.ProducerLog.Warnf("PDU Session Establishment Request is rejected by SMF[pduSessionId:%d]", pduSessionID)
-					binaryDataN1SmMessage, err1 := io.ReadAll(errResponse.GetBinaryDataN1SmMessage())
-					if err1 != nil {
-						ue.ProducerLog.Errorf("read binaryDataN1SmMessage failed: %+v", err1)
+					var binaryDataN1SmMessage []byte
+					if n1File := errResponse.GetBinaryDataN1SmMessage(); n1File != nil {
+						data, readErr := util.ReadAndCleanupBinaryTempFile(n1File)
+						if readErr != nil {
+							ue.ProducerLog.Errorf("read binaryDataN1SmMessage failed: %+v", readErr)
+						} else {
+							binaryDataN1SmMessage = data
+						}
 					}
-					gmm_message.SendDLNASTransport(ue.RanUe[anType], anType,
-						nasMessage.PayloadContainerTypeN1SMInfo, binaryDataN1SmMessage, pduSessionID, 0, nil, 0)
+					// The SMF can refuse without attaching a reject, and an empty payload
+					// container is not a message the UE can act on.
+					if len(binaryDataN1SmMessage) == 0 {
+						ue.ProducerLog.Warnf("SMF rejection carries no N1 SM message[pduSessionId:%d]", pduSessionID)
+					} else {
+						gmm_message.SendDLNASTransport(ue.GetRanUe(anType), anType,
+							nasMessage.PayloadContainerTypeN1SMInfo, binaryDataN1SmMessage, pduSessionID, 0, nil, 0)
+					}
 				} else if err != nil {
 					ue.ProducerLog.Errorf("failed to create smContext[pduSessionID: %d], Error[%s]", pduSessionID, err.Error())
 				} else {
@@ -217,9 +224,7 @@ func HandleAmPolicyControlUpdateNotifyUpdate(request *httpwrapper.Request) *http
 		Msg:         policyUpdate,
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
-	ue.EventChannel.UpdateSbiHandler(SmContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(SmContextHandler, sbiMsg)
 	// problemDetails := AmPolicyControlUpdateNotifyUpdateProcedure(polAssoID, policyUpdate)
 
 	if msg.ProblemDetails != nil {
@@ -264,7 +269,7 @@ func AmPolicyControlUpdateNotifyUpdateProcedure(polAssoID string,
 		// use go routine to write response first to ensure the order of the procedure
 		go func() {
 			// UE is CM-Connected State
-			if ue.CmConnect(models.ACCESSTYPE__3_GPP_ACCESS) {
+			if ue.HasLiveRanConnection(models.ACCESSTYPE__3_GPP_ACCESS) {
 				gmm_message.SendConfigurationUpdateCommand(ue, models.ACCESSTYPE__3_GPP_ACCESS, nil)
 				// UE is CM-IDLE => paging
 			} else {
@@ -311,9 +316,7 @@ func HandleAmPolicyControlUpdateNotifyTerminate(request *httpwrapper.Request) *h
 		Msg:         terminationNotification,
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
-	ue.EventChannel.UpdateSbiHandler(SmContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(SmContextHandler, sbiMsg)
 
 	// problemDetails := AmPolicyControlUpdateNotifyTerminateProcedure(polAssoID, terminationNotification)
 	if msg.ProblemDetails != nil {
@@ -392,13 +395,16 @@ func N1MessageNotifyProcedure(n1MessageNotify models.N1MessageNotifyRequest) *mo
 		ranUe := ran.RanUeFindByRanUeNgapID(int64(registrationCtxtContainer.AnN2ApId))
 
 		ranUe.Location = registrationCtxtContainer.GetUserLocation()
-		amfUe.Location = registrationCtxtContainer.GetUserLocation()
+		// The setter, not a plain assignment: NewAmfUe has already put this UE in the
+		// UE pool, so an SBI handler can find it and read Location while this
+		// goroutine -- one N1MessageNotifyProcedure spawned -- is writing it.
+		amfUe.SetLocation(registrationCtxtContainer.GetUserLocation())
 		ranUe.UeContextRequest = registrationCtxtContainer.GetUeContextRequest()
 		ranUe.OldAmfName = registrationCtxtContainer.InitialAmfName
 
 		if registrationCtxtContainer.AllowedNssai != nil {
 			allowedNssai := registrationCtxtContainer.AllowedNssai
-			amfUe.AllowedNssai[allowedNssai.AccessType] = allowedNssai.AllowedSnssaiList
+			amfUe.SetAllowedNssai(allowedNssai.AccessType, allowedNssai.AllowedSnssaiList)
 		}
 
 		if len(registrationCtxtContainer.ConfiguredNssai) > 0 {
@@ -407,7 +413,7 @@ func N1MessageNotifyProcedure(n1MessageNotify models.N1MessageNotifyRequest) *mo
 
 		amfUe.AttachRanUe(ranUe)
 
-		nasPdu, err := io.ReadAll(n1MessageNotify.GetBinaryDataN1Message())
+		nasPdu, err := util.ReadAndCleanupBinaryTempFile(n1MessageNotify.GetBinaryDataN1Message())
 		if err != nil {
 			logger.ProducerLog.Errorf("read N1 Message Failed: %+v", err)
 		}
@@ -482,9 +488,7 @@ func HandleDeregistrationNotification(ctx ctxt.Context, request *httpwrapper.Req
 					Msg:         nil,
 					Result:      make(chan context.SbiResponseMsg, 10),
 				}
-				ue.EventChannel.UpdateSbiHandler(HandleOAMPurgeUEContextRequest)
-				ue.EventChannel.SubmitMessage(sbiMsg)
-				msg := <-sbiMsg.Result
+				msg := ue.DispatchSbiMsg(HandleOAMPurgeUEContextRequest, sbiMsg)
 				if msg.ProblemDetails != nil {
 					return httpwrapper.NewResponse(int(msg.ProblemDetails.(*models.ProblemDetails).GetStatus()), nil, msg.ProblemDetails.(*models.ProblemDetails))
 				} else {

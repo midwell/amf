@@ -23,6 +23,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+const nfName = "amf"
+
 func BuildUeContextModel(ue *amf_context.AmfUe) (ueContext models.UeContext) {
 	ueContext.SetSupi(ue.GetSupi())
 	ueContext.SetSupiUnauthInd(ue.UnauthenticatedSupi)
@@ -70,7 +72,7 @@ func BuildUeContextModel(ue *amf_context.AmfUe) (ueContext models.UeContext) {
 		}
 	}
 
-	for _, eventSub := range ue.EventSubscriptionsInfo {
+	for _, eventSub := range ue.GetEventSubscriptions() {
 		if eventSub.EventSubscription != nil {
 			ueContext.EventSubscriptionList = append(ueContext.EventSubscriptionList, *eventSub.EventSubscription)
 		}
@@ -112,7 +114,7 @@ func UEContextTransferRequest(
 
 	span.SetAttributes(
 		attribute.String("http.method", "POST"),
-		attribute.String("nf.target", "amf"),
+		attribute.String("nf.target", nfName),
 		attribute.String("net.peer.name", ue.TargetAmfUri),
 		attribute.String("ue.supi", ue.GetSupi()),
 		attribute.String("ue.plmn.id", ue.PlmnId.GetMcc()+ue.PlmnId.GetMnc()),
@@ -205,7 +207,7 @@ func RegistrationStatusUpdate(ctx context.Context, ue *amf_context.AmfUe, reques
 
 	span.SetAttributes(
 		attribute.String("http.method", "POST"),
-		attribute.String("nf.target", "amf"),
+		attribute.String("nf.target", nfName),
 		attribute.String("net.peer.name", ue.TargetAmfUri),
 		attribute.String("ue.supi", ue.GetSupi()),
 		attribute.String("ue.plmn.id", ue.PlmnId.GetMcc()+ue.PlmnId.GetMnc()),
@@ -226,6 +228,13 @@ func RegistrationStatusUpdate(ctx context.Context, ue *amf_context.AmfUe, reques
 	apiRegistrationStatusUpdateRequest := client.IndividualUeContextDocumentAPI.RegistrationStatusUpdate(ctx, ueContextId)
 	apiRegistrationStatusUpdateRequest = apiRegistrationStatusUpdateRequest.UeRegStatusUpdateReqData(request)
 	res, httpResp, localErr := client.IndividualUeContextDocumentAPI.RegistrationStatusUpdateExecute(apiRegistrationStatusUpdateRequest)
+	if httpResp != nil {
+		defer func() {
+			if closeErr := httpResp.Body.Close(); closeErr != nil {
+				logger.ConsumerLog.Errorf("RegistrationStatusUpdate response body cannot close: %+v", closeErr)
+			}
+		}()
+	}
 	if localErr == nil {
 		regStatusTransferComplete = res.RegStatusTransferComplete
 	} else if httpResp != nil {

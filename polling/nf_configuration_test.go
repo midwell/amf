@@ -25,6 +25,8 @@ import (
 	"github.com/omec-project/openapi/v2/nfConfigApi"
 )
 
+const contentTypeJSON = "application/json"
+
 func waitForSignal(t *testing.T, signal <-chan struct{}, timeout time.Duration, message string) {
 	t.Helper()
 	timeoutTimer := time.NewTimer(timeout)
@@ -41,6 +43,22 @@ func cleanupPollingService(t *testing.T, cancel context.CancelFunc, serviceDone 
 	t.Helper()
 	cancel()
 	waitForSignal(t, serviceDone, time.Second, "timed out waiting for polling service to stop")
+}
+
+// useFastPollingIntervals shrinks the package's polling interval and backoff cap for the
+// duration of a test. Restored only once the polling goroutine the test started has
+// stopped: register this before the cleanup that stops it, so cleanups run in the reverse
+// order (LIFO) and the goroutine is gone before these vars change under it.
+func useFastPollingIntervals(t *testing.T) {
+	t.Helper()
+	originalInterval := initialPollingInterval
+	originalMaxBackoff := pollingMaxBackoff
+	initialPollingInterval = 20 * time.Millisecond
+	pollingMaxBackoff = 80 * time.Millisecond
+	t.Cleanup(func() {
+		initialPollingInterval = originalInterval
+		pollingMaxBackoff = originalMaxBackoff
+	})
 }
 
 func makeAccessMobilityConfig(mcc, mnc, sst string, sd string, tacs []string) (nfConfigApi.AccessAndMobility, error) {
@@ -63,6 +81,7 @@ func makeAccessMobilityConfig(mcc, mnc, sst string, sd string, tacs []string) (n
 }
 
 func TestStartPollingService_Success(t *testing.T) {
+	useFastPollingIntervals(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	originalFetchAccessAndMobilityConfig := fetchAccessAndMobilityConfig
 	t.Cleanup(func() {
@@ -102,6 +121,7 @@ func TestStartPollingService_Success(t *testing.T) {
 }
 
 func TestStartPollingService_RetryAfterFailure(t *testing.T) {
+	useFastPollingIntervals(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	originalFetchAccessAndMobilityConfig := fetchAccessAndMobilityConfig
 	t.Cleanup(func() { fetchAccessAndMobilityConfig = originalFetchAccessAndMobilityConfig })
@@ -137,6 +157,7 @@ func TestStartPollingService_RetryAfterFailure(t *testing.T) {
 }
 
 func TestStartPollingService_NoUpdateOnIdenticalPlmnConfig(t *testing.T) {
+	useFastPollingIntervals(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	originalFetcher := fetchAccessAndMobilityConfig
 	t.Cleanup(func() { fetchAccessAndMobilityConfig = originalFetcher })
@@ -178,6 +199,7 @@ func TestStartPollingService_NoUpdateOnIdenticalPlmnConfig(t *testing.T) {
 }
 
 func TestStartPollingService_UpdateOnDifferentConfig(t *testing.T) {
+	useFastPollingIntervals(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	originalFetcher := fetchAccessAndMobilityConfig
 	t.Cleanup(func() { fetchAccessAndMobilityConfig = originalFetcher })
@@ -185,7 +207,7 @@ func TestStartPollingService_UpdateOnDifferentConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create access mobility config: %v", err)
 	}
-	accessMobility2, err := makeAccessMobilityConfig("111", "02", "1", "1", []string{"2"})
+	accessMobility2, err := makeAccessMobilityConfig("111", "02", "2", "5", []string{"2"})
 	if err != nil {
 		t.Fatalf("failed to create access mobility config: %v", err)
 	}
@@ -255,7 +277,7 @@ func TestFetchAccessAndMobilityConfig(t *testing.T) {
 		{
 			name:           "200 OK with valid JSON",
 			statusCode:     http.StatusOK,
-			contentType:    "application/json",
+			contentType:    contentTypeJSON,
 			responseBody:   string(validJson),
 			expectedError:  "",
 			expectedResult: expectedAccessAndMobility,
@@ -270,28 +292,28 @@ func TestFetchAccessAndMobilityConfig(t *testing.T) {
 		{
 			name:          "400 Bad Request",
 			statusCode:    http.StatusBadRequest,
-			contentType:   "application/json",
+			contentType:   contentTypeJSON,
 			responseBody:  "",
 			expectedError: "server returned 400 error code",
 		},
 		{
 			name:          "500 Internal Server Error",
 			statusCode:    http.StatusInternalServerError,
-			contentType:   "application/json",
+			contentType:   contentTypeJSON,
 			responseBody:  "",
 			expectedError: "server returned 500 error code",
 		},
 		{
 			name:          "Unexpected Status Code 418",
 			statusCode:    http.StatusTeapot,
-			contentType:   "application/json",
+			contentType:   contentTypeJSON,
 			responseBody:  "",
 			expectedError: "unexpected status code: 418",
 		},
 		{
 			name:          "200 OK with invalid JSON",
 			statusCode:    http.StatusOK,
-			contentType:   "application/json",
+			contentType:   contentTypeJSON,
 			responseBody:  "{invalid-json}",
 			expectedError: "failed to parse JSON response:",
 		},
@@ -301,7 +323,7 @@ func TestFetchAccessAndMobilityConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := func(w http.ResponseWriter, r *http.Request) {
 				accept := r.Header.Get("Accept")
-				if accept != "application/json" {
+				if accept != contentTypeJSON {
 					t.Errorf("expected Accept header 'application/json', got '%s'", accept)
 				}
 

@@ -21,7 +21,7 @@ func MtHandler(ctx ctxt.Context, s1, s2 string, msg interface{}) (interface{}, s
 	switch msg := msg.(type) {
 	case string:
 		r1, r2 := ProvideDomainSelectionInfoProcedure(s1, s2, msg)
-		return r1, "", r2, nil
+		return anyOrNil(r1), "", anyOrNil(r2), nil
 	}
 
 	return nil, "", nil, nil
@@ -49,9 +49,7 @@ func HandleProvideDomainSelectionInfoRequest(request *httpwrapper.Request) *http
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
 	var ueContextInfo *models.UeContextInfo
-	ue.EventChannel.UpdateSbiHandler(MtHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(MtHandler, sbiMsg)
 	if msg.RespData != nil {
 		ueContextInfo = msg.RespData.(*models.UeContextInfo)
 	}
@@ -84,7 +82,7 @@ func ProvideDomainSelectionInfoProcedure(ueContextID string, infoClassQuery stri
 	// TODO: Error Status 307, 403 in TS29.518 Table 6.3.3.3.3.1-3
 	anType := ue.GetAnType()
 	if anType != "" && infoClassQuery != "" {
-		ranUe := ue.RanUe[anType]
+		ranUe := ue.GetRanUe(anType)
 		ueContextInfo.SetAccessType(anType)
 		if ranUe != nil {
 			if ranUe.LastActTime != nil {
@@ -94,7 +92,7 @@ func ProvideDomainSelectionInfoProcedure(ueContextID string, infoClassQuery stri
 			ueContextInfo.SetSupportVoPS(ranUe.SupportVoPS)
 			ueContextInfo.SetSupportVoPSn3gpp(ranUe.SupportVoPSn3gpp)
 		}
-		ueContextInfo.SetRatType(ue.RatType)
+		ueContextInfo.SetRatType(ue.GetRatType())
 	}
 
 	return ueContextInfo, nil

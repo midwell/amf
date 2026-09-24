@@ -43,19 +43,19 @@ func UeContextHandler(ctx ctxt.Context, s1, s2 string, msg interface{}) (interfa
 	switch msg := msg.(type) {
 	case models.CreateUEContextRequest:
 		r1, r2 := createUEContextProcedure(s1, msg)
-		return r1, "", nil, r2
+		return anyOrNil(r1), "", nil, anyOrNil(r2)
 	case models.UEContextRelease:
 		r1 := releaseUEContextProcedure(s1, msg)
-		return nil, "", r1, nil
+		return nil, "", anyOrNil(r1), nil
 	case models.UEContextTransferRequest:
 		r1, r2 := ueContextTransferProcedure(s1, msg)
-		return r1, "", r2, nil
+		return anyOrNil(r1), "", anyOrNil(r2), nil
 	case models.AssignEbiData:
-		r1, r2, r3 := assignEbiDataProcedure(s1, msg)
-		return r1, "", r3, r2
+		r1, r3 := assignEbiDataProcedure(s1, msg)
+		return anyOrNil(r1), "", anyOrNil(r3), nil
 	case models.UeRegStatusUpdateReqData:
 		r1, r2 := registrationStatusUpdateProcedure(ctx, s1, msg)
-		return r1, "", r2, nil
+		return anyOrNil(r1), "", anyOrNil(r2), nil
 	}
 
 	return nil, "", nil, nil
@@ -83,9 +83,7 @@ func HandleCreateUEContextRequest(request *httpwrapper.Request) *httpwrapper.Res
 	}
 	var createUeContextRspData *models.CreateUEContext201Response
 	var ueContextCreateErr *models.UeContextCreateError
-	ue.EventChannel.UpdateSbiHandler(UeContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(UeContextHandler, sbiMsg)
 	if msg.RespData != nil {
 		createUeContextRspData = msg.RespData.(*models.CreateUEContext201Response)
 	}
@@ -216,9 +214,7 @@ func HandleReleaseUEContextRequest(request *httpwrapper.Request) *httpwrapper.Re
 		Msg:         ueContextRelease,
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
-	ue.EventChannel.UpdateSbiHandler(UeContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(UeContextHandler, sbiMsg)
 
 	// problemDetails := releaseUEContextProcedure(ueContextID, ueContextRelease)
 	if msg.ProblemDetails != nil {
@@ -246,6 +242,9 @@ func releaseUEContextProcedure(ueContextID string, ueContextRelease models.UECon
 	logger.CommLog.Debugf("Release UE Context NGAP cause: %+v", ueContextRelease.NgapCause)
 
 	if ue, ok := amfSelf.AmfUeFindByUeContextID(ueContextID); ok {
+		// Remove() deletes the whole UE regardless of access; publish the Del first or a
+		// resolved-SUPI subscriber is left stale in Kafka.
+		ue.PublishUeCtxtInfoOnRemoval(ue.AccessTypeForRemoval())
 		ue.Remove()
 	} else {
 		problemDetails := utils.ProblemDetailsContextNotFound("UE context not found")
@@ -276,9 +275,7 @@ func HandleUEContextTransferRequest(request *httpwrapper.Request) *httpwrapper.R
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
 	var ueContextTransferResponse *models.UEContextTransfer200Response
-	ue.EventChannel.UpdateSbiHandler(UeContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(UeContextHandler, sbiMsg)
 	if msg.RespData != nil {
 		ueContextTransferResponse = msg.RespData.(*models.UEContextTransfer200Response)
 	}
@@ -466,7 +463,7 @@ func buildUEContextModel(ue *context.AmfUe) models.UeContext {
 		}
 	}
 
-	for _, eventSub := range ue.EventSubscriptionsInfo {
+	for _, eventSub := range ue.GetEventSubscriptions() {
 		if eventSub.EventSubscription != nil {
 			ueContext.EventSubscriptionList = append(ueContext.EventSubscriptionList, *eventSub.EventSubscription)
 		}
@@ -518,9 +515,7 @@ func HandleAssignEbiDataRequest(request *httpwrapper.Request) *httpwrapper.Respo
 	}
 	var assignEbiRspData *models.AssignedEbiData
 	var assignEbiErr *models.AssignEbiError
-	ue.EventChannel.UpdateSbiHandler(UeContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(UeContextHandler, sbiMsg)
 	if msg.RespData != nil {
 		assignEbiRspData = msg.RespData.(*models.AssignedEbiData)
 	}
@@ -538,24 +533,24 @@ func HandleAssignEbiDataRequest(request *httpwrapper.Request) *httpwrapper.Respo
 }
 
 func assignEbiDataProcedure(ueContextID string, assignEbiData models.AssignEbiData) (
-	*models.AssignedEbiData, *models.AssignEbiError, *models.ProblemDetails,
+	*models.AssignedEbiData, *models.ProblemDetails,
 ) {
 	amfSelf := context.AMF_Self()
 
 	ue, ok := amfSelf.AmfUeFindByUeContextID(ueContextID)
 	if !ok {
 		problemDetails := utils.ProblemDetailsContextNotFound("UE context not found")
-		return nil, nil, problemDetails
+		return nil, problemDetails
 	}
 
-	// TODO: AssignEbiError not used, check it!
 	if _, ok := ue.SmContextFindByPDUSessionID(assignEbiData.GetPduSessionId()); ok {
 		assignedEbiData := models.NewAssignedEbiDataWithDefaults()
 		assignedEbiData.SetPduSessionId(assignEbiData.GetPduSessionId())
-		return assignedEbiData, nil, nil
+		return assignedEbiData, nil
 	} else {
 		logger.ProducerLog.Errorf("no SM context found for PDU session ID %d", assignEbiData.GetPduSessionId())
-		return nil, nil, nil
+		problemDetails := utils.ProblemDetailsContextNotFound("SM context not found")
+		return nil, problemDetails
 	}
 }
 
@@ -584,13 +579,7 @@ func HandleRegistrationStatusUpdateRequest(request *httpwrapper.Request) *httpwr
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
 	var ueRegStatusUpdateRspData *models.UeRegStatusUpdateRspData
-	ue.EventChannel.UpdateSbiHandler(UeContextHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg, read := <-sbiMsg.Result
-	if !read {
-		problemDetails := utils.ProblemDetailsWithCause("Message not received", http.StatusInternalServerError, "Message not received from channel", utils.CauseMessageNotReceived)
-		return httpwrapper.NewResponse(int(problemDetails.GetStatus()), nil, problemDetails)
-	}
+	msg := ue.DispatchSbiMsg(UeContextHandler, sbiMsg)
 	ueRegStatusUpdateRspData, ok = msg.RespData.(*models.UeRegStatusUpdateRspData)
 	if !ok {
 		if msg.ProblemDetails != nil {
@@ -633,7 +622,13 @@ func registrationStatusUpdateProcedure(ctx ctxt.Context, ueContextID string, ueR
 			}
 			smContext, ok := ue.SmContextFindByPDUSessionID(pduSessionId)
 			if !ok {
-				ue.ProducerLog.Errorf("SmContext[PDU Session ID:%d] not found", pduSessionId)
+				// There is nothing to release, and nothing to release it with: the SMF's URI
+				// lives in the SM context that is missing, and SendReleaseSmContextRequest
+				// reads it before it builds anything. This procedure runs on the UE's
+				// event-channel goroutine, which has no recover, so handing the nil pointer
+				// on would end the process rather than the request.
+				ue.ProducerLog.Errorf("SmContext[PDU Session ID:%d] not found, nothing to release", pduSessionId)
+				continue
 			}
 			problem, err := consumer.SendReleaseSmContextRequest(ue, smContext, causeAll, "", nil)
 			if problem != nil {
@@ -652,6 +647,9 @@ func registrationStatusUpdateProcedure(ctx ctxt.Context, ueContextID string, ueR
 			}
 		}
 
+		// Remove() deletes the whole UE regardless of access; publish the Del first or a
+		// resolved-SUPI subscriber is left stale in Kafka.
+		ue.PublishUeCtxtInfoOnRemoval(ue.AccessTypeForRemoval())
 		ue.Remove()
 	} else {
 		// NOT_TRANSFERRED

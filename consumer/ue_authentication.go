@@ -76,12 +76,16 @@ func SendUEAuthenticationAuthenticateRequest(ctx context.Context, ue *amfContext
 	apiUeAuthenticationsPostRequest := client.DefaultAPI.UeAuthenticationsPost(ctx)
 	apiUeAuthenticationsPostRequest = apiUeAuthenticationsPostRequest.AuthenticationInfo(*authInfo)
 	ueAuthenticationCtx, httpResponse, err := client.DefaultAPI.UeAuthenticationsPostExecute(apiUeAuthenticationsPostRequest)
+	if httpResponse != nil {
+		defer func() {
+			if closeErr := httpResponse.Body.Close(); closeErr != nil {
+				logger.ConsumerLog.Errorf("SendUEAuthenticationAuthenticateRequest response body cannot close: %+v", closeErr)
+			}
+		}()
+	}
 	if err == nil {
 		return ueAuthenticationCtx, nil, nil
 	} else if httpResponse != nil {
-		if httpResponse.Status != err.Error() {
-			return nil, nil, err
-		}
 		if problem, ok := openapi.ErrorModel[models.ProblemDetails](err); ok {
 			return nil, &problem, nil
 		}
@@ -128,12 +132,16 @@ func SendAuth5gAkaConfirmRequest(ctx context.Context, ue *amfContext.AmfUe, resS
 		ctx, ue.Suci)
 	apiUeAuthenticationsAuthCtxId5gAkaConfirmationPutRequest = apiUeAuthenticationsAuthCtxId5gAkaConfirmationPutRequest.ConfirmationData(*confirmData)
 	confirmResult, httpResponse, err := client.DefaultAPI.UeAuthenticationsAuthCtxId5gAkaConfirmationPutExecute(apiUeAuthenticationsAuthCtxId5gAkaConfirmationPutRequest)
+	if httpResponse != nil {
+		defer func() {
+			if closeErr := httpResponse.Body.Close(); closeErr != nil {
+				logger.ConsumerLog.Errorf("SendAuth5gAkaConfirmRequest response body cannot close: %+v", closeErr)
+			}
+		}()
+	}
 	if err == nil {
 		return confirmResult, nil, nil
 	} else if httpResponse != nil {
-		if httpResponse.Status != err.Error() {
-			return nil, nil, err
-		}
 		switch httpResponse.StatusCode {
 		case 400, 500:
 			if problem, ok := openapi.ErrorModel[models.ProblemDetails](err); ok {
@@ -141,7 +149,9 @@ func SendAuth5gAkaConfirmRequest(ctx context.Context, ue *amfContext.AmfUe, resS
 			}
 			return nil, nil, err
 		}
-		return nil, nil, nil
+		// A status this switch does not name still failed, so it is reported rather than returned
+		// as a success with nothing in it.
+		return nil, nil, err
 	} else {
 		return nil, nil, openapi.ReportError("server no response")
 	}
@@ -182,13 +192,16 @@ func SendEapAuthConfirmRequest(ctx context.Context, ue *amfContext.AmfUe, eapMsg
 	apiEapAuthMethodRequest := client.DefaultAPI.EapAuthMethod(ctx, ue.Suci)
 	apiEapAuthMethodRequest = apiEapAuthMethodRequest.EapSession(*eapSession)
 	eapSessionRsp, httpResponse, err := client.DefaultAPI.EapAuthMethodExecute(apiEapAuthMethodRequest)
+	if httpResponse != nil {
+		defer func() {
+			if closeErr := httpResponse.Body.Close(); closeErr != nil {
+				logger.ConsumerLog.Errorf("SendEapAuthConfirmRequest response body cannot close: %+v", closeErr)
+			}
+		}()
+	}
 	if err == nil {
 		response = eapSessionRsp
 	} else if httpResponse != nil {
-		if httpResponse.Status != err.Error() {
-			err1 = err
-			return response, problemDetails, err1
-		}
 		switch httpResponse.StatusCode {
 		case 400, 500:
 			if problem, ok := openapi.ErrorModel[models.ProblemDetails](err); ok {
@@ -196,6 +209,8 @@ func SendEapAuthConfirmRequest(ctx context.Context, ue *amfContext.AmfUe, eapMsg
 			} else {
 				err1 = err
 			}
+		default:
+			err1 = err
 		}
 	} else {
 		err1 = openapi.ReportError("server no response")

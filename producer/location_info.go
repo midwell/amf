@@ -21,7 +21,7 @@ func LocationInfoHandler(ctx ctxt.Context, s1, s2 string, msg interface{}) (inte
 	switch msg := msg.(type) {
 	case models.RequestLocInfo:
 		r1, r2 := ProvideLocationInfoProcedure(msg, s1)
-		return r1, "", r2, nil
+		return anyOrNil(r1), "", anyOrNil(r2), nil
 	}
 
 	return nil, "", nil, nil
@@ -48,9 +48,7 @@ func HandleProvideLocationInfoRequest(request *httpwrapper.Request) *httpwrapper
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
 	var provideLocInfo *models.ProvideLocInfo
-	ue.EventChannel.UpdateSbiHandler(LocationInfoHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(LocationInfoHandler, sbiMsg)
 	if msg.RespData != nil {
 		provideLocInfo = msg.RespData.(*models.ProvideLocInfo)
 	}
@@ -84,14 +82,14 @@ func ProvideLocationInfoProcedure(requestLocInfo models.RequestLocInfo, ueContex
 
 	provideLocInfo := models.NewProvideLocInfo()
 
-	ranUe := ue.RanUe[anType]
+	ranUe := ue.GetRanUe(anType)
 	if requestLocInfo.GetReq5gsLoc() || requestLocInfo.GetReqCurrentLoc() {
 		provideLocInfo.SetCurrentLoc(true)
-		provideLocInfo.SetLocation(ue.Location)
+		provideLocInfo.SetLocation(ue.GetLocation())
 	}
 
 	if requestLocInfo.GetReqRatType() {
-		provideLocInfo.SetRatType(ue.RatType)
+		provideLocInfo.SetRatType(ue.GetRatType())
 	}
 
 	if requestLocInfo.GetReqTimeZone() {
