@@ -1527,7 +1527,7 @@ func amfUEPolicyTransfer(id amfctx.UeIdentity, policy []byte) iri.AMFUEPolicyTra
 // stores the routing id and drops it. Its mandatory lcsCorrelationId is the
 // TS 29.572 correlation id carried in those same LMF exchanges, not the NGAP
 // routing id, so there would be nothing to populate it with either. li/iri still
-// defines the record; li/README.md records why nothing emits it.
+// defines the record; util's li/README.md records why nothing emits it.
 
 // supiChoice returns ue's SUPI as the iri "supi" CHOICE arm (IMSI or NAI), or
 // nil when the AMF holds no SUPI in a form we can map. A nil in a mandatory SUPI
