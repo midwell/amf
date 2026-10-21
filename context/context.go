@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bytedance/sonic"
+	gojson "github.com/goccy/go-json"
 	"github.com/omec-project/amf/factory"
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/openapi/v2/models"
@@ -101,6 +101,12 @@ type AMFContext struct {
 }
 
 type AMFContextEventSubscription struct {
+	// Mutex guards in-place mutations of this subscription and snapshots taken for responses. The
+	// object is shared through the EventSubscriptions sync.Map, whose own synchronization only
+	// covers the map entry, not the value: concurrent modify requests mutate EventSubscription and
+	// Expiry, and a response returned to one request is serialized by the HTTP layer while another
+	// may be mutating the same object.
+	Mutex             sync.Mutex
 	IsAnyUe           bool
 	IsGroupUe         bool
 	UeSupiList        []string
@@ -137,6 +143,13 @@ func (context *AMFContext) AllocateAmfUeNgapID() (int64, error) {
 	if context.EnableDbStore {
 		var tmp int32
 		tmp, err = context.Drsm.AllocateInt32ID()
+		// A stored context with no RAN association carries amfUeNgapId 0, so a live UE
+		// given 0 could not be told apart from those. drsm can hand it out -- its ids
+		// are (chunk << 10) | offset, and chunk 0 can be drawn -- so take the next one.
+		// Zero stays allocated and is never used; the other allocator starts at 1.
+		if err == nil && tmp == 0 {
+			tmp, err = context.Drsm.AllocateInt32ID()
+		}
 		val = int64(tmp)
 	} else {
 		val, err = AllocateUniqueID(&amfUeNGAPIDGenerator, "amfUeNgapID")
@@ -318,8 +331,9 @@ func (context *AMFContext) AmfUeFindBySupi(supi string) (ue *AmfUe, ok bool) {
 	} else if context.EnableDbStore {
 		ue, ok = DbFetchUeBySupi(supi)
 		if ue != nil && ok {
+			// DbFetch has published it; storing it again here would undo a release that
+			// ran since.
 			logger.ContextLog.Infoln("Ue with supi found in DB : ", supi)
-			context.UePool.Store(supi, ue)
 		} else {
 			logger.ContextLog.Infoln("Ue with Supi not found locally and in DB: ", supi)
 		}
@@ -331,7 +345,7 @@ func (context *AMFContext) AmfUeFindBySupi(supi string) (ue *AmfUe, ok bool) {
 }
 
 func (context *AMFContext) AmfUeFindByPei(pei string) (ue *AmfUe, ok bool) {
-	context.UePool.Range(func(key, value interface{}) bool {
+	context.UePool.Range(func(key, value any) bool {
 		candidate := value.(*AmfUe)
 		if ok = (candidate.GetPei() == pei); ok {
 			ue = candidate
@@ -343,7 +357,7 @@ func (context *AMFContext) AmfUeFindByPei(pei string) (ue *AmfUe, ok bool) {
 }
 
 func (context *AMFContext) AmfUeFindBySuci(suci string) (ue *AmfUe, ok bool) {
-	context.UePool.Range(func(key, value interface{}) bool {
+	context.UePool.Range(func(key, value any) bool {
 		candidate := value.(*AmfUe)
 		if ok = (candidate.Suci == suci); ok {
 			ue = candidate
@@ -355,7 +369,7 @@ func (context *AMFContext) AmfUeFindBySuci(suci string) (ue *AmfUe, ok bool) {
 }
 
 func (context *AMFContext) AmfUeDeleteBySuci(suci string) (ue *AmfUe, ok bool) {
-	context.UePool.Range(func(key, value interface{}) bool {
+	context.UePool.Range(func(key, value any) bool {
 		candidate := value.(*AmfUe)
 		if ok = (candidate.Suci == suci); ok {
 			context.UePool.Delete(candidate.GetSupi())
@@ -418,7 +432,7 @@ func (context *AMFContext) NewAmfRanId(GnbId string) *AmfRan {
 //
 // The range is skipped for an id that cannot identify one gNB, because a loose match on such
 // an id is worse than no match. SetRanId builds GnbId as "<mcc>:<mnc>:" and then appends the
-// gNB value, and ngapConvert.RanIdToModels leaves that value empty -- without returning an
+// gNB value, and ngapconv.RanIdToModels leaves that value empty -- without returning an
 // error -- whenever the GNBID arrives on the CHOICE's extension arm rather than
 // GNBIDPresentGNBID. The result is a trailing colon: non-empty, and shared by every gNB on
 // that PLMN whose id degenerated the same way. An empty GnbId is the same problem from the
@@ -453,7 +467,7 @@ func (context *AMFContext) AmfRanFindByGnbId(gnbId string) (*AmfRan, bool) {
 func (context *AMFContext) AmfRanFindByRanID(ranNodeID models.GlobalRanNodeId) (*AmfRan, bool) {
 	var ran *AmfRan
 	var ok bool
-	context.AmfRanPool.Range(func(key, value interface{}) bool {
+	context.AmfRanPool.Range(func(key, value any) bool {
 		amfRan := value.(*AmfRan)
 		switch amfRan.RanPresent {
 		case RanPresentGNbId:
@@ -499,8 +513,8 @@ func (context *AMFContext) InPlmnSupportList(snssai models.Snssai) bool {
 	return false
 }
 
-func mapToByte(data map[string]interface{}) (ret []byte) {
-	ret, err := sonic.Marshal(data)
+func mapToByte(data map[string]any) (ret []byte) {
+	ret, err := gojson.Marshal(data)
 	if err != nil {
 		logger.ContextLog.Error(err)
 	}
@@ -508,7 +522,7 @@ func mapToByte(data map[string]interface{}) (ret []byte) {
 }
 
 func (context *AMFContext) AmfUeFindByGutiLocal(guti string) (ue *AmfUe, ok bool) {
-	context.UePool.Range(func(key, value interface{}) bool {
+	context.UePool.Range(func(key, value any) bool {
 		candidate := value.(*AmfUe)
 		if ok = (candidate.GetGuti() == guti); ok {
 			ue = candidate
@@ -521,7 +535,7 @@ func (context *AMFContext) AmfUeFindByGutiLocal(guti string) (ue *AmfUe, ok bool
 }
 
 func (context *AMFContext) AmfUeFindBySupiLocal(supi string) (ue *AmfUe, ok bool) {
-	context.UePool.Range(func(key, value interface{}) bool {
+	context.UePool.Range(func(key, value any) bool {
 		candidate := value.(*AmfUe)
 		if ok = (candidate.GetSupi() == supi); ok {
 			ue = candidate
@@ -540,8 +554,9 @@ func (context *AMFContext) AmfUeFindByGuti(guti string) (ue *AmfUe, ok bool) {
 	} else if context.EnableDbStore {
 		ue, ok = DbFetchUeByGuti(guti)
 		if ue != nil && ok {
+			// DbFetch has published it; storing it again here would undo a release that
+			// ran since.
 			logger.ContextLog.Infoln("Ue with Guti found in DB : ", guti)
-			context.UePool.Store(ue.GetSupi(), ue)
 		} else {
 			logger.ContextLog.Infoln("Ue with Guti not found locally and in DB: ", guti)
 		}
@@ -552,7 +567,7 @@ func (context *AMFContext) AmfUeFindByGuti(guti string) (ue *AmfUe, ok bool) {
 }
 
 func (context *AMFContext) AmfUeFindByPolicyAssociationID(polAssoId string) (ue *AmfUe, ok bool) {
-	context.UePool.Range(func(key, value interface{}) bool {
+	context.UePool.Range(func(key, value any) bool {
 		candidate := value.(*AmfUe)
 		if ok = (candidate.PolicyAssociationId == polAssoId); ok {
 			ue = candidate
@@ -572,6 +587,13 @@ func (context *AMFContext) RanUeFindByAmfUeNgapIDLocal(amfUeNgapID int64) *RanUe
 }
 
 func (context *AMFContext) RanUeFindByAmfUeNgapID(amfUeNgapID int64) *RanUe {
+	// 0 names no UE. The allocator never hands it out, and it is what every stored
+	// context without a RAN association carries, so a lookup by it -- in the pool or
+	// the datastore -- can only find a detached context, never the UE that was meant.
+	if amfUeNgapID == 0 {
+		logger.ContextLog.Warnln("ranUe lookup by AmfUeNgapID 0, which names no UE")
+		return nil
+	}
 	ranUe := context.RanUeFindByAmfUeNgapIDLocal(amfUeNgapID)
 	if ranUe != nil {
 		return ranUe
@@ -579,7 +601,8 @@ func (context *AMFContext) RanUeFindByAmfUeNgapID(amfUeNgapID int64) *RanUe {
 		if context.EnableDbStore {
 			ranUe = DbFetchRanUeByAmfUeNgapID(amfUeNgapID)
 			if ranUe != nil {
-				context.RanUePool.Store(ranUe.AmfUeNgapId, ranUe)
+				// DbFetch has published it, under the id it was looked up by; storing it
+				// again here would undo a release that ran since.
 				return ranUe
 			}
 		}
@@ -646,22 +669,22 @@ func (context *AMFContext) InitNFService(serivceName []string, version string) {
 
 // Reset AMF Context
 func (context *AMFContext) Reset() {
-	context.AmfRanPool.Range(func(key, value interface{}) bool {
+	context.AmfRanPool.Range(func(key, value any) bool {
 		context.UePool.Delete(key)
 		return true
 	})
 	for key := range context.LadnPool {
 		delete(context.LadnPool, key)
 	}
-	context.RanUePool.Range(func(key, value interface{}) bool {
+	context.RanUePool.Range(func(key, value any) bool {
 		context.RanUePool.Delete(key)
 		return true
 	})
-	context.UePool.Range(func(key, value interface{}) bool {
+	context.UePool.Range(func(key, value any) bool {
 		context.UePool.Delete(key)
 		return true
 	})
-	context.EventSubscriptions.Range(func(key, value interface{}) bool {
+	context.EventSubscriptions.Range(func(key, value any) bool {
 		context.DeleteEventSubscription(key.(string))
 		return true
 	})
@@ -721,20 +744,20 @@ func ConvertAccessAndMobilityList(newConfig []nfConfigApi.AccessAndMobility) ([]
 			Mnc: plmnSnssaiTacs.PlmnId.GetMnc(),
 		}
 		newSnssai := models.Snssai{
-			Sst: plmnSnssaiTacs.Snssai.Sst,
+			Sst: plmnSnssaiTacs.Snssai.GetSst(),
 		}
 		if plmnSnssaiTacs.Snssai.GetSd() != "" {
-			newSnssai.Sd = plmnSnssaiTacs.Snssai.Sd
+			newSnssai.SetSd(plmnSnssaiTacs.Snssai.GetSd())
 		}
 		if newPlmnSupportItemsMap[newPlmn] == nil {
 			newPlmnSupportItemsMap[newPlmn] = map[string]models.Snssai{}
 		}
 		newPlmnSupportItemsMap[newPlmn][fmt.Sprintf("%d:%s", newSnssai.GetSst(), newSnssai.GetSd())] = newSnssai
-		if len(plmnSnssaiTacs.Tacs) == 0 {
-			logger.ContextLog.Warnf("empty TACs for %+v (SNssai: %+v)", plmnSnssaiTacs.PlmnId, plmnSnssaiTacs.Snssai)
+		if len(plmnSnssaiTacs.GetTacs()) == 0 {
+			logger.ContextLog.Warnf("empty TACs for %+v (SNssai: %+v)", plmnSnssaiTacs.GetPlmnId(), plmnSnssaiTacs.GetSnssai())
 			continue
 		}
-		for _, tac := range plmnSnssaiTacs.Tacs {
+		for _, tac := range plmnSnssaiTacs.GetTacs() {
 			newTai := models.Tai{
 				PlmnId: newPlmn,
 				Tac:    tac,
@@ -788,19 +811,22 @@ func sortPlmnSnssaiList(plmnSnssaiList []models.PlmnSnssai) {
 
 func sortSNssaiList(snssaiList []models.Snssai) {
 	sort.Slice(snssaiList, func(i, j int) bool {
-		if snssaiList[i].Sst != snssaiList[j].Sst {
-			return snssaiList[i].Sst < snssaiList[j].Sst
+		if snssaiList[i].GetSst() != snssaiList[j].GetSst() {
+			return snssaiList[i].GetSst() < snssaiList[j].GetSst()
 		}
-		iSd := snssaiList[i].GetSd()
-		jSd := snssaiList[j].GetSd()
-		if iSd == "" || jSd == "" {
-			if iSd == jSd {
-				return false
-			}
-			return jSd == ""
-		}
-		return iSd < jSd
+		return lessSd(snssaiList[i].GetSd(), snssaiList[j].GetSd())
 	})
+}
+
+// lessSd orders SDs lexicographically, except an absent SD (wildcard) always sorts last.
+func lessSd(a, b string) bool {
+	if a == "" {
+		return false
+	}
+	if b == "" {
+		return true
+	}
+	return a < b
 }
 
 func sortGuamiList(guamiList []models.Guami) {

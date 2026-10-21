@@ -11,7 +11,7 @@ import (
 	"github.com/omec-project/util/httpwrapper"
 )
 
-// The SBI handlers return their results through interface{}, and a nil *T in an interface is
+// The SBI handlers return their results through any, and a nil *T in an interface is
 // not nil. Every caller tests the field it was handed, so before anyOrNil each of these
 // answered for a condition that had not occurred. The statuses below are what the handler
 // code plainly reads as its own success and failure paths.
@@ -115,7 +115,7 @@ func TestN1N2MessageTransferStatusDoesNotPanic(t *testing.T) {
 	}
 
 	response := HandleN1N2MessageTransferStatusRequest(&httpwrapper.Request{
-		Params: map[string]string{paramUeContextID: ue.GetSupi(), "reqUri": reqURI},
+		Params: map[string]string{paramUeContextID: ue.GetSupi(), paramReqURI: reqURI},
 	})
 
 	if response == nil {

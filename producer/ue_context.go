@@ -39,7 +39,7 @@ func createTempBinaryFile(data []byte) (*os.File, error) {
 	return tmpFile, nil
 }
 
-func UeContextHandler(ctx ctxt.Context, s1, s2 string, msg interface{}) (interface{}, string, interface{}, interface{}) {
+func UeContextHandler(ctx ctxt.Context, s1, s2 string, msg any) (any, string, any, any) {
 	switch msg := msg.(type) {
 	case models.CreateUEContextRequest:
 		r1, r2 := createUEContextProcedure(s1, msg)
@@ -84,6 +84,12 @@ func HandleCreateUEContextRequest(request *httpwrapper.Request) *httpwrapper.Res
 	var createUeContextRspData *models.CreateUEContext201Response
 	var ueContextCreateErr *models.UeContextCreateError
 	msg := ue.DispatchSbiMsg(UeContextHandler, sbiMsg)
+	// The procedure reports its failures as a UeContextCreateError; a problem comes only
+	// from the dispatch itself, when the UE was removed before the request was handled.
+	if msg.ProblemDetails != nil {
+		problemDetails := msg.ProblemDetails.(*models.ProblemDetails)
+		return httpwrapper.NewResponse(int(problemDetails.GetStatus()), nil, problemDetails)
+	}
 	if msg.RespData != nil {
 		createUeContextRspData = msg.RespData.(*models.CreateUEContext201Response)
 	}
@@ -111,24 +117,14 @@ func createUEContextProcedure(ueContextID string, createUeContextRequest models.
 	}
 	// create the UE context in target amf
 	ue := amfSelf.NewAmfUe(ueContextID)
-	// amfSelf.AmfRanSetByRanId(*ueContextCreateData.TargetId.RanNodeId)
-	// ue.N1N2Message[ueContextId] = &context.N1N2Message{}
-	// ue.N1N2Message[ueContextId].Request.JsonData = &models.N1N2MessageTransferReqData{
-	// 	N2InfoContainer: &models.N2InfoContainer{
-	// 		SmInfo: &models.N2SmInformation{
-	// 			N2InfoContent: ueContextCreateData.SourceToTargetData,
-	// 		},
-	// 	},
-	// }
+	// TODO: forward ueContextCreateData.SourceToTargetData to the target RAN named by
+	// TargetId (inter-AMF N2 handover completion, TS 23.502 4.9.1.2.2); not implemented.
 	ue.HandoverNotifyUri = ueContextCreateData.GetN2NotifyUri()
 
 	amfSelf.AmfRanFindByRanID(*ueContextCreateData.TargetId.RanNodeId.Get())
 	supportedTAI := context.NewSupportedTAI()
-	supportedTAI.Tai.Tac = ueContextCreateData.TargetId.Tai.Tac
-	supportedTAI.Tai.PlmnId = ueContextCreateData.TargetId.Tai.PlmnId
-	// ue.N1N2MessageSubscribeInfo[ueContextID] = &models.UeN1N2InfoSubscriptionCreateData{
-	// 	N2NotifyCallbackUri: ueContextCreateData.N2NotifyUri,
-	// }
+	supportedTAI.Tai.SetTac(ueContextCreateData.TargetId.Tai.GetTac())
+	supportedTAI.Tai.SetPlmnId(ueContextCreateData.TargetId.Tai.GetPlmnId())
 	ue.UnauthenticatedSupi = ueContextCreateData.UeContext.GetSupiUnauthInd()
 	// should be smInfo list
 
@@ -333,7 +329,7 @@ func ueContextTransferProcedure(ueContextID string, ueContextTransferRequest mod
 		ueContextTransferRspData.SetUeContext(buildUEContextModel(ue))
 
 		sessionContextList := &ueContextTransferRspData.UeContext.SessionContextList
-		ue.SmContextList.Range(func(key, value interface{}) bool {
+		ue.SmContextList.Range(func(key, value any) bool {
 			smContext := value.(*context.SmContext)
 			snssai := smContext.Snssai()
 			pduSessionContext := models.PduSessionContext{
@@ -367,7 +363,7 @@ func ueContextTransferProcedure(ueContextID string, ueContextTransferRequest mod
 		ueContextTransferRspData.SetUeContext(buildUEContextModel(ue))
 
 		sessionContextList := &ueContextTransferRspData.UeContext.SessionContextList
-		ue.SmContextList.Range(func(key, value interface{}) bool {
+		ue.SmContextList.Range(func(key, value any) bool {
 			smContext := value.(*context.SmContext)
 			snssai := smContext.Snssai()
 			pduSessionContext := models.PduSessionContext{
@@ -482,11 +478,8 @@ func buildAmPolicyReqTriggers(triggers []models.RequestTrigger) (amPolicyReqTrig
 			amPolicyReqTriggers = append(amPolicyReqTriggers, models.POLICYREQTRIGGER_LOCATION_CHANGE)
 		case models.REQUESTTRIGGER_PRA_CH:
 			amPolicyReqTriggers = append(amPolicyReqTriggers, models.POLICYREQTRIGGER_PRA_CHANGE)
-			// TODO: GA: POLICYREQTRIGGER_SARI_CHANGE and POLICYREQTRIGGER_RFSP_INDEX_CHANGE not implemented in context package
-			// case models.REQUESTTRIGGER_SERV_AREA_CH:
-			// 	amPolicyReqTriggers = append(amPolicyReqTriggers, models.POLICYREQTRIGGER_SARI_CHANGE)
-			// case models.REQUESTTRIGGER_RFSP_CH:
-			// 	amPolicyReqTriggers = append(amPolicyReqTriggers, models.POLICYREQTRIGGER_RFSP_INDEX_CHANGE)
+			// SERV_AREA_CH and RFSP_CH have no PolicyReqTrigger counterpart in the openapi models
+			// in use (no SARI_CHANGE / RFSP_INDEX_CHANGE value).
 		}
 	}
 	return

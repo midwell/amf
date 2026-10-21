@@ -12,10 +12,11 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/mohae/deepcopy"
 	"github.com/omec-project/amf/logger"
+	"github.com/omec-project/amf/ngapconv"
 	"github.com/omec-project/ngap/v2/ngapConvert"
 	"github.com/omec-project/ngap/v2/ngapType"
 	"github.com/omec-project/openapi/v2/models"
@@ -33,6 +34,19 @@ const (
 	UeContextReleaseHandover
 	UeContextReleaseUeContext
 	UeContextReleaseDueToNwInitiatedDeregistraion
+	// UeContextReleaseDueToUeInitiatedDeregistration is distinct from
+	// UeContextReleaseUeContext because that action must keep a stored context when a valid
+	// security context exists, and both of its senders rely on that guard.
+	// HandleSecurityModeReject clears SecurityContextAvailable immediately before releasing,
+	// so it takes the delete branch. HandleUEContextReleaseRequest sends this action only for
+	// an access that is not GMM-Registered -- a UE still mid-registration, which has held a
+	// security context since the Security Mode Command was built, or one still registered over
+	// the other access; a Registered access gets UeContextN2NormalRelease instead. Neither of
+	// those UEs has left the network, so their stored context has to survive.
+	// A UE with no access left in use has left the network, and keeping its context leaves a
+	// stored document that its next registration will meet; while the other access is still
+	// in use, only the named access is released.
+	UeContextReleaseDueToUeInitiatedDeregistration
 )
 
 type RanUe struct {
@@ -73,6 +87,17 @@ type RanUe struct {
 	AmfUe   *AmfUe `json:"-"`
 	amfUeMu sync.RWMutex
 	Ran     *AmfRan
+	// listing orders a RAN listing this RanUe against a replacement taking it out of
+	// RanUePool and against its removal; see listOn. A listing by listOn changes Ran and
+	// RanUeNgapId under it, and Remove reads them under it; handlers that set them directly
+	// do not take it.
+	listing sync.Mutex
+	// restoredUnlisted: a restore published this RanUe in RanUePool, and no RAN has listed it
+	// since. unpooled: a replacement took it out of RanUePool while it was unlisted. removed:
+	// Remove has started on it.
+	restoredUnlisted bool
+	unpooled         bool
+	removed          bool
 
 	/* Routing ID */
 	RoutingID string
@@ -97,6 +122,11 @@ type RanUe struct {
 
 	/* Sctplb Redirect Msg */
 	SctplbMsg []byte
+
+	// replacements counts the times an AttachRanUe has replaced this RanUe, so that only the
+	// latest replacement's grace period ends in a detach. Each UE counts under its own lock,
+	// and a RanUe can move between UEs, so the count is atomic.
+	replacements atomic.Uint64
 }
 
 // ClearHandoverState drops the values HANDOVER REQUIRED stashed for the
@@ -120,7 +150,7 @@ func (ranUe *RanUe) Remove() error {
 	if ranUe == nil {
 		return fmt.Errorf("RanUe not found in RemoveRanUe")
 	}
-	ran := ranUe.Ran
+	ran, ranUeNgapID := ranUe.markRemoved()
 	if ran == nil {
 		return fmt.Errorf("RanUe not found in Ran")
 	}
@@ -134,7 +164,7 @@ func (ranUe *RanUe) Remove() error {
 	}
 
 	ran.ranStateMu.Lock()
-	delete(ran.RanUeList, ranUe.RanUeNgapId)
+	delete(ran.RanUeList, ranUeNgapID)
 	ran.ranStateMu.Unlock()
 	self := AMF_Self()
 	if self.EnableDbStore {
@@ -189,17 +219,112 @@ func (ranUe *RanUe) DetachAmfUe() {
 
 // DetachAmfUeIf drops the association only while it still points at amfUe, so a
 // release that overlaps a re-attach to a different context cannot undo the newer one.
-func (ranUe *RanUe) DetachAmfUeIf(amfUe *AmfUe) {
+// It reports whether it dropped it.
+func (ranUe *RanUe) DetachAmfUeIf(amfUe *AmfUe) bool {
 	if ranUe == nil {
-		return
+		return false
 	}
 
 	ranUe.amfUeMu.Lock()
 	defer ranUe.amfUeMu.Unlock()
 
-	if ranUe.AmfUe == amfUe {
-		ranUe.AmfUe = nil
+	if ranUe.AmfUe != amfUe {
+		return false
 	}
+	ranUe.AmfUe = nil
+
+	return true
+}
+
+// markRestored records that a restore has published this RanUe in RanUePool, on no RAN's list.
+func (ranUe *RanUe) markRestored() {
+	ranUe.listing.Lock()
+	defer ranUe.listing.Unlock()
+
+	ranUe.restoredUnlisted = true
+}
+
+// unpoolIfRestoredUnlisted takes this RanUe out of RanUePool, by identity, if a restore
+// published it and no RAN has listed it since.
+func (ranUe *RanUe) unpoolIfRestoredUnlisted() {
+	ranUe.listing.Lock()
+	defer ranUe.listing.Unlock()
+
+	if ranUe.restoredUnlisted && AMF_Self().RanUePool.CompareAndDelete(ranUe.AmfUeNgapId, ranUe) {
+		ranUe.unpooled = true
+	}
+}
+
+// markRemoved records that Remove has started on this RanUe, so that no RAN lists it and no
+// listing publishes it again after this, and returns the RAN and RAN-UE-NGAP-ID it is listed
+// under, read under the lock a listing changes them under. A RanUe with no RAN is not marked;
+// Remove leaves it as it is.
+func (ranUe *RanUe) markRemoved() (*AmfRan, int64) {
+	ranUe.listing.Lock()
+	defer ranUe.listing.Unlock()
+
+	if ranUe.Ran != nil {
+		ranUe.removed = true
+	}
+
+	return ranUe.Ran, ranUe.RanUeNgapId
+}
+
+// listedAt returns the RAN and RAN-UE-NGAP-ID this RanUe is listed under.
+func (ranUe *RanUe) listedAt() (*AmfRan, int64) {
+	ranUe.listing.Lock()
+	defer ranUe.listing.Unlock()
+
+	return ranUe.Ran, ranUe.RanUeNgapId
+}
+
+// SetRan points this RanUe at ran without any RanUeList/RanUePool bookkeeping -- callers that
+// already found this RanUe listed use it only to refresh the pointer. Synchronized with the
+// same lock listOn, markRemoved and listedAt use, so it cannot race their reads of Ran.
+func (ranUe *RanUe) SetRan(ran *AmfRan) {
+	ranUe.listing.Lock()
+	defer ranUe.listing.Unlock()
+
+	ranUe.Ran = ran
+}
+
+// SetRanUeNgapId updates this RanUe's RAN-UE-NGAP-ID the same way SetRan updates its RAN.
+func (ranUe *RanUe) SetRanUeNgapId(ranUeNgapId int64) {
+	ranUe.listing.Lock()
+	defer ranUe.listing.Unlock()
+
+	ranUe.RanUeNgapId = ranUeNgapId
+}
+
+// listOn lists this RanUe on ran under ranUeNgapID and makes them its RAN and RAN-UE-NGAP-ID,
+// unless Remove has started on it or its AMF-UE-NGAP-ID names another RanUe in RanUePool, and
+// reports whether it did. The caller holds ran's ranStateMu. It clears the restore's mark and,
+// if a replacement took the RanUe out of RanUePool while it was unlisted, publishes it again,
+// since its release through this RAN has to find it. A RanUe whose id has gone to another one
+// is listed nowhere: a release naming that id would reach the other RanUe. The removal from
+// RanUePool and Remove take the same lock, so whichever comes second sees what the first did.
+func (ranUe *RanUe) listOn(ran *AmfRan, ranUeNgapID int64) bool {
+	ranUe.listing.Lock()
+	defer ranUe.listing.Unlock()
+
+	if ranUe.removed {
+		return false
+	}
+	pool := &AMF_Self().RanUePool
+	if ranUe.unpooled {
+		if owner, loaded := pool.LoadOrStore(ranUe.AmfUeNgapId, ranUe); loaded && owner != ranUe {
+			return false
+		}
+		ranUe.unpooled = false
+	} else if owner, ok := pool.Load(ranUe.AmfUeNgapId); ok && owner != ranUe {
+		return false
+	}
+	ranUe.restoredUnlisted = false
+	ran.RanUeList[ranUeNgapID] = ranUe
+	ranUe.Ran = ran
+	ranUe.RanUeNgapId = ranUeNgapID
+
+	return true
 }
 
 func (ranUe *RanUe) SwitchToRan(newRan *AmfRan, ranUeNgapId int64) error {
@@ -211,23 +336,23 @@ func (ranUe *RanUe) SwitchToRan(newRan *AmfRan, ranUeNgapId int64) error {
 		return fmt.Errorf("newRan is nil")
 	}
 
-	oldRan := ranUe.Ran
+	oldRan, oldRanUeNgapID := ranUe.listedAt()
 
 	// remove ranUe from oldRan
 	oldRan.ranStateMu.Lock()
-	delete(oldRan.RanUeList, ranUe.RanUeNgapId)
+	delete(oldRan.RanUeList, oldRanUeNgapID)
 	oldRan.ranStateMu.Unlock()
 
-	// add ranUe to newRan
+	// add ranUe to newRan, and switch to it
 	newRan.ranStateMu.Lock()
-	newRan.RanUeList[ranUeNgapId] = ranUe
+	listed := ranUe.listOn(newRan, ranUeNgapId)
 	newRan.ranStateMu.Unlock()
+	if !listed {
+		return fmt.Errorf("RanUe[AmfUeNgapID: %d] cannot switch to Ran[Name: %s]: it was removed, "+
+			"or its AmfUeNgapID names another RanUe", ranUe.AmfUeNgapId, newRan.Name)
+	}
 
-	// switch to newRan
-	ranUe.Ran = newRan
-	ranUe.RanUeNgapId = ranUeNgapId
-
-	logger.ContextLog.Infof("RanUe[RanUeNgapID: %d] Switch to new Ran[Name: %s]", ranUe.RanUeNgapId, ranUe.Ran.Name)
+	logger.ContextLog.Infof("RanUe[RanUeNgapID: %d] Switch to new Ran[Name: %s]", ranUeNgapId, newRan.Name)
 	return nil
 }
 
@@ -265,7 +390,7 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 		}
 
 		tAI := locationInfoEUTRA.TAI
-		plmnID, err := ngapConvert.PlmnIdToModels(tAI.PLMNIdentity)
+		plmnID, err := ngapconv.PlmnIdToModels(tAI.PLMNIdentity)
 		if err != nil {
 			ranUe.Log.Errorf("decode EUTRA TAI PLMN failed: %+v", err)
 			return
@@ -277,7 +402,7 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 		ranUe.Tai = ranUe.Location.EutraLocation.Tai
 
 		eUTRACGI := locationInfoEUTRA.EUTRACGI
-		ePlmnID, err := ngapConvert.PlmnIdToModels(eUTRACGI.PLMNIdentity)
+		ePlmnID, err := ngapconv.PlmnIdToModels(eUTRACGI.PLMNIdentity)
 		if err != nil {
 			ranUe.Log.Errorf("decode EUTRA CGI PLMN failed: %+v", err)
 			return
@@ -309,7 +434,7 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 		}
 
 		tAI := locationInfoNR.TAI
-		plmnID, err := ngapConvert.PlmnIdToModels(tAI.PLMNIdentity)
+		plmnID, err := ngapconv.PlmnIdToModels(tAI.PLMNIdentity)
 		if err != nil {
 			ranUe.Log.Errorf("decode NR TAI PLMN failed: %+v", err)
 			return
@@ -318,10 +443,15 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 
 		ranUe.Location.NrLocation.Tai.PlmnId = plmnID
 		ranUe.Location.NrLocation.Tai.Tac = tac
-		ranUe.Tai = deepcopy.Copy(ranUe.Location.NrLocation.Tai).(models.Tai)
+		tai := ranUe.Location.NrLocation.GetTai()
+		taiCopy := models.NewTai(tai.GetPlmnId(), tai.GetTac())
+		if tai.HasNid() {
+			taiCopy.SetNid(tai.GetNid())
+		}
+		ranUe.Tai = *taiCopy
 
 		nRCGI := locationInfoNR.NRCGI
-		nRPlmnID, err := ngapConvert.PlmnIdToModels(nRCGI.PLMNIdentity)
+		nRPlmnID, err := ngapconv.PlmnIdToModels(nRCGI.PLMNIdentity)
 		if err != nil {
 			ranUe.Log.Errorf("decode NR CGI PLMN failed: %+v", err)
 			return
@@ -366,7 +496,12 @@ func (ranUe *RanUe) UpdateLocation(userLocationInformation *ngapType.UserLocatio
 		}
 		tac := fmt.Sprintf("%06x", tmp)
 		ranUe.Location.N3gaLocation.N3gppTai = models.NewTai(amfSelf.SupportTaiLists[0].GetPlmnId(), tac)
-		ranUe.Tai = deepcopy.Copy(ranUe.Location.N3gaLocation.GetN3gppTai()).(models.Tai)
+		tai := ranUe.Location.N3gaLocation.GetN3gppTai()
+		taiCopy := models.NewTai(tai.GetPlmnId(), tai.GetTac())
+		if tai.HasNid() {
+			taiCopy.SetNid(tai.GetNid())
+		}
+		ranUe.Tai = *taiCopy
 
 		if ranUe.AmfUe != nil {
 			ranUe.AmfUe.SetLocation(ranUe.Location)

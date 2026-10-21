@@ -22,6 +22,7 @@ import (
 	"github.com/omec-project/amf/metrics"
 	"github.com/omec-project/amf/nas"
 	ngap_message "github.com/omec-project/amf/ngap/message"
+	"github.com/omec-project/amf/ngapconv"
 	"github.com/omec-project/amf/protos/sdcoreAmfServer"
 	"github.com/omec-project/amf/util"
 	"github.com/omec-project/nas/v2/nasMessage"
@@ -31,6 +32,14 @@ import (
 	"github.com/omec-project/ngap/v2/ngapType"
 	"github.com/omec-project/openapi/v2/models"
 	mi "github.com/omec-project/util/metricinfo"
+)
+
+// The datastore writes of a UE-initiated deregistration's release, as variables so a test can
+// see which one ran. The UE pool alone cannot tell a stored context from a deleted one; the
+// second also removes the UE, since the two must happen together.
+var (
+	storeContextInDB            = context.StoreContextInDB
+	removeUeAndDeleteItsContext = context.RemoveUeAndDeleteItsContext
 )
 
 func findRanUeByRanNgapID(ran *context.AmfRan, ranUENGAPID *ngapType.RANUENGAPID) *context.RanUe {
@@ -680,7 +689,7 @@ func HandleNGSetupRequest(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 				supportedTAI.Tai.Tac = tac
 				supportedTAI.RatInformation = ratInformation
 				broadcastPLMNItem := supportedTAItem.BroadcastPLMNList.List[j]
-				plmnId, err := ngapConvert.PlmnIdToModels(broadcastPLMNItem.PLMNIdentity)
+				plmnId, err := ngapconv.PlmnIdToModels(broadcastPLMNItem.PLMNIdentity)
 				if err != nil {
 					ran.Log.Errorf("decode supported TA PLMN failed: %+v", err)
 					continue
@@ -691,7 +700,7 @@ func HandleNGSetupRequest(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 				for k := 0; k < len(broadcastPLMNItem.TAISliceSupportList.List); k++ {
 					tAISliceSupportItem := broadcastPLMNItem.TAISliceSupportList.List[k]
 					if len(supportedTAI.SNssaiList) < capOfSNssaiList {
-						snssai, err := ngapConvert.SNssaiToModels(tAISliceSupportItem.SNSSAI)
+						snssai, err := ngapconv.SNssaiToModels(tAISliceSupportItem.SNSSAI)
 						if err != nil {
 							ran.Log.Errorf("decode supported TA S-NSSAI failed: %+v", err)
 							continue
@@ -857,7 +866,7 @@ func HandleUplinkNasTransport(ctx ctxt.Context, ran *context.AmfRan, message *ng
 		return
 	}
 
-	ranUe.Ran = ran
+	ranUe.SetRan(ran)
 	amfUe := ranUe.AmfUe
 	if amfUe == nil {
 		err := ranUe.Remove()
@@ -1108,7 +1117,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		printCriticalityDiagnostics(ran, criticalityDiagnostics)
 	}
 
-	ranUe.Ran = ran
+	ranUe.SetRan(ran)
 	amfUe := ranUe.AmfUe
 	if amfUe == nil {
 		ran.Log.Infof("release UE Context: RanUe[AmfUeNgapId: %d]", ranUe.AmfUeNgapId)
@@ -1142,7 +1151,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 			case ngapType.NGRANCGIPresentNRCGI:
 				recommendedCell.NgRanCGI.Present = context.NgRanCgiPresentNRCGI
 				recommendedCell.NgRanCGI.NRCGI = new(models.Ncgi)
-				plmnID, err := ngapConvert.PlmnIdToModels(item.NGRANCGI.NRCGI.PLMNIdentity)
+				plmnID, err := ngapconv.PlmnIdToModels(item.NGRANCGI.NRCGI.PLMNIdentity)
 				if err != nil {
 					ran.Log.Errorf("decode recommended NR CGI PLMN failed: %+v", err)
 					skipRecommendedCell = true
@@ -1154,7 +1163,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 			case ngapType.NGRANCGIPresentEUTRACGI:
 				recommendedCell.NgRanCGI.Present = context.NgRanCgiPresentEUTRACGI
 				recommendedCell.NgRanCGI.EUTRACGI = new(models.Ecgi)
-				plmnID, err := ngapConvert.PlmnIdToModels(item.NGRANCGI.EUTRACGI.PLMNIdentity)
+				plmnID, err := ngapconv.PlmnIdToModels(item.NGRANCGI.EUTRACGI.PLMNIdentity)
 				if err != nil {
 					ran.Log.Errorf("decode recommended EUTRA CGI PLMN failed: %+v", err)
 					skipRecommendedCell = true
@@ -1188,11 +1197,11 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 				recommendedRanNode.Present = context.RecommendRanNodePresentRanNode
 				recommendedRanNode.GlobalRanNodeId = new(models.GlobalRanNodeId)
 				// TODO: Convert item.AMFPagingTarget.GlobalRANNodeID with
-				// globalRanNodeID, err := ngapConvert.RanIdToModels(item.AMFPagingTarget.GlobalRANNodeID),
+				// globalRanNodeID, err := ngapconv.RanIdToModels(item.AMFPagingTarget.GlobalRANNodeID),
 				// handle err, then assign recommendedRanNode.GlobalRanNodeId = &globalRanNodeID.
 			case ngapType.AMFPagingTargetPresentTAI:
 				recommendedRanNode.Present = context.RecommendRanNodePresentTAI
-				tai, err := ngapConvert.TaiToModels(*item.AMFPagingTarget.TAI)
+				tai, err := ngapconv.TaiToModels(*item.AMFPagingTarget.TAI)
 				if err != nil {
 					ran.Log.Errorf("decode recommended paging TAI failed: %+v", err)
 					continue
@@ -1235,7 +1244,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 				}
 			} else {
 				ranUe.Log.Infoln("Pdu Session IDs not received from gNB, Releasing the UE Context with SMF using local context")
-				amfUe.SmContextList.Range(func(key, value interface{}) bool {
+				amfUe.SmContextList.Range(func(key, value any) bool {
 					smContext := value.(*context.SmContext)
 					response, _, _, err := consumer.SendUpdateSmContextDeactivateUpCnxState(ctx, amfUe, smContext, cause)
 					if err != nil {
@@ -1273,11 +1282,46 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 			ran.Log.Infof("Valid Security is not exist for the UE[%s], so deleting AmfUe Context", amfUe.GetSupi())
 			// Remove() tears down every access, so force Del regardless of the other access's state.
 			amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
-			amfUe.Remove()
-			context.DeleteContextFromDB(amfUe)
+			context.RemoveUeAndDeleteItsContext(amfUe)
 		} else {
 			amfUe.PublishUeCtxtInfo(ran.AnType)
 			context.StoreContextInDB(amfUe)
+		}
+	case context.UeContextReleaseDueToUeInitiatedDeregistration:
+		ran.Log.Infof("Release UE[%s] Context Due to Ue Initiated Deregistration", amfUe.GetSupi())
+		if err := ranUe.Remove(); err != nil {
+			ran.Log.Errorln(err.Error())
+		}
+		// A deregistration can name a single access. While the other access is still in
+		// use the UE has not left: release only this access and keep the context, which
+		// PublishUeCtxtInfo reports as a Mod of the access still in use.
+		//
+		// The other access is in use while it is registered, and also while it still has
+		// a RanUe. A deregistration of both accesses sends a release command on each, and
+		// their Release Completes can arrive in either order; the first must not tear
+		// down the other access's RanUe before its own release completes, or that Release
+		// Complete finds no context and the RAN node is sent an Error Indication.
+		otherAnType := models.ACCESSTYPE_NON_3_GPP_ACCESS
+		if ran.AnType == models.ACCESSTYPE_NON_3_GPP_ACCESS {
+			otherAnType = models.ACCESSTYPE__3_GPP_ACCESS
+		}
+		other := amfUe.State[otherAnType]
+		otherRegistered := other != nil &&
+			!other.Is(context.Deregistered) && !other.Is(context.DeregistrationInitiated)
+		if otherRegistered || amfUe.GetRanUe(otherAnType) != nil {
+			amfUe.PublishUeCtxtInfo(ran.AnType)
+			storeContextInDB(amfUe)
+		} else {
+			// No access remains, so the stored context is not a head start for a later
+			// registration -- it is state that registration will find and have to
+			// reconcile. Delete it regardless of whether a security context exists, which
+			// is what UeContextReleaseUeContext cannot do without breaking its other
+			// senders.
+			//
+			// Remove() tears down every access, so force Del regardless of the other
+			// access's state -- the same reason the two sibling cases publish on removal.
+			amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
+			removeUeAndDeleteItsContext(amfUe)
 		}
 	case context.UeContextReleaseDueToNwInitiatedDeregistraion:
 		ran.Log.Infof("Release UE[%s] Context Due to Nw Initiated: Release Ue Context", amfUe.GetSupi())
@@ -1287,8 +1331,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		}
 		// Remove() tears down every access, so force Del regardless of the other access's state.
 		amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
-		amfUe.Remove()
-		context.DeleteContextFromDB(amfUe)
+		context.RemoveUeAndDeleteItsContext(amfUe)
 	case context.UeContextReleaseHandover:
 		ran.Log.Infof("Release UE[%s] Context : Release for Handover", amfUe.GetSupi())
 		// TODO: it's a workaround, need to fix it.
@@ -1301,7 +1344,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		// If target UE RAN is nil, set it to current RAN
 		if targetRanUe.Ran == nil {
 			ran.Log.Warnf("targetRanUe RAN is nil - Setting current RAN for target UE with AmfUeNgapId: %v", ranUe.TargetUe.AmfUeNgapId)
-			targetRanUe.Ran = ran
+			targetRanUe.SetRan(ran)
 		}
 		context.DetachSourceUeTargetUe(ranUe)
 		err := ranUe.Remove()
@@ -1772,7 +1815,7 @@ func HandleInitialUEMessage(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 			}
 		}
 	} else {
-		ranUe.Ran = ran
+		ranUe.SetRan(ran)
 		ranUe.AmfUe.AttachRanUe(ranUe)
 	}
 
@@ -1878,7 +1921,7 @@ func HandlePDUSessionResourceSetupResponse(ctx ctxt.Context, ran *context.AmfRan
 	}
 
 	if ranUe != nil {
-		ranUe.Ran = ran
+		ranUe.SetRan(ran)
 		ranUe.Log.Debugf("AmfUeNgapID[%d] RanUeNgapID[%d]", ranUe.AmfUeNgapId, ranUe.RanUeNgapId)
 		amfUe := ranUe.AmfUe
 		if amfUe == nil {
@@ -2048,7 +2091,7 @@ func HandlePDUSessionResourceModifyResponse(ctx ctxt.Context, ran *context.AmfRa
 	}
 
 	if ranUe != nil {
-		ranUe.Ran = ran
+		ranUe.SetRan(ran)
 		ranUe.Log.Debugf("AmfUeNgapID[%d] RanUeNgapID[%d]", ranUe.AmfUeNgapId, ranUe.RanUeNgapId)
 		amfUe := ranUe.AmfUe
 		if amfUe == nil {
@@ -2192,7 +2235,7 @@ func HandlePDUSessionResourceNotify(ctx ctxt.Context, ran *context.AmfRan, messa
 		return
 	}
 
-	ranUe.Ran = ran
+	ranUe.SetRan(ran)
 	ranUe.Log.Debugf("AmfUeNgapID[%d] RanUeNgapID[%d]", ranUe.AmfUeNgapId, ranUe.RanUeNgapId)
 	amfUe := ranUe.AmfUe
 	if amfUe == nil {
@@ -2816,7 +2859,7 @@ func HandleUEContextReleaseRequest(ctx ctxt.Context, ran *context.AmfRan, messag
 		return
 	}
 
-	ranUe.Ran = ran
+	ranUe.SetRan(ran)
 	ran.Log.Debugf("RanUeNgapID[%d] AmfUeNgapID[%d]", ranUe.RanUeNgapId, ranUe.AmfUeNgapId)
 
 	causeGroup := ngapType.CausePresentRadioNetwork
@@ -2849,7 +2892,7 @@ func HandleUEContextReleaseRequest(ctx ctxt.Context, ran *context.AmfRan, messag
 				}
 			} else {
 				ranUe.Log.Infoln("Pdu Session IDs not received from gNB, Releasing the UE Context with SMF using local context")
-				amfUe.SmContextList.Range(func(key, value interface{}) bool {
+				amfUe.SmContextList.Range(func(key, value any) bool {
 					smContext := value.(*context.SmContext)
 					if !smContext.IsPduSessionActive() {
 						ranUe.Log.Infoln("Pdu Session is inactive so not sending deactivate to SMF")
@@ -2866,7 +2909,7 @@ func HandleUEContextReleaseRequest(ctx ctxt.Context, ran *context.AmfRan, messag
 			}
 		} else {
 			ranUe.Log.Infoln("Ue Context in Non GMM-Registered")
-			amfUe.SmContextList.Range(func(key, value interface{}) bool {
+			amfUe.SmContextList.Range(func(key, value any) bool {
 				smContext := value.(*context.SmContext)
 				detail, err := consumer.SendReleaseSmContextRequest(amfUe, smContext, &causeAll, "", nil)
 				if err != nil {
@@ -2951,7 +2994,7 @@ func HandleUEContextModificationResponse(ran *context.AmfRan, message *ngapType.
 	}
 
 	if ranUe != nil {
-		ranUe.Ran = ran
+		ranUe.SetRan(ran)
 		ranUe.Log.Debugf("AmfUeNgapID[%d] RanUeNgapID[%d]", ranUe.AmfUeNgapId, ranUe.RanUeNgapId)
 
 		if rRCState != nil {
@@ -3039,7 +3082,7 @@ func HandleUEContextModificationFailure(ran *context.AmfRan, message *ngapType.N
 	}
 
 	if ranUe != nil {
-		ranUe.Ran = ran
+		ranUe.SetRan(ran)
 		ran.Log.Debugf("AmfUeNgapID[%d] RanUeNgapID[%d]", ranUe.AmfUeNgapId, ranUe.RanUeNgapId)
 	}
 
@@ -3313,7 +3356,7 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 		return
 	}
 
-	ranUe.Ran = ran
+	ranUe.SetRan(ran)
 	ran.Log.Debugf("AmfUeNgapID[%d] RanUeNgapID[%d]", ranUe.AmfUeNgapId, ranUe.RanUeNgapId)
 
 	amfUe := ranUe.AmfUe
@@ -3352,7 +3395,7 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 	}
 
 	if rANUENGAPID != nil {
-		ranUe.RanUeNgapId = rANUENGAPID.Value
+		ranUe.SetRanUeNgapId(rANUENGAPID.Value)
 	}
 
 	ranUe.UpdateLocation(userLocationInformation)
@@ -3444,7 +3487,10 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 		// TODO: set newSecurityContextIndicator to true if there is a new security context
 		err := ranUe.SwitchToRan(ran, rANUENGAPID.Value)
 		if err != nil {
+			// The RanUe was removed while the path switch was under way, or its
+			// AMF-UE-NGAP-ID names another RanUe.
 			ranUe.Log.Errorln(err.Error())
+			ngap_message.SendPathSwitchRequestFailure(ran, sourceAMFUENGAPID.Value, rANUENGAPID.Value, nil, nil)
 			return
 		}
 		context.StoreContextInDB(amfUe)
@@ -3540,10 +3586,10 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 	}
 
 	if rANUENGAPID != nil {
-		targetUe.RanUeNgapId = rANUENGAPID.Value
+		targetUe.SetRanUeNgapId(rANUENGAPID.Value)
 	}
 
-	targetUe.Ran = ran
+	targetUe.SetRan(ran)
 	ran.Log.Debugf("Target Ue RanUeNgapID[%d] AmfUeNgapID[%d]", targetUe.RanUeNgapId, targetUe.AmfUeNgapId)
 
 	amfUe := targetUe.AmfUe
@@ -3815,7 +3861,7 @@ func HandleHandoverFailure(ctx ctxt.Context, ran *context.AmfRan, message *ngapT
 		return
 	}
 
-	targetUe.Ran = ran
+	targetUe.SetRan(ran)
 	sourceUe := targetUe.SourceUe
 	if sourceUe == nil {
 		// TODO: handle N2 Handover between AMF
@@ -3823,7 +3869,7 @@ func HandleHandoverFailure(ctx ctxt.Context, ran *context.AmfRan, message *ngapT
 	} else {
 		amfUe := targetUe.AmfUe
 		if amfUe != nil {
-			amfUe.SmContextList.Range(func(key, value interface{}) bool {
+			amfUe.SmContextList.Range(func(key, value any) bool {
 				pduSessionID := key.(int32)
 				smContext := value.(*context.SmContext)
 				causeAll := context.CauseAll{
@@ -3980,7 +4026,7 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 		return
 	}
 	aMFSelf := context.AMF_Self()
-	targetRanNodeId, err := ngapConvert.RanIdToModels(targetID.TargetRANNodeID.GlobalRANNodeID)
+	targetRanNodeId, err := ngapconv.RanIdToModels(targetID.TargetRANNodeID.GlobalRANNodeID)
 	if err != nil {
 		sourceUe.Log.Errorf("decode target RAN node ID failed: %+v", err)
 		cause = &ngapType.Cause{
@@ -4005,7 +4051,7 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 		// The handover type is passed to SendHandoverRequest rather than written here, so that
 		// it is committed with the cause and the container, past the same guards. Written here
 		// it was committed before any of them ran.
-		tai, err := ngapConvert.TaiToModels(targetID.TargetRANNodeID.SelectedTAI)
+		tai, err := ngapconv.TaiToModels(targetID.TargetRANNodeID.SelectedTAI)
 		if err != nil {
 			sourceUe.Log.Errorf("decode selected TAI failed: %+v", err)
 			cause = &ngapType.Cause{
@@ -4163,7 +4209,7 @@ func HandleHandoverCancel(ctx ctxt.Context, ran *context.AmfRan, message *ngapTy
 		ran.Log.Debugf("target: RAN_UE_NGAP_ID[%d] AMF_UE_NGAP_ID[%d]", targetUe.RanUeNgapId, targetUe.AmfUeNgapId)
 		amfUe := sourceUe.AmfUe
 		if amfUe != nil {
-			amfUe.SmContextList.Range(func(key, value interface{}) bool {
+			amfUe.SmContextList.Range(func(key, value any) bool {
 				pduSessionID := key.(int32)
 				smContext := value.(*context.SmContext)
 				causeAll := context.CauseAll{
@@ -4440,7 +4486,7 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 				supportedTAI.Tai.Tac = tac
 				supportedTAI.RatInformation = ratInformation
 				broadcastPLMNItem := supportedTAItem.BroadcastPLMNList.List[j]
-				plmnId, err := ngapConvert.PlmnIdToModels(broadcastPLMNItem.PLMNIdentity)
+				plmnId, err := ngapconv.PlmnIdToModels(broadcastPLMNItem.PLMNIdentity)
 				if err != nil {
 					ran.Log.Errorf("decode supported TA PLMN failed: %+v", err)
 					continue
@@ -4451,7 +4497,7 @@ func HandleRanConfigurationUpdate(ran *context.AmfRan, message *ngapType.NGAPPDU
 				for k := 0; k < len(broadcastPLMNItem.TAISliceSupportList.List); k++ {
 					tAISliceSupportItem := broadcastPLMNItem.TAISliceSupportList.List[k]
 					if len(supportedTAI.SNssaiList) < capOfSNssaiList {
-						snssai, err := ngapConvert.SNssaiToModels(tAISliceSupportItem.SNSSAI)
+						snssai, err := ngapconv.SNssaiToModels(tAISliceSupportItem.SNSSAI)
 						if err != nil {
 							ran.Log.Errorf("decode supported TA S-NSSAI failed: %+v", err)
 							continue
@@ -4574,7 +4620,7 @@ func HandleUplinkRanConfigurationTransfer(ran *context.AmfRan, message *ngapType
 	}
 
 	if sONConfigurationTransferUL != nil {
-		targetRanNodeID, err := ngapConvert.RanIdToModels(sONConfigurationTransferUL.TargetRANNodeIDSON.GlobalRANNodeID)
+		targetRanNodeID, err := ngapconv.RanIdToModels(sONConfigurationTransferUL.TargetRANNodeIDSON.GlobalRANNodeID)
 		if err != nil {
 			ran.Log.Errorf("decode target RAN node ID failed: %+v", err)
 			return
@@ -5292,7 +5338,7 @@ func HandleCellTrafficTrace(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 		}
 	}
 
-	ranUe.Ran = ran
+	ranUe.SetRan(ran)
 	ran.Log.Debugf("UE: AmfUeNgapID[%d], RanUeNgapID[%d]", ranUe.AmfUeNgapId, ranUe.RanUeNgapId)
 
 	if nGRANTraceID == nil || nGRANCGI == nil || traceCollectionEntityIPAddress == nil {
@@ -5310,7 +5356,7 @@ func HandleCellTrafficTrace(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 
 	switch nGRANCGI.Present {
 	case ngapType.NGRANCGIPresentNRCGI:
-		plmnID, err := ngapConvert.PlmnIdToModels(nGRANCGI.NRCGI.PLMNIdentity)
+		plmnID, err := ngapconv.PlmnIdToModels(nGRANCGI.NRCGI.PLMNIdentity)
 		if err != nil {
 			ranUe.Log.Errorf("decode NRCGI PLMN failed: %+v", err)
 			break
@@ -5318,7 +5364,7 @@ func HandleCellTrafficTrace(ran *context.AmfRan, message *ngapType.NGAPPDU) {
 		cellID := ngapConvert.BitStringToHex(&nGRANCGI.NRCGI.NRCellIdentity.Value)
 		ranUe.Log.Debugf("NRCGI[plmn: %s, cellID: %s]", plmnID, cellID)
 	case ngapType.NGRANCGIPresentEUTRACGI:
-		plmnID, err := ngapConvert.PlmnIdToModels(nGRANCGI.EUTRACGI.PLMNIdentity)
+		plmnID, err := ngapconv.PlmnIdToModels(nGRANCGI.EUTRACGI.PLMNIdentity)
 		if err != nil {
 			ranUe.Log.Errorf("decode EUTRACGI PLMN failed: %+v", err)
 			break

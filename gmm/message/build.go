@@ -17,6 +17,7 @@ import (
 	"github.com/omec-project/amf/lawfulintercept"
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/amf/nas/nas_security"
+	"github.com/omec-project/amf/nasconv"
 	"github.com/omec-project/nas/v2"
 	"github.com/omec-project/nas/v2/nasConvert"
 	"github.com/omec-project/nas/v2/nasMessage"
@@ -168,7 +169,7 @@ func BuildAuthenticationRequest(ue *context.AmfUe) ([]byte, error) {
 	authenticationRequest.SetSecurityHeaderType(nas.SecurityHeaderTypePlainNas)
 	authenticationRequest.SpareHalfOctetAndSecurityHeaderType.SetSpareHalfOctet(0)
 	authenticationRequest.SetMessageType(nas.MsgTypeAuthenticationRequest)
-	authenticationRequest.SpareHalfOctetAndNgksi = nasConvert.SpareHalfOctetAndNgksiToNas(ue.NgKsi)
+	authenticationRequest.SpareHalfOctetAndNgksi = nasconv.SpareHalfOctetAndNgksiToNas(ue.NgKsi)
 	authenticationRequest.ABBA.SetLen(uint8(len(ue.ABBA)))
 	authenticationRequest.SetABBAContents(ue.ABBA)
 
@@ -299,7 +300,7 @@ func BuildAuthenticationResult(ue *context.AmfUe, eapSuccess bool, eapMsg string
 	authenticationResult.SetSecurityHeaderType(nas.SecurityHeaderTypePlainNas)
 	authenticationResult.SpareHalfOctetAndSecurityHeaderType.SetSpareHalfOctet(0)
 	authenticationResult.SetMessageType(nas.MsgTypeAuthenticationResult)
-	authenticationResult.SpareHalfOctetAndNgksi = nasConvert.SpareHalfOctetAndNgksiToNas(ue.NgKsi)
+	authenticationResult.SpareHalfOctetAndNgksi = nasconv.SpareHalfOctetAndNgksiToNas(ue.NgKsi)
 	rawEapMsg, err := base64.StdEncoding.DecodeString(eapMsg)
 	if err != nil {
 		return nil, err
@@ -396,7 +397,7 @@ func BuildSecurityModeCommand(ue *context.AmfUe, anType models.AccessType, eapSu
 	securityModeCommand.SelectedNASSecurityAlgorithms.SetTypeOfCipheringAlgorithm(ue.CipheringAlg)
 	securityModeCommand.SelectedNASSecurityAlgorithms.SetTypeOfIntegrityProtectionAlgorithm(ue.IntegrityAlg)
 
-	securityModeCommand.SpareHalfOctetAndNgksi = nasConvert.SpareHalfOctetAndNgksiToNas(ue.NgKsi)
+	securityModeCommand.SpareHalfOctetAndNgksi = nasconv.SpareHalfOctetAndNgksiToNas(ue.NgKsi)
 
 	securityModeCommand.ReplayedUESecurityCapabilities.SetLen(ue.UESecurityCapability.GetLen())
 	securityModeCommand.ReplayedUESecurityCapabilities.Buffer = ue.UESecurityCapability.Buffer
@@ -619,7 +620,7 @@ func BuildRegistrationAccept(
 		registrationAccept.EquivalentPlmns = nasType.NewEquivalentPlmns(nasMessage.RegistrationAcceptEquivalentPlmnsType)
 		var buf []uint8
 		for _, plmnSupportItem := range amfSelf.PlmnSupportList {
-			buf = append(buf, nasConvert.PlmnIDToNas(plmnSupportItem.PlmnId)...)
+			buf = append(buf, nasconv.PlmnIDToNas(plmnSupportItem.PlmnId)...)
 		}
 		registrationAccept.EquivalentPlmns.SetLen(uint8(len(buf)))
 		copy(registrationAccept.EquivalentPlmns.Octet[:], buf)
@@ -627,7 +628,7 @@ func BuildRegistrationAccept(
 
 	if registrationArea := ue.GetRegistrationArea(anType); len(registrationArea) > 0 {
 		registrationAccept.TAIList = nasType.NewTAIList(nasMessage.RegistrationAcceptTAIListType)
-		taiListNas := nasConvert.TaiListToNas(registrationArea)
+		taiListNas := nasconv.TaiListToNas(registrationArea)
 		registrationAccept.TAIList.SetLen(uint8(len(taiListNas)))
 		registrationAccept.SetPartialTrackingAreaIdentityList(taiListNas)
 	}
@@ -636,7 +637,7 @@ func BuildRegistrationAccept(
 		registrationAccept.AllowedNSSAI = nasType.NewAllowedNSSAI(nasMessage.RegistrationAcceptAllowedNSSAIType)
 		var buf []uint8
 		for _, allowedSnssai := range allowedNssai {
-			buf = append(buf, nasConvert.SnssaiToNas(allowedSnssai.AllowedSnssai)...)
+			buf = append(buf, nasconv.SnssaiToNas(allowedSnssai.AllowedSnssai)...)
 		}
 		registrationAccept.AllowedNSSAI.SetLen(uint8(len(buf)))
 		registrationAccept.AllowedNSSAI.SetSNSSAIValue(buf)
@@ -645,7 +646,7 @@ func BuildRegistrationAccept(
 	/*
 		if ue.NetworkSliceInfo != nil {
 			if len(ue.NetworkSliceInfo.RejectedNssaiInPlmn) != 0 || len(ue.NetworkSliceInfo.RejectedNssaiInTa) != 0 {
-				rejectedNssaiNas := nasConvert.RejectedNssaiToNas(
+				rejectedNssaiNas := nasconv.RejectedNssaiToNas(
 					ue.NetworkSliceInfo.RejectedNssaiInPlmn, ue.NetworkSliceInfo.RejectedNssaiInTa)
 				registrationAccept.RejectedNSSAI = &rejectedNssaiNas
 				registrationAccept.RejectedNSSAI.SetIei(nasMessage.RegistrationAcceptRejectedNSSAIType)
@@ -656,7 +657,7 @@ func BuildRegistrationAccept(
 			registrationAccept.ConfiguredNSSAI = nasType.NewConfiguredNSSAI(nasMessage.RegistrationAcceptConfiguredNSSAIType)
 			var buf []uint8
 			for _, snssai := range ue.ConfiguredNssai {
-				buf = append(buf, nasConvert.SnssaiToNas(*snssai.ConfiguredSnssai)...)
+				buf = append(buf, nasconv.SnssaiToNas(*snssai.ConfiguredSnssai)...)
 			}
 			registrationAccept.ConfiguredNSSAI.SetLen(uint8(len(buf)))
 			registrationAccept.ConfiguredNSSAI.SetSNSSAIValue(buf)
@@ -703,7 +704,7 @@ func BuildRegistrationAccept(
 		registrationAccept.LADNInformation = nasType.NewLADNInformation(nasMessage.RegistrationAcceptLADNInformationType)
 		buf := make([]uint8, 0)
 		for _, ladn := range ue.LadnInfo {
-			ladnNas := nasConvert.LadnToNas(ladn.Dnn, ladn.TaiLists)
+			ladnNas := nasconv.LadnToNas(ladn.Dnn, ladn.TaiLists)
 			buf = append(buf, ladnNas...)
 		}
 		registrationAccept.LADNInformation.SetLen(uint16(len(buf)))
@@ -719,8 +720,11 @@ func BuildRegistrationAccept(
 
 	if anType == models.ACCESSTYPE__3_GPP_ACCESS && ue.AmPolicyAssociation != nil &&
 		ue.AmPolicyAssociation.ServAreaRes != nil {
+		partialServiceAreaList, err := nasconv.PartialServiceAreaListToNas(ue.PlmnId, *ue.AmPolicyAssociation.ServAreaRes)
+		if err != nil {
+			return nil, fmt.Errorf("encode registration accept service area list: %w", err)
+		}
 		registrationAccept.ServiceAreaList = nasType.NewServiceAreaList(nasMessage.RegistrationAcceptServiceAreaListType)
-		partialServiceAreaList := nasConvert.PartialServiceAreaListToNas(ue.PlmnId, *ue.AmPolicyAssociation.ServAreaRes)
 		registrationAccept.ServiceAreaList.SetLen(uint8(len(partialServiceAreaList)))
 		registrationAccept.SetPartialServiceAreaList(partialServiceAreaList)
 	}
@@ -790,7 +794,7 @@ func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType
 
 	if registrationArea := ue.GetRegistrationArea(anType); len(registrationArea) > 0 {
 		configurationUpdateCommand.TAIList = nasType.NewTAIList(nasMessage.ConfigurationUpdateCommandTAIListType)
-		taiListNas := nasConvert.TaiListToNas(registrationArea)
+		taiListNas := nasconv.TaiListToNas(registrationArea)
 		configurationUpdateCommand.TAIList.SetLen(uint8(len(taiListNas)))
 		configurationUpdateCommand.SetPartialTrackingAreaIdentityList(taiListNas)
 	}
@@ -799,7 +803,7 @@ func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType
 		configurationUpdateCommand.AllowedNSSAI = nasType.NewAllowedNSSAI(nasMessage.ConfigurationUpdateCommandAllowedNSSAIType)
 		var buf []uint8
 		for _, allowedSnssai := range allowedNssai {
-			buf = append(buf, nasConvert.SnssaiToNas(allowedSnssai.AllowedSnssai)...)
+			buf = append(buf, nasconv.SnssaiToNas(allowedSnssai.AllowedSnssai)...)
 		}
 		configurationUpdateCommand.AllowedNSSAI.SetLen(uint8(len(buf)))
 		configurationUpdateCommand.AllowedNSSAI.SetSNSSAIValue(buf)
@@ -809,7 +813,7 @@ func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType
 		configurationUpdateCommand.ConfiguredNSSAI = nasType.NewConfiguredNSSAI(nasMessage.ConfigurationUpdateCommandConfiguredNSSAIType)
 		var buf []uint8
 		for _, snssai := range ue.ConfiguredNssai {
-			buf = append(buf, nasConvert.SnssaiToNas(snssai.ConfiguredSnssai)...)
+			buf = append(buf, nasconv.SnssaiToNas(snssai.ConfiguredSnssai)...)
 		}
 		configurationUpdateCommand.ConfiguredNSSAI.SetLen(uint8(len(buf)))
 		configurationUpdateCommand.ConfiguredNSSAI.SetSNSSAIValue(buf)
@@ -817,7 +821,7 @@ func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType
 
 	if ue.NetworkSliceInfo != nil {
 		if len(ue.NetworkSliceInfo.RejectedNssaiInPlmn) != 0 || len(ue.NetworkSliceInfo.RejectedNssaiInTa) != 0 {
-			rejectedNssaiNas := nasConvert.RejectedNssaiToNas(
+			rejectedNssaiNas := nasconv.RejectedNssaiToNas(
 				ue.NetworkSliceInfo.RejectedNssaiInPlmn, ue.NetworkSliceInfo.RejectedNssaiInTa)
 			configurationUpdateCommand.RejectedNSSAI = &rejectedNssaiNas
 			configurationUpdateCommand.RejectedNSSAI.SetIei(nasMessage.ConfigurationUpdateCommandRejectedNSSAIType)
@@ -827,8 +831,11 @@ func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType
 	// TODO: UniversalTimeAndLocalTimeZone
 	if anType == models.ACCESSTYPE__3_GPP_ACCESS && ue.AmPolicyAssociation != nil &&
 		ue.AmPolicyAssociation.ServAreaRes != nil {
+		partialServiceAreaList, err := nasconv.PartialServiceAreaListToNas(ue.PlmnId, *ue.AmPolicyAssociation.ServAreaRes)
+		if err != nil {
+			return nil, fmt.Errorf("encode configuration update service area list: %w", err)
+		}
 		configurationUpdateCommand.ServiceAreaList = nasType.NewServiceAreaList(nasMessage.ConfigurationUpdateCommandServiceAreaListType)
-		partialServiceAreaList := nasConvert.PartialServiceAreaListToNas(ue.PlmnId, *ue.AmPolicyAssociation.ServAreaRes)
 		configurationUpdateCommand.ServiceAreaList.SetLen(uint8(len(partialServiceAreaList)))
 		configurationUpdateCommand.SetPartialServiceAreaList(partialServiceAreaList)
 	}
@@ -864,7 +871,7 @@ func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType
 		configurationUpdateCommand.LADNInformation = nasType.NewLADNInformation(nasMessage.ConfigurationUpdateCommandLADNInformationType)
 		var buf []uint8
 		for _, ladn := range ue.LadnInfo {
-			ladnNas := nasConvert.LadnToNas(ladn.Dnn, ladn.TaiLists)
+			ladnNas := nasconv.LadnToNas(ladn.Dnn, ladn.TaiLists)
 			buf = append(buf, ladnNas...)
 		}
 		configurationUpdateCommand.LADNInformation.SetLen(uint16(len(buf)))

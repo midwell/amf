@@ -24,8 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
-	"github.com/mohae/deepcopy"
+	gojson "github.com/goccy/go-json"
 	"github.com/omec-project/amf/factory"
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/amf/metrics"
@@ -233,6 +232,10 @@ type AmfUe struct {
 	AmfInstanceName string        `json:"amfInstanceName,omitempty"`
 	AmfInstanceIp   string        `json:"amfInstanceIp,omitempty"`
 	EventChannel    *EventChannel `json:"-"`
+	// removed is set by Remove, under Mutex. A channel created afterwards is created
+	// stopped, so a caller still holding this UE cannot start a goroutine that nothing
+	// would ever stop.
+	removed bool
 	// logger
 	// NASLog      *logrus.Entry `json:"nasLog,omitempty" yaml:"nasLog" bson:"nasLog,omitempty"`
 	// GmmLog      *logrus.Entry `json:"gmmLog,omitempty" yaml:"gmmLog" bson:"gmmLog,omitempty"`
@@ -331,7 +334,7 @@ func (ue *AmfUe) MarshalJSON() ([]byte, error) {
 	}
 	n1n2MsgPtr := serialisablePendingMessage(ue.N1N2Message)
 
-	ue.SmContextList.Range(func(key, val interface{}) bool {
+	ue.SmContextList.Range(func(key, val any) bool {
 		smContext := val.(*SmContext)
 		pduSessId := smContext.PduSessionID()
 		newSmCtx := NewSmContext(pduSessId)
@@ -362,7 +365,7 @@ func (ue *AmfUe) MarshalJSON() ([]byte, error) {
 		RanId:       gnbId,
 	}
 
-	return sonic.Marshal(&struct {
+	return gojson.Marshal(&struct {
 		CustomAmfUe CustomFieldsAmfUe `json:"customFieldsAmfUe"`
 		*Alias
 	}{
@@ -379,7 +382,7 @@ func (ue *AmfUe) UnmarshalJSON(data []byte) error {
 	}{
 		Alias: (*Alias)(ue),
 	}
-	if err := sonic.Unmarshal(data, &auxCustom); err != nil {
+	if err := gojson.Unmarshal(data, &auxCustom); err != nil {
 		logger.ContextLog.Errorln("AMFUe Unmarshal failed : ", err)
 		return err
 	}
@@ -391,15 +394,42 @@ func (ue *AmfUe) UnmarshalJSON(data []byte) error {
 	}
 	for index, states := range aux.State {
 		ue.State[index] = fsm.NewState(fsm.StateType(states))
-		if ue.RanUe[index] == nil {
-			ue.RanUe[index] = &RanUe{}
+	}
+	// A RanUe in the document for an access other than 3GPP is kept only if its RAN is of that
+	// access: a genuine one is keyed by its own RAN's type. An AMF that predates this change
+	// invented one at every restore, with the 3GPP RAN or none, and stored it with the context.
+	// Restoring that again would bring back what the rest of this function no longer creates --
+	// and for an idle UE, whose custom fields no longer match it, with ids that may now belong
+	// to another UE.
+	for anType, ranUe := range ue.RanUe {
+		if anType == models.ACCESSTYPE__3_GPP_ACCESS {
+			continue
 		}
-		ue.RanUe[index].RanUeNgapId = aux.RanUeNgapId
-		ue.RanUe[index].AmfUeNgapId = aux.AmfUeNgapId
-		ue.RanUe[index].Log = logger.NgapLog.With(logger.FieldAmfUeNgapID, fmt.Sprintf("AMF_UE_NGAP_ID:%d", ue.RanUe[index].AmfUeNgapId))
+		if ranUe == nil || ranUe.Ran == nil || ranUe.Ran.AnType != anType {
+			delete(ue.RanUe, anType)
+		}
+	}
+	// The custom fields describe the 3GPP RanUe alone -- MarshalJSON takes them from it -- so
+	// only that RanUe takes them, and only it is created when the document holds none: an idle
+	// UE is stored without one, and DbFetch restores no UE without a 3GPP RanUe. A RanUe for
+	// any other access comes only from the document. Creating one would put the UE on an access
+	// it is not on, with the 3GPP RanUe's ids: a deregistration then read the other access as
+	// still in use, and Remove released the shared id twice.
+	if _, ok := aux.State[models.ACCESSTYPE__3_GPP_ACCESS]; ok {
+		ranUe := ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS]
+		if ranUe == nil {
+			ranUe = &RanUe{}
+			ue.RanUe[models.ACCESSTYPE__3_GPP_ACCESS] = ranUe
+		}
+		ranUe.RanUeNgapId = aux.RanUeNgapId
+		ranUe.AmfUeNgapId = aux.AmfUeNgapId
 		if ran != nil {
-			// ran.RanUeList[ue.RanUe[index].RanUeNgapId] = ue.RanUe[index]
-			ue.RanUe[index].Ran = ran
+			ranUe.Ran = ran
+		}
+	}
+	for _, ranUe := range ue.RanUe {
+		if ranUe != nil {
+			ranUe.Log = logger.NgapLog.With(logger.FieldAmfUeNgapID, fmt.Sprintf("AMF_UE_NGAP_ID:%d", ranUe.AmfUeNgapId))
 		}
 	}
 	for key, val := range aux.SmCtxList {
@@ -427,7 +457,7 @@ const (
 	NasMessage
 )
 
-type InterfaceMsg interface{}
+type InterfaceMsg any
 
 /*type InterfaceMsg struct {
 	AnType        models.AccessType
@@ -444,31 +474,40 @@ type NasMsg struct {
 	NasMsg        []byte
 	ProcedureCode int64
 	Context       ctxt.Context
+	// Handler runs the message. It travels with the message rather than being set on the
+	// UE's event channel, where the dispatcher rewrote it for every message while the
+	// channel's goroutine read it.
+	Handler func(*AmfUe, NasMsg)
 }
 
 type NgapMsg struct {
 	SctplbMsg *sdcoreAmfServer.SctplbMessage
 	NgapMsg   *ngapType.NGAPPDU
 	Ran       *AmfRan
+	// Handler runs the message; see NasMsg.Handler.
+	Handler func(*AmfUe, NgapMsg)
 }
 
 type SbiResponseMsg struct {
-	RespData       interface{}
+	RespData       any
 	LocationHeader string
-	ProblemDetails interface{}
-	TransferErr    interface{}
+	ProblemDetails any
+	TransferErr    any
 }
 
 type SbiMsg struct {
-	Msg         interface{}
+	Msg         any
 	UeContextId string
 	ReqUri      string
+	// Handler runs the message. It travels with the message, rather than being set on
+	// the UE's event channel, so that requests queued for one UE each run their own.
+	Handler func(ctx ctxt.Context, s1, s2 string, msg any) (any, string, any, any)
 
 	Result chan SbiResponseMsg
 }
 
 type ConfigMsg struct {
-	Msg  interface{}
+	Msg  any
 	Supi string
 	Sst  string
 	Sd   string
@@ -488,7 +527,7 @@ func (subscription AmfUeEventSubscription) MarshalJSON() ([]byte, error) {
 		copied.RemainReports = &remaining
 	}
 
-	return sonic.Marshal(copied)
+	return gojson.Marshal(copied)
 }
 
 type AmfUeEventSubscription struct {
@@ -769,11 +808,30 @@ func (ue *AmfUe) GetReachability() models.UeReachability {
 func (ue *AmfUe) GetLocation() models.UserLocation {
 	ue.identityMu.RLock()
 	defer ue.identityMu.RUnlock()
-	return deepcopy.Copy(ue.Location).(models.UserLocation)
+	data, err := gojson.Marshal(ue.Location)
+	if err != nil {
+		logger.ContextLog.Errorf("failed to marshal UserLocation: %v", err)
+		return models.UserLocation{}
+	}
+	var location models.UserLocation
+	if err := gojson.Unmarshal(data, &location); err != nil {
+		logger.ContextLog.Errorf("failed to unmarshal UserLocation: %v", err)
+		return models.UserLocation{}
+	}
+	return location
 }
 
 func (ue *AmfUe) SetLocation(v models.UserLocation) {
-	location := deepcopy.Copy(v).(models.UserLocation)
+	data, err := gojson.Marshal(v)
+	if err != nil {
+		logger.ContextLog.Errorf("failed to marshal UserLocation: %v", err)
+		return
+	}
+	var location models.UserLocation
+	if err := gojson.Unmarshal(data, &location); err != nil {
+		logger.ContextLog.Errorf("failed to unmarshal UserLocation: %v", err)
+		return
+	}
 	ue.identityMu.Lock()
 	ue.Location = location
 	ue.identityMu.Unlock()
@@ -782,13 +840,20 @@ func (ue *AmfUe) SetLocation(v models.UserLocation) {
 func (ue *AmfUe) GetTai() models.Tai {
 	ue.identityMu.RLock()
 	defer ue.identityMu.RUnlock()
-	return deepcopy.Copy(ue.Tai).(models.Tai)
+	tai := models.NewTai(ue.Tai.GetPlmnId(), ue.Tai.GetTac())
+	if ue.Tai.HasNid() {
+		tai.SetNid(ue.Tai.GetNid())
+	}
+	return *tai
 }
 
 func (ue *AmfUe) SetTai(v models.Tai) {
-	tai := deepcopy.Copy(v).(models.Tai)
+	tai := models.NewTai(v.GetPlmnId(), v.GetTac())
+	if v.HasNid() {
+		tai.SetNid(v.GetNid())
+	}
 	ue.identityMu.Lock()
-	ue.Tai = tai
+	ue.Tai = *tai
 	ue.identityMu.Unlock()
 }
 
@@ -891,7 +956,33 @@ func (ue *AmfUe) Remove() {
 	for _, ranUe := range ue.RanUe {
 		ranUes = append(ranUes, ranUe)
 	}
+	// Under the lock that creating the channel takes, like every other read of it.
+	eventChannel := ue.EventChannel
+	ue.removed = true
 	ue.Mutex.Unlock()
+
+	// TryLock, not Lock: Remove must never wait on a handler's own admitMu hold -- the NGAP
+	// connection reader that calls this on a DRSM ownership mismatch depends on returning
+	// without stalling behind one, the same requirement TestRemoveDoesNotBlockBehindARunning-
+	// Handler pins.
+	//
+	// Winning it (admitMu was free, so the goroutine was not between a message's removed
+	// check and its handler call) is what the mark above alone cannot guarantee: without it,
+	// the goroutine could still be about to check removed on a message already dequeued, and
+	// read it before this write is visible. Held across the teardown below, not just the
+	// mark, so a check that runs immediately after either sees removed with nothing left to
+	// race -- the RanUe detach, the pool delete -- or, losing the race outright, never ran
+	// this close to the teardown to begin with.
+	//
+	// Losing it means a handler is already admitted and running on this same goroutine --
+	// mid-call or, reentrantly, this very call to Remove -- and this teardown proceeds
+	// unsynchronized against it exactly as it would against any other handler already in
+	// flight when Remove is called: left to finish, not raced or waited on. Admission is a
+	// one-way gate once granted; closing that window too would mean either waiting here,
+	// which the requirement above forbids, or deferring this teardown through the channel
+	// itself, which changes how soon a caller of Remove can rely on the pool and RAN state
+	// actually being gone -- a larger change than this bug warrants.
+	locked := eventChannel != nil && eventChannel.admitMu.TryLock()
 
 	for _, ranUe := range ranUes {
 		if err := ranUe.Remove(); err != nil {
@@ -911,8 +1002,13 @@ func (ue *AmfUe) Remove() {
 	if supi := ue.GetSupi(); len(supi) > 0 {
 		AMF_Self().UePool.Delete(supi)
 	}
-	if ue.EventChannel != nil {
-		ue.EventChannel.Event <- "quit"
+
+	if locked {
+		eventChannel.admitMu.Unlock()
+	}
+
+	if eventChannel != nil {
+		eventChannel.Event <- "quit"
 	}
 }
 
@@ -928,6 +1024,20 @@ func (ue *AmfUe) GetRanUe(anType models.AccessType) *RanUe {
 	defer ue.Mutex.Unlock()
 
 	return ue.RanUe[anType]
+}
+
+// ranUeDetachGraceNanos is how long, in nanoseconds, AttachRanUe lets a replaced RanUe keep
+// pointing at its UE before detaching it. A detach goroutine a test spawned can still be
+// sleeping on this after that test has returned, so it is read and written atomically rather
+// than as a plain time.Duration. Tests shrink it to avoid sleeping out the real duration.
+var ranUeDetachGraceNanos atomic.Int64
+
+func init() {
+	ranUeDetachGraceNanos.Store(int64(2 * time.Second))
+}
+
+func ranUeDetachGrace() time.Duration {
+	return time.Duration(ranUeDetachGraceNanos.Load())
 }
 
 func (ue *AmfUe) AttachRanUe(ranUe *RanUe) {
@@ -947,20 +1057,50 @@ func (ue *AmfUe) AttachRanUe(ranUe *RanUe) {
 	// Under the same lock as the RanUe map: the loggers carry the NGAP id of the RanUe
 	// just attached, and methods holding this lock log through them.
 	ue.updateAttachedRanUeLogs(ranUe)
+	// Counted under the lock the timer checks the count under, so a timer that wakes after
+	// this replacement sees it.
+	var replacement uint64
+	if oldRanUe != nil {
+		replacement = oldRanUe.replacements.Add(1)
+	}
 	ue.Mutex.Unlock()
 
+	// A replaced RanUe that a RAN lists leaves RanUePool with its own release. One a restore
+	// published, which no RAN has listed since, stands for a connection the RAN node has
+	// normally dropped when the AMF terminates SCTP itself: after an AMF restart each RAN node
+	// makes an NG Setup, which erases its UE contexts (TS 38.413 8.7.1.1). No release comes for
+	// it, and once replaced it would stay in RanUePool until the process ends. Only that entry
+	// is removed, and only while it still holds this RanUe: either id may since have gone to
+	// another UE. Behind an SCTP load balancer an AMF restart is followed by no NG Setup, the
+	// RAN node can still release the RanUe, and the stale-RanUe release path has to find it, so
+	// it stays.
+	if oldRanUe != nil && !AMF_Self().EnableSctpLb {
+		oldRanUe.unpoolIfRestoredUnlisted()
+	}
+
 	if oldRanUe != nil {
-		go func(oldRanUe, newRanUe *RanUe, anType models.AccessType) {
-			time.Sleep(time.Second * 2)
+		// Capture the logger before spawning: this goroutine sleeps, so it reads the value
+		// long after the call returns. logger.ContextLog is a package variable that tests
+		// reassign, and a deferred read of it here would race those writes from a goroutine
+		// that outlives the test. Reading it now keeps the goroutine self-contained.
+		detachLog := logger.ContextLog
+		go func(oldRanUe *RanUe, anType models.AccessType, replacement uint64) {
+			time.Sleep(ranUeDetachGrace())
 
 			ue.Mutex.Lock()
 			defer ue.Mutex.Unlock()
 
-			if oldRanUe.GetAmfUe() == ue && ue.RanUe[anType] == newRanUe {
-				logger.ContextLog.Infof("detached UeContext from OldRanUe %v", oldRanUe.AmfUeNgapId)
-				oldRanUe.DetachAmfUe()
+			// Detach the replaced RanUe unless it is the UE's current RanUe again, whatever
+			// became of the one that replaced it, and only while it still points at this UE:
+			// another UE's AttachRanUe, which holds that UE's lock and not this one, may have
+			// taken it. DetachAmfUeIf checks and clears under the RanUe's own lock. Not if it
+			// has been attached again and replaced since: that replacement's own timer gives
+			// it a full grace period.
+			if oldRanUe.replacements.Load() == replacement && ue.RanUe[anType] != oldRanUe &&
+				oldRanUe.DetachAmfUeIf(ue) {
+				detachLog.Infof("detached UeContext from OldRanUe %v", oldRanUe.AmfUeNgapId)
 			}
-		}(oldRanUe, ranUe, anType)
+		}(oldRanUe, anType, replacement)
 	}
 }
 
@@ -1264,7 +1404,7 @@ func (ue *AmfUe) ClearRegistrationData() {
 	ue.AllowedNssai = make(map[models.AccessType][]models.AllowedSnssai)
 	ue.SubscriptionDataValid = false
 	// Clearing SMContextList locally
-	ue.SmContextList.Range(func(key, _ interface{}) bool {
+	ue.SmContextList.Range(func(key, _ any) bool {
 		ue.SmContextList.Delete(key)
 		return true
 	})
@@ -1480,6 +1620,39 @@ func (ue *AmfUe) SetEventSubscription(id string, subscription *AmfUeEventSubscri
 	ue.EventSubscriptionsInfo[id] = subscription
 }
 
+// SetEventSubscriptionExpiry updates the expiry carried in a stored subscription's options.
+//
+// Report generation reads the subscription expiry from each UE's own options (see
+// NewAmfEventReport), so a modified expiry must be written here for later reports to reflect it --
+// the context-level copy the modify procedure also updates is not on that read path.
+//
+// An any-UE/group subscription gives every UE its own AmfUeEventSubscription wrapper but a single
+// shared *ExtAmfEventSubscription (CreateAMFEventSubscriptionProcedure copies the wrapper, not the
+// pointer inside it). Writing options through that shared pointer would change every UE's options
+// while holding only this UE's lock, racing reports and snapshots guarded by other UEs' locks. So
+// the wrapper is deep-copied and this UE repointed at the copy before the write lands -- mirroring
+// snapshot(), which clones the same object and its event list for the same reason.
+func (ue *AmfUe) SetEventSubscriptionExpiry(id string, expiry time.Time) {
+	ue.Mutex.Lock()
+	defer ue.Mutex.Unlock()
+
+	subscription, ok := ue.EventSubscriptionsInfo[id]
+	if !ok || subscription == nil || subscription.EventSubscription == nil {
+		return
+	}
+	options, ok := subscription.EventSubscription.GetOptionsOk()
+	if !ok || options == nil {
+		return
+	}
+
+	copied := *subscription.EventSubscription
+	copied.SetEventList(slices.Clone(subscription.EventSubscription.GetEventList()))
+	updatedOptions := *options
+	updatedOptions.SetExpiry(expiry)
+	copied.SetOptions(updatedOptions)
+	subscription.EventSubscription = &copied
+}
+
 // DeleteEventSubscription removes an event-exposure subscription.
 func (ue *AmfUe) DeleteEventSubscription(id string) {
 	ue.Mutex.Lock()
@@ -1607,11 +1780,8 @@ func (ue *AmfUe) CopyDataFromUeContextModel(ueContext models.UeContext) {
 				ue.AmPolicyAssociation.Triggers = append(ue.AmPolicyAssociation.Triggers, models.REQUESTTRIGGER_LOC_CH)
 			case models.POLICYREQTRIGGER_PRA_CHANGE:
 				ue.AmPolicyAssociation.Triggers = append(ue.AmPolicyAssociation.Triggers, models.REQUESTTRIGGER_PRA_CH)
-			// TODO: GA: Review the below two policies that were removed in Rel-18
-			// case models.POLICYREQTRIGGER_SARI_CHANGE:
-			// 	ue.AmPolicyAssociation.Triggers = append(ue.AmPolicyAssociation.Triggers, models.REQUESTTRIGGER_SERV_AREA_CH)
-			// case models.POLICYREQTRIGGER_RFSP_INDEX_CHANGE:
-			// 	ue.AmPolicyAssociation.Triggers = append(ue.AmPolicyAssociation.Triggers, models.REQUESTTRIGGER_RFSP_CH)
+			// PolicyReqTrigger in the openapi models in use has no SARI_CHANGE or
+			// RFSP_INDEX_CHANGE value, so there is nothing to map to SERV_AREA_CH / RFSP_CH.
 			default:
 				logger.ContextLog.Errorf("Policy trigger is %v", trigger)
 				panic("Policy trigger error")
@@ -1717,16 +1887,27 @@ func (ue *AmfUe) SmContextFindByPDUSessionID(pduSessionID int32) (*SmContext, bo
 	}
 }
 
-func (ue *AmfUe) SetEventChannel(ctx ctxt.Context, handler func(*AmfUe, NgapMsg)) {
+// isRemoved reports whether Remove has run for the UE.
+func (ue *AmfUe) isRemoved() bool {
+	ue.Mutex.Lock()
+	defer ue.Mutex.Unlock()
+	return ue.removed
+}
+
+// SetEventChannel returns the UE's event channel, creating it with ctx if the UE has none.
+func (ue *AmfUe) SetEventChannel(ctx ctxt.Context) *EventChannel {
 	ue.Mutex.Lock()
 	defer ue.Mutex.Unlock()
 	if ue.EventChannel == nil {
 		ue.TxLog.Debugln("creating new AmfUe EventChannel")
 		ue.EventChannel = ue.NewEventChannel()
-		ue.EventChannel.AmfUe = ue
-		ue.EventChannel.UpdateNgapHandler(handler)
-		go ue.EventChannel.Start(ctx)
+		if ue.removed {
+			close(ue.EventChannel.done)
+		} else {
+			go ue.EventChannel.Start(ctx)
+		}
 	}
+	return ue.EventChannel
 }
 
 // RunSerialized submits fn to the UE's EventChannel, so it runs serialized with any in-flight
@@ -1737,24 +1918,31 @@ func (ue *AmfUe) SetEventChannel(ctx ctxt.Context, handler func(*AmfUe, NgapMsg)
 // concurrent SetEventChannel/message dispatch either happens fully before or fully after this
 // call instead of racing a direct fn() invocation against the newly created channel's goroutine.
 func (ue *AmfUe) RunSerialized(fn func()) {
-	ue.Mutex.Lock()
-	if ue.EventChannel == nil {
-		ue.TxLog.Debugln("creating new AmfUe EventChannel")
-		ue.EventChannel = ue.NewEventChannel()
-		ue.EventChannel.AmfUe = ue
-		go ue.EventChannel.Start(ctxt.Background())
+	if !ue.eventChannel().SubmitMessage(FuncMsg(fn)) {
+		ue.TxLog.Debugln("UE removed; not running work queued for it")
 	}
-	ch := ue.EventChannel
-	ue.Mutex.Unlock()
-	ch.SubmitMessage(FuncMsg(fn))
+}
+
+// eventChannel returns the UE's event channel, first creating one if the UE has none, as
+// a UE restored from the datastore does not. It goes through SetEventChannel, under the
+// lock every creator takes, so whichever gets there first creates it and every other
+// caller submits to that one.
+//
+// A channel created here is given a background context rather than a caller's: Start
+// hands its context to every SBI message it will ever run, so a request's context,
+// cancelled when that request ends, would reach all of them. A channel NGAP or NAS
+// created first keeps the context they gave it.
+func (ue *AmfUe) eventChannel() *EventChannel {
+	return ue.SetEventChannel(ctxt.Background())
 }
 
 func (ue *AmfUe) NewEventChannel() (tx *EventChannel) {
 	ue.TxLog.Infof("New EventChannel created")
 	tx = &EventChannel{
-		Message: make(chan interface{}, 10),
+		Message: make(chan any, 10),
 		Event:   make(chan string, 10),
 		AmfUe:   ue,
+		done:    make(chan struct{}),
 	}
 	// tx.Message <- msg
 	return tx

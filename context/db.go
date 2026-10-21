@@ -10,12 +10,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
+	gojson "github.com/goccy/go-json"
 	"github.com/omec-project/amf/factory"
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/amf/metrics"
@@ -28,7 +30,9 @@ import (
 var dbMutex sync.Mutex
 
 const (
-	dbWriteWorkers   = 4
+	dbWriteWorkers = 4
+	// dbWriteQueueSize is the capacity of all the write queues together; each
+	// worker's queue holds its share of it.
 	dbWriteQueueSize = 256
 )
 
@@ -41,7 +45,6 @@ const (
 	// indexEnsureAttemptTimeout bounds one EnsureIndex call, which builds the
 	// index and then reads the collection's indexes back to confirm it.
 	indexEnsureAttemptTimeout = 30 * time.Second
-	indexEnsureInitialBackoff = 1 * time.Second
 	indexEnsureMaxBackoff     = 30 * time.Second
 
 	// mongoConnectAttempts bounds the connect loop. ConnectMongo waits three
@@ -50,21 +53,60 @@ const (
 	mongoConnectAttempts = 3
 )
 
+// indexEnsureInitialBackoff is a var, not a const, so tests can shrink it instead of sleeping
+// out the real retry delay.
+var indexEnsureInitialBackoff = 1 * time.Second
+
+// dbWriteOp is one write to amf.data.amfState: an upsert of data or, when
+// removed is set, a delete, which closes removed once it has run. Either way it
+// is matched on filter, the UE's supi.
 type dbWriteOp struct {
-	filter bson.M
-	data   bson.M
+	filter  bson.M
+	data    bson.M
+	removed chan struct{}
 }
 
-var (
-	dbWriteCh   = make(chan dbWriteOp, dbWriteQueueSize)
-	dbWriteOnce sync.Once
-)
+// dbWriter runs the writes to amf.data.amfState off the caller's goroutine,
+// in order for each UE.
+//
+// Every write for a UE goes to the one queue its supi selects, and each queue
+// has a single worker, so a UE's writes land in the order they were made. That
+// is what makes a delete final. With one queue shared by every worker, a store
+// queued before the delete could still be waiting, or in flight on another
+// worker, when the delete ran -- and it would then recreate the document the
+// delete had just removed.
+type dbWriter struct {
+	queues []chan dbWriteOp
+	seed   maphash.Seed
+	once   sync.Once
+}
+
+func newDBWriter(workers, queueSize int) *dbWriter {
+	w := &dbWriter{queues: make([]chan dbWriteOp, workers), seed: maphash.MakeSeed()}
+	for i := range w.queues {
+		w.queues[i] = make(chan dbWriteOp, queueSize/workers)
+	}
+	return w
+}
+
+var amfUeWriter = newDBWriter(dbWriteWorkers, dbWriteQueueSize)
 
 func startDBWriteWorkers() {
-	dbWriteOnce.Do(func() {
-		for range dbWriteWorkers {
+	amfUeWriter.start()
+}
+
+func (w *dbWriter) start() {
+	w.once.Do(func() {
+		for _, queue := range w.queues {
 			go func() {
-				for op := range dbWriteCh {
+				for op := range queue {
+					if op.removed != nil {
+						if delErr := mongoapi.CommonDBClient.RestfulAPIDeleteOne(AmfUeDataColl, op.filter); delErr != nil {
+							logger.DataRepoLog.Warnln(delErr)
+						}
+						close(op.removed)
+						continue
+					}
 					if _, postErr := mongoapi.CommonDBClient.RestfulAPIPost(AmfUeDataColl, op.filter, op.data); postErr != nil {
 						logger.DataRepoLog.Warnln(postErr)
 					}
@@ -72,6 +114,30 @@ func startDBWriteWorkers() {
 			}()
 		}
 	})
+}
+
+func (w *dbWriter) queueFor(supi string) chan dbWriteOp {
+	return w.queues[maphash.String(w.seed, supi)%uint64(len(w.queues))]
+}
+
+// store queues an upsert, and reports false if the queue was full and the
+// write was dropped. A dropped store is superseded by the UE's next one.
+func (w *dbWriter) store(supi string, data bson.M) bool {
+	select {
+	case w.queueFor(supi) <- dbWriteOp{filter: bson.M{"supi": supi}, data: data}:
+		return true
+	default:
+		return false
+	}
+}
+
+// remove queues a delete behind every write already queued for the UE and
+// returns once it has run. A full queue is waited on rather than dropped:
+// nothing supersedes a dropped delete, so the document would stay.
+func (w *dbWriter) remove(supi string) {
+	op := dbWriteOp{filter: bson.M{"supi": supi}, removed: make(chan struct{})}
+	w.queueFor(supi) <- op
+	<-op.removed
 }
 
 type CustomFieldsAmfUe struct {
@@ -285,16 +351,9 @@ func amfUeIndexes() []mongoapi.IndexSpec {
 			// association, which is the overwhelming majority of the documents
 			// carrying it.
 			//
-			// Not quite all of them, though: with EnableDbStore the ID comes
-			// from drsm, which composes it as (chunk << 10) | offset over a
-			// chunk drawn from 16384 and offsets counted down from 999, so an
-			// AMF that draws chunk zero and exhausts it allocates a real UE the
-			// value zero. That UE's own lookup then falls back to a collection
-			// scan rather than returning a wrong answer, since the document is
-			// only missing from the index and not from the collection. The
-			// deeper problem there is that its context is indistinguishable
-			// from a detached one in the stored data itself, which no index can
-			// fix.
+			// No live UE is allocated zero -- AllocateAmfUeNgapID skips it when
+			// drsm hands it out -- and RanUeFindByAmfUeNgapID does not look zero
+			// up at all, so no query this index could serve is left out.
 			Name:          "amfUeByAmfUeNgapId",
 			Keys:          mongoapi.AscendingKeys("customFieldsAmfUe.amfUeNgapId"),
 			PartialFilter: bson.M{"customFieldsAmfUe.amfUeNgapId": bson.M{"$gt": 0}},
@@ -381,7 +440,7 @@ func ensureIndexWithRetry(ctx context.Context, spec mongoapi.IndexSpec) error {
 // (32 KiB covers typical UE context sizes without frequent reallocation).
 const amfJSONBufInitialCap = 32 * 1024
 
-// amfJSONBufPool pools the bytes.Buffer used for sonic encoding to reduce GC pressure.
+// amfJSONBufPool pools the bytes.Buffer used for JSON encoding to reduce GC pressure.
 var amfJSONBufPool = sync.Pool{
 	New: func() any { return bytes.NewBuffer(make([]byte, 0, amfJSONBufInitialCap)) },
 }
@@ -389,13 +448,13 @@ var amfJSONBufPool = sync.Pool{
 func ToBsonM(data *AmfUe) (ret bson.M) {
 	buf := amfJSONBufPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	enc := sonic.ConfigDefault.NewEncoder(buf)
+	enc := gojson.NewEncoder(buf)
 	if err := enc.Encode(data); err != nil {
 		amfJSONBufPool.Put(buf)
 		logger.DataRepoLog.Errorf("amfue marshal error: %v", err)
 		return
 	}
-	if err := sonic.Unmarshal(buf.Bytes(), &ret); err != nil {
+	if err := gojson.Unmarshal(buf.Bytes(), &ret); err != nil {
 		logger.DataRepoLog.Errorf("amfue unmarshal error: %v", err)
 	}
 	amfJSONBufPool.Put(buf)
@@ -412,32 +471,28 @@ func StoreContextInDB(ue *AmfUe) {
 	if amfUeBsonA == nil {
 		return
 	}
-	filter := bson.M{"supi": ue.GetSupi()}
-	select {
-	case dbWriteCh <- dbWriteOp{filter: filter, data: amfUeBsonA}:
-	default:
+	if !amfUeWriter.store(ue.GetSupi(), amfUeBsonA) {
 		metrics.IncrementDbWriteDropped()
 		logger.DataRepoLog.Warnf("DB write queue full, dropping store for supi=%s", ue.GetSupi())
 	}
 }
 
+// DeleteContextFromDB deletes the UE's stored context behind every store
+// already queued for it, so that none of them can land afterwards, and returns
+// once the delete has run. It waits for the stores ahead of it on the same
+// queue, where it used to run at once and race them.
 func DeleteContextFromDB(ue *AmfUe) {
 	self := AMF_Self()
 	if self.EnableDbStore {
 		if !datastoreReady() {
 			return
 		}
-		filter := bson.M{"supi": ue.GetSupi()}
-
-		delErr := mongoapi.CommonDBClient.RestfulAPIDeleteOne(AmfUeDataColl, filter)
-		if delErr != nil {
-			logger.DataRepoLog.Warnln(delErr)
-		}
+		amfUeWriter.remove(ue.GetSupi())
 	}
 }
 
-// dropEmptyEnumValues removes keys whose value is an empty string, in place, walking
-// nested objects and arrays.
+// dropEmptyEnumValues removes empty-string values found while walking nested objects and
+// arrays: object keys are deleted in place, arrays are rebuilt without them.
 //
 // Decoding an object into Go treats an absent key and an empty string identically -- the
 // field is left at its zero value -- with one exception: the strict 3GPP enum decoders
@@ -446,9 +501,13 @@ func DeleteContextFromDB(ue *AmfUe) {
 // optional container written with no class, or ngKsi.tsc on a UE stored before
 // authentication finished.
 //
+// Arrays are rebuilt rather than walked in place, because an empty value can be an
+// element as well as a field: an enum array such as a policy association's triggers.
+// They arrive from the driver as bson.A, a named type that a []any case does not match.
+//
 // This runs only after a strict decode has already failed, so a well-formed record is
 // never touched by it.
-func dropEmptyEnumValues(value any) {
+func dropEmptyEnumValues(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, held := range typed {
@@ -457,13 +516,30 @@ func dropEmptyEnumValues(value any) {
 				continue
 			}
 
-			dropEmptyEnumValues(held)
+			typed[key] = dropEmptyEnumValues(held)
 		}
+	case bson.A:
+		return bson.A(dropEmptyElements(typed))
 	case []any:
-		for _, held := range typed {
-			dropEmptyEnumValues(held)
-		}
+		return dropEmptyElements(typed)
 	}
+
+	return value
+}
+
+// dropEmptyElements returns elements with empty-string entries removed, and empty values
+// dropped from what remains of each kept element.
+func dropEmptyElements(elements []any) []any {
+	kept := make([]any, 0, len(elements))
+	for _, held := range elements {
+		if str, isString := held.(string); isString && str == "" {
+			continue
+		}
+
+		kept = append(kept, dropEmptyEnumValues(held))
+	}
+
+	return kept
 }
 
 // datastoreReady reports whether there is a client to call.
@@ -486,44 +562,145 @@ func datastoreReady() bool {
 	return true
 }
 
+// decodeStoredUe decodes a stored UE context. A strict decode that fails is retried
+// without the empty values a strict enum decoder refuses: records written before those
+// values stopped being written are still in deployed databases, and a UE whose record
+// cannot be read is a UE that cannot be paged.
+func decodeStoredUe(result map[string]any) (*AmfUe, error) {
+	ue := &AmfUe{}
+	ue.init()
+	strictErr := gojson.Unmarshal(mapToByte(result), ue)
+	if strictErr == nil {
+		return ue, nil
+	}
+
+	dropEmptyEnumValues(result)
+
+	ue = &AmfUe{}
+	ue.init()
+	if err := gojson.Unmarshal(mapToByte(result), ue); err != nil {
+		return nil, err
+	}
+
+	logger.DataRepoLog.Warnf("read a stored UE context that a strict decode refused (%v); "+
+		"empty values were dropped", strictErr)
+
+	return ue, nil
+}
+
+// beingDeleted counts, per SUPI, the releases deleting its stored context. A lookup that
+// misses the pool falls back to the datastore, and between the UE leaving the pool and
+// its delete landing, that fallback would restore the context being deleted. A count
+// rather than a set, so that one of two overlapping releases of a SUPI does not clear the
+// other's mark. Guarded by restoreMu.
+var beingDeleted = map[string]int{}
+
+// unmarked counts cleared marks, in shards by SUPI. A release moves its SUPI's shard
+// before it clears the mark, so a lookup that finds a mark gone also finds the shard
+// moved. The check has to follow the read, since only the document names the SUPI, and
+// a lookup that took the document before the delete landed can check after the mark has
+// been cleared; the count is how it knows to read again. Sharded so that a release of
+// one UE seldom makes a lookup for another read again. Nothing is held across the
+// datastore read.
+var unmarked [256]atomic.Uint64
+
+var unmarkedSeed = maphash.MakeSeed()
+
+func unmarkedShard(supi string) int {
+	return int(maphash.String(unmarkedSeed, supi) % uint64(len(unmarked)))
+}
+
+// unmarkedNow copies every shard: a lookup takes it before its read, when it does not
+// yet know which SUPI the document names.
+func unmarkedNow() (counts [len(unmarked)]uint64) {
+	for i := range unmarked {
+		counts[i] = unmarked[i].Load()
+	}
+	return counts
+}
+
+// restoreMu makes a release's mark and a lookup's last check-and-publish exclusive. A
+// lookup that publishes first has its UE taken out of UePool by the release that
+// follows, since Remove deletes by SUPI; one that checks after the mark finds it. Both
+// hold it for map operations only, never across the datastore.
+var restoreMu sync.Mutex
+
+// restoreAttempts bounds how often a lookup reads again because a release finished during
+// its read. A lookup that runs out treats the UE as absent rather than risk restoring a
+// deleted context.
+const restoreAttempts = 3
+
+// RemoveUeAndDeleteItsContext removes the UE and deletes its stored context, and keeps a
+// lookup in between from restoring that context: the UE is marked before it leaves the
+// pool, and the mark is cleared once the delete -- synchronous -- has landed.
+func RemoveUeAndDeleteItsContext(ue *AmfUe) {
+	if supi := ue.GetSupi(); len(supi) > 0 {
+		markBeingDeleted(supi)
+		defer clearBeingDeleted(supi)
+	}
+
+	ue.Remove()
+	DeleteContextFromDB(ue)
+}
+
+func markBeingDeleted(supi string) {
+	restoreMu.Lock()
+	beingDeleted[supi]++
+	restoreMu.Unlock()
+}
+
+func clearBeingDeleted(supi string) {
+	unmarked[unmarkedShard(supi)].Add(1)
+
+	restoreMu.Lock()
+	beingDeleted[supi]--
+	if beingDeleted[supi] == 0 {
+		delete(beingDeleted, supi)
+	}
+	restoreMu.Unlock()
+}
+
+// DbFetch restores a stored UE context and publishes it to the pools, or returns the UE the
+// AMF already holds for that SUPI rather than replace it. A lookup by SUPI, GUTI or
+// AMF-UE-NGAP-ID all arrive here, and nothing after it publishes the UE again: the check
+// against a release and the publication are one step, and a second publication by the
+// caller would follow the check without it.
 func DbFetch(collName string, filter bson.M) *AmfUe {
 	if !datastoreReady() {
 		return nil
 	}
-	ue := &AmfUe{}
-	ue.init()
+	for range restoreAttempts {
+		if ue, readAgain := dbFetchOnce(collName, filter); !readAgain {
+			return ue
+		}
+	}
+	logger.DataRepoLog.Warnf("not restoring the stored context matching %v: releases kept finishing during the lookup", filter)
+
+	return nil
+}
+
+// dbFetchOnce reads and restores once. readAgain reports that a release finished during
+// the read: if it was this UE's, its delete has landed and the document read may be the
+// one it deleted, so nothing was published and the caller should read again.
+func dbFetchOnce(collName string, filter bson.M) (ue *AmfUe, readAgain bool) {
+	unmarkedBefore := unmarkedNow()
 	result, getOneErr := mongoapi.CommonDBClient.RestfulAPIGetOne(collName, filter)
 	if getOneErr != nil {
 		logger.DataRepoLog.Warnln(getOneErr)
 	}
 
 	if len(result) == 0 {
-		return nil
+		return nil, false
 	}
 
-	err := sonic.Unmarshal(mapToByte(result), ue)
+	ue, err := decodeStoredUe(result)
 	if err != nil {
-		// Retry without the empty values a strict enum decoder refuses. Records written
-		// before those values stopped being written are still in deployed databases,
-		// and a UE whose record cannot be read is a UE that cannot be paged.
-		strictErr := err
+		// Not the same thing as an absent document, and conflating them is what hid
+		// this for months: the context is there and unreadable, which is a fault to fix
+		// rather than a subscriber to go looking for.
+		logger.DataRepoLog.Errorf("stored UE context exists but could not be decoded: %v", err)
 
-		dropEmptyEnumValues(result)
-
-		ue = &AmfUe{}
-		ue.init()
-
-		if err = sonic.Unmarshal(mapToByte(result), ue); err != nil {
-			// Not the same thing as an absent document, and conflating them is what
-			// hid this for months: the context is there and unreadable, which is a
-			// fault to fix rather than a subscriber to go looking for.
-			logger.DataRepoLog.Errorf("stored UE context exists but could not be decoded: %v", err)
-
-			return nil
-		}
-
-		logger.DataRepoLog.Warnf("read a stored UE context that a strict decode refused (%v); "+
-			"empty values were dropped", strictErr)
+		return nil, false
 	}
 
 	dbMutex.Lock()
@@ -538,7 +715,7 @@ func DbFetch(collName string, filter bson.M) *AmfUe {
 		// Callers already handle a nil return from this function.
 		logger.DataRepoLog.Errorln("amfue restored without a 3GPP RanUe, discarding it")
 
-		return nil
+		return nil, false
 	}
 
 	ranUe.SetAmfUe(ue)
@@ -557,11 +734,53 @@ func DbFetch(collName string, filter bson.M) *AmfUe {
 	// while the restore is still running -- and since a request for a UE with no event
 	// channel now runs its handler inline rather than failing, that reader reaches the
 	// procedure and the per-UE loggers it uses.
-	AMF_Self().RanUePool.Store(ranUe.AmfUeNgapId, ranUe)
-	AMF_Self().UePool.Store(ue.Supi, ue)
+	// Checked against a release under the lock its mark takes, and published in the same
+	// hold. A release of this UE is either already marked when the check runs, and the
+	// check sees the mark or the shard its clearing moved, or it cannot mark until the
+	// publication is done, and its Remove then takes the UE out of UePool.
+	shard := unmarkedShard(ue.Supi)
+	restoreMu.Lock()
+	deleting := beingDeleted[ue.Supi] > 0
+	releasedDuringRead := unmarked[shard].Load() != unmarkedBefore[shard]
+	var held *AmfUe
+	if !deleting && !releasedDuringRead {
+		// Published only if the AMF does not already hold this UE. One it holds is newer than
+		// any stored copy -- another restore published it, or the UE is live and this lookup
+		// came by an id it no longer has -- and a second context would split the UE's state
+		// between them.
+		//
+		// Under the new UE's own lock, across both writes. From the UePool write on, any
+		// lookup can find the UE, and a Remove started then -- releaseUEContextProcedure calls
+		// one directly, with no mark -- would delete both pool entries before the RanUe's is
+		// written, which would then publish a removed RanUe under a released id. Remove takes
+		// this lock first, so it waits until both writes are done.
+		ue.Mutex.Lock()
+		if value, loaded := AMF_Self().UePool.LoadOrStore(ue.Supi, ue); loaded {
+			held = value.(*AmfUe)
+		} else if ranUe.AmfUeNgapId != 0 {
+			// A context stored without a RAN association restores a RanUe carrying
+			// AmfUeNgapId 0. Nothing may find it by that id, and every such context would
+			// otherwise claim the same key.
+			ranUe.markRestored()
+			AMF_Self().RanUePool.Store(ranUe.AmfUeNgapId, ranUe)
+		}
+		ue.Mutex.Unlock()
+	}
+	restoreMu.Unlock()
+
+	switch {
+	case deleting:
+		logger.DataRepoLog.Infof("not restoring the stored context for %s: its release is deleting it", ue.Supi)
+		return nil, false
+	case releasedDuringRead:
+		return nil, true
+	case held != nil:
+		logger.DataRepoLog.Infof("not restoring the stored context for %s: the AMF already holds it", ue.Supi)
+		return held, false
+	}
 
 	ue.TxLog.Debugln("amfue fetched")
-	return ue
+	return ue, false
 }
 
 func DbFetchRanUeByRanUeNgapID(ranUeNgapID int64, ran *AmfRan) *RanUe {
@@ -580,7 +799,9 @@ func DbFetchRanUeByRanUeNgapID(ranUeNgapID int64, ran *AmfRan) *RanUe {
 	// round today -- RanUe.Remove releases the UE lock before it takes the RAN one, and
 	// RemoveAllUeInRan snapshots under a read lock and releases it before removing anything --
 	// so this is an ordering to keep rather than a cycle to break. Taking ue.Mutex while holding
-	// ran.ranStateMu is fine; taking ran.ranStateMu while holding ue.Mutex would not be.
+	// ran.ranStateMu is fine; taking ran.ranStateMu while holding ue.Mutex would not be. The UE
+	// may be one the AMF already holds, which DbFetch returns in place of its stored copy; the
+	// same order covers it.
 	//
 	// DbFetch above takes it once more, under dbMutex, making that call ran.ranStateMu ->
 	// dbMutex -> ue.Mutex. That one cannot contend with anything: the UE it locks was
@@ -596,7 +817,14 @@ func DbFetchRanUeByRanUeNgapID(ranUeNgapID int64, ran *AmfRan) *RanUe {
 	if ranUe != nil {
 		return ranUe
 	}
-	return ue.GetRanUe(models.ACCESSTYPE__3_GPP_ACCESS)
+	// RAN-UE-NGAP-IDs are per RAN, so the RanUe has to be on this one as well. A UE the AMF
+	// already holds may have a newer RanUe, or none -- its release may have removed it -- and
+	// then the id names no RanUe: the caller would otherwise move the UE's current one here.
+	ranUe = ue.GetRanUe(models.ACCESSTYPE__3_GPP_ACCESS)
+	if ranUe == nil || ranUe.RanUeNgapId != ranUeNgapID || ranUe.Ran == nil || ranUe.Ran.GnbId != ran.GnbId {
+		return nil
+	}
+	return ranUe
 }
 
 func DbFetchRanUeByAmfUeNgapID(amfUeNgapID int64) *RanUe {
@@ -618,7 +846,13 @@ func DbFetchRanUeByAmfUeNgapID(amfUeNgapID int64) *RanUe {
 	if ranUe != nil {
 		return ranUe
 	}
-	return ue.GetRanUe(models.ACCESSTYPE__3_GPP_ACCESS)
+	// A UE the AMF already holds may have a newer RanUe, or none -- its release may have
+	// removed it -- and then the id names no RanUe.
+	ranUe = ue.GetRanUe(models.ACCESSTYPE__3_GPP_ACCESS)
+	if ranUe == nil || ranUe.AmfUeNgapId != amfUeNgapID {
+		return nil
+	}
+	return ranUe
 }
 
 func DbFetchUeByGuti(guti string) (ue *AmfUe, ok bool) {
@@ -674,7 +908,6 @@ func DbFetchAllEntries() (ueList []*AmfUe) {
 	if !datastoreReady() {
 		return nil
 	}
-	ue := &AmfUe{}
 	filter := bson.M{}
 	results, getManyErr := mongoapi.CommonDBClient.RestfulAPIGetMany(AmfUeDataColl, filter)
 	if getManyErr != nil {
@@ -682,12 +915,12 @@ func DbFetchAllEntries() (ueList []*AmfUe) {
 	}
 
 	for _, val := range results {
-		ue = &AmfUe{}
-		ue.init()
-		err := sonic.Unmarshal(mapToByte(val), ue)
+		// One record that cannot be read is left out and reported, not allowed to
+		// empty the whole list.
+		ue, err := decodeStoredUe(val)
 		if err != nil {
-			logger.DataRepoLog.Errorf("amfue unmarshal error: %v", err)
-			return nil
+			logger.DataRepoLog.Errorf("stored UE context exists but could not be decoded: %v", err)
+			continue
 		}
 		ueList = append(ueList, ue)
 	}

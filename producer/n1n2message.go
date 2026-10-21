@@ -26,7 +26,7 @@ import (
 	"github.com/omec-project/util/httpwrapper"
 )
 
-func ProducerHandler(ctx ctxt.Context, s1, s2 string, msg interface{}) (interface{}, string, interface{}, interface{}) {
+func ProducerHandler(ctx ctxt.Context, s1, s2 string, msg any) (any, string, any, any) {
 	if msg == nil {
 		r1, r2 := N1N2MessageTransferStatusProcedure(s1, s2)
 		// &r1, not r1: N1N2MessageTransferCause is a string type, so boxing the value
@@ -65,30 +65,6 @@ func HandleN1N2MessageTransferRequest(request *httpwrapper.Request) *httpwrapper
 		return httpwrapper.NewResponse(int(problemDetails.GetStatus()), nil, problemDetails)
 	}
 
-	// If EventChannel is nil (e.g. UE context restored from DB after restart),
-	// call the procedure directly — it already handles CM-IDLE/paging correctly.
-	if ue.EventChannel == nil {
-		logger.ProducerLog.Warnln("EventChannel is nil for UE, invoking N1N2MessageTransferProcedure directly")
-		rspData, locHeader, pd, txErr := N1N2MessageTransferProcedure(ueContextID, reqUri, n1n2MessageTransferRequest)
-		if pd != nil {
-			return httpwrapper.NewResponse(int(pd.GetStatus()), nil, pd)
-		} else if txErr != nil {
-			return httpwrapper.NewResponse(int(txErr.Error.GetStatus()), nil, txErr)
-		} else if rspData != nil {
-			switch rspData.Cause {
-			case models.N1N2MESSAGETRANSFERCAUSE_N1_MSG_NOT_TRANSFERRED:
-				fallthrough
-			case models.N1N2MESSAGETRANSFERCAUSE_N1_N2_TRANSFER_INITIATED:
-				return httpwrapper.NewResponse(http.StatusOK, nil, rspData)
-			case models.N1N2MESSAGETRANSFERCAUSE_ATTEMPTING_TO_REACH_UE:
-				headers := http.Header{headerLocation: {locHeader}}
-				return httpwrapper.NewResponse(http.StatusAccepted, headers, rspData)
-			}
-		}
-		problemDetails = utils.ProblemDetailsUnspecified()
-		return httpwrapper.NewResponse(int(problemDetails.GetStatus()), nil, problemDetails)
-	}
-
 	sbiMsg := context.SbiMsg{
 		UeContextId: ueContextID,
 		ReqUri:      reqUri,
@@ -97,9 +73,7 @@ func HandleN1N2MessageTransferRequest(request *httpwrapper.Request) *httpwrapper
 	}
 	var n1n2MessageTransferRspData *models.N1N2MessageTransferRspData
 	var transferErr *models.N1N2MessageTransferError
-	ue.EventChannel.UpdateSbiHandler(ProducerHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(ProducerHandler, sbiMsg)
 	if msg.RespData != nil {
 		n1n2MessageTransferRspData = msg.RespData.(*models.N1N2MessageTransferRspData)
 	}
@@ -507,24 +481,13 @@ func HandleN1N2MessageTransferStatusRequest(request *httpwrapper.Request) *httpw
 		return httpwrapper.NewResponse(int(problemDetails.GetStatus()), nil, problemDetails)
 	}
 
-	if ue.EventChannel == nil {
-		logger.CommLog.Warnln("EventChannel is nil for UE, invoking N1N2MessageTransferStatusProcedure directly")
-		status, pd := N1N2MessageTransferStatusProcedure(ueContextID, reqUri)
-		if pd != nil {
-			return httpwrapper.NewResponse(int(pd.GetStatus()), nil, pd)
-		}
-		return httpwrapper.NewResponse(http.StatusOK, nil, &status)
-	}
-
 	sbiMsg := context.SbiMsg{
 		UeContextId: ueContextID,
 		ReqUri:      reqUri,
 		Msg:         nil,
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
-	ue.EventChannel.UpdateSbiHandler(ProducerHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(ProducerHandler, sbiMsg)
 
 	var n1n2MessageRspData *models.N1N2MessageTransferCause
 	if msg.RespData != nil {
@@ -573,24 +536,13 @@ func HandleN1N2MessageSubscirbeRequest(request *httpwrapper.Request) *httpwrappe
 		return httpwrapper.NewResponse(int(problemDetails.GetStatus()), nil, problemDetails)
 	}
 
-	if ue.EventChannel == nil {
-		logger.CommLog.Warnln("EventChannel is nil for UE, invoking N1N2MessageSubscribeProcedure directly")
-		createdData, pd := N1N2MessageSubscribeProcedure(ueContextID, ueN1N2InfoSubscriptionCreateData)
-		if pd != nil {
-			return httpwrapper.NewResponse(int(pd.GetStatus()), nil, pd)
-		}
-		return httpwrapper.NewResponse(http.StatusCreated, nil, createdData)
-	}
-
 	sbiMsg := context.SbiMsg{
 		UeContextId: ueContextID,
 		ReqUri:      "",
 		Msg:         ueN1N2InfoSubscriptionCreateData,
 		Result:      make(chan context.SbiResponseMsg, 10),
 	}
-	ue.EventChannel.UpdateSbiHandler(ProducerHandler)
-	ue.EventChannel.SubmitMessage(sbiMsg)
-	msg := <-sbiMsg.Result
+	msg := ue.DispatchSbiMsg(ProducerHandler, sbiMsg)
 
 	var n1n2MessageRspData *models.UeN1N2InfoSubscriptionCreatedData
 	if msg.RespData != nil {
