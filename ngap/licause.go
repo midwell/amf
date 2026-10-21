@@ -5,7 +5,7 @@ package ngap
 
 import (
 	"github.com/omec-project/amf/lawfulintercept"
-	"github.com/omec-project/li/iri"
+	"github.com/omec-project/util/li/iri"
 )
 
 // NGAP and TS 33.128 describe the same five Cause groups and number them differently: NGAP
@@ -31,9 +31,9 @@ import (
 //
 // The names in the comments are what makes the arithmetic checkable:
 // TestTheCauseMappingIsTotalOverNGAP derives the correspondence from the two definitions *by
-// name* — the TS 33.128 module carried in the pinned `li` module, and the NGAP constants — and
-// asserts this function agrees with it. So the implementation is arithmetic and a list, and its
-// test's source of truth is neither.
+// name* — the TS 33.128 module carried under `li/` in the pinned util module, and the NGAP
+// constants — and asserts this function agrees with it. So the implementation is arithmetic
+// and a list, and its test's source of truth is neither.
 
 // unrepresentableRadioNetwork are the NGAP CauseRadioNetwork values TS 33.128 has no value for.
 //

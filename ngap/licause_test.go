@@ -13,9 +13,9 @@ import (
 	"testing"
 
 	"github.com/omec-project/amf/lawfulintercept"
-	"github.com/omec-project/li/iri"
 	"github.com/omec-project/ngap/v2/aper"
 	"github.com/omec-project/ngap/v2/ngapType"
+	"github.com/omec-project/util/li/iri"
 )
 
 // The two definitions this mapping sits between, read rather than restated.
@@ -73,7 +73,7 @@ var causeGroups = []struct {
 	}},
 }
 
-// ts33128Module locates the TS 33.128 ASN.1 module inside the pinned `li` module.
+// ts33128Module locates the TS 33.128 ASN.1 module under `li/` in the pinned util module.
 //
 // Read from the module cache rather than copied here, so the assertion follows the pin: bumping
 // `li` to a release built against a later TS 33.128 changes what these tests check against,
@@ -91,20 +91,20 @@ func ts33128Module(t *testing.T) string {
 	// If this cannot find the module, the environment cannot check the mapping, and saying so
 	// loudly is the only useful answer.
 	out, err := exec.CommandContext(t.Context(),
-		"go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/li").Output()
+		"go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/util").Output()
 	if err != nil {
-		t.Fatalf("cannot locate the li module (%v); this test checks the cause mapping against "+
+		t.Fatalf("cannot locate the util module (%v); this test checks the cause mapping against "+
 			"the TS 33.128 module that module carries, and without it nothing here is checked", err)
 	}
 
 	dir := strings.TrimSpace(string(out))
 
 	// **The pin, asserted rather than assumed.** Under the workspace `go list -m` answers with
-	// the local ./li checkout, not the version go.mod pins — so these tests can check the
+	// the local ./util checkout, not the version go.mod pins — so these tests can check the
 	// mapping against a module the shipped binary does not contain. Harmless while the two
 	// agree, load-bearing the moment they diverge, which is exactly when a cause mapping would
 	// silently stop corresponding.
-	if want := pinnedLiVersion(t); want != "" {
+	if want := pinnedUtilVersion(t); want != "" {
 		switch {
 		case strings.Contains(dir, "/pkg/mod/"):
 			// Resolved from the module cache, so the pin is what was checked and can be
@@ -122,9 +122,9 @@ func ts33128Module(t *testing.T) string {
 		}
 	}
 
-	path := filepath.Join(dir, "iri", "testdata", "asn1", "TS33128Payloads.asn")
+	path := filepath.Join(dir, "li", "iri", "testdata", "asn1", "TS33128Payloads.asn")
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("the li module at %s does not carry %s (%v)", dir, path, err)
+		t.Fatalf("the util module at %s does not carry %s (%v)", dir, path, err)
 	}
 
 	return path
@@ -502,15 +502,16 @@ func TestAHandoverTypeBeyondNGAPIsSubstituted(t *testing.T) {
 	}
 }
 
-// pinnedLiVersion is the li version this module actually builds against, or "" if it cannot be
-// read. It is used to say which module these assertions ran against rather than leaving it assumed.
+// pinnedUtilVersion is the util version, which carries li, that this module actually builds
+// against, or "" if it cannot be read. It is used to say which module these assertions ran
+// against rather than leaving it assumed.
 //
-// **The replace directive governs, not the require.** go.mod names li twice — a `require` at
+// **The replace directive governs, not the require.** go.mod names util twice — a `require` at
 // whatever version the dependency graph settled on, and a `replace` pointing at the fork this
 // project ships. The replacement is what is compiled, and the require line is only a floor, so
 // reading the first matching line answers with a version nothing builds against. That is not
 // hypothetical: it is how this helper was first written, and this test caught it.
-func pinnedLiVersion(t *testing.T) string {
+func pinnedUtilVersion(t *testing.T) string {
 	t.Helper()
 
 	mod, err := os.ReadFile("../go.mod")
@@ -522,7 +523,7 @@ func pinnedLiVersion(t *testing.T) string {
 
 	for _, line := range strings.Split(string(mod), "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "omec-project/li") && !strings.Contains(line, "midwell/li") {
+		if !strings.Contains(line, "omec-project/util") && !strings.Contains(line, "midwell/util") {
 			continue
 		}
 

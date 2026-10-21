@@ -11,9 +11,9 @@ import (
 	"time"
 
 	amfctx "github.com/omec-project/amf/context"
-	"github.com/omec-project/li/store"
-	"github.com/omec-project/li/types"
-	"github.com/omec-project/li/x2x3"
+	"github.com/omec-project/util/li/store"
+	"github.com/omec-project/util/li/types"
+	"github.com/omec-project/util/li/x2x3"
 )
 
 // attrsOf indexes a PDU's conditional attributes by type, keeping every occurrence:

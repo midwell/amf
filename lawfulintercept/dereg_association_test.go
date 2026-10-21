@@ -6,9 +6,9 @@ package lawfulintercept
 import (
 	"testing"
 
-	"github.com/omec-project/li/iri"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
+	"github.com/omec-project/util/li/iri"
 )
 
 // TestADeregistrationRecordNamesTheScopeTheElementActedOn is the mapping half of the

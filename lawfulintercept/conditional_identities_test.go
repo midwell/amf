@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	amfctx "github.com/omec-project/amf/context"
-	"github.com/omec-project/li/iri"
 	"github.com/omec-project/openapi/v2/models"
+	"github.com/omec-project/util/li/iri"
 )
 
 // The conditional identity members of TS 33.128 that the AMF holds and did not

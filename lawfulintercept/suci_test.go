@@ -7,7 +7,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/omec-project/li/iri"
+	"github.com/omec-project/util/li/iri"
 )
 
 // suciNAS builds the raw 5GS mobile identity octets a UE sends for a SUCI, so the

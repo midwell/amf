@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/omec-project/li/store"
-	"github.com/omec-project/li/x1"
+	"github.com/omec-project/util/li/store"
+	"github.com/omec-project/util/li/x1"
 )
 
 // liPKI writes a throwaway LI certificate, key and trust anchor, and returns their

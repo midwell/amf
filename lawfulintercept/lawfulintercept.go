@@ -21,15 +21,15 @@ import (
 	"time"
 
 	amfctx "github.com/omec-project/amf/context"
-	"github.com/omec-project/li/iri"
-	"github.com/omec-project/li/mtls"
-	"github.com/omec-project/li/store"
-	"github.com/omec-project/li/types"
-	"github.com/omec-project/li/x1"
-	"github.com/omec-project/li/x2x3"
 	"github.com/omec-project/nas/v2"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
+	"github.com/omec-project/util/li/iri"
+	"github.com/omec-project/util/li/mtls"
+	"github.com/omec-project/util/li/store"
+	"github.com/omec-project/util/li/types"
+	"github.com/omec-project/util/li/x1"
+	"github.com/omec-project/util/li/x2x3"
 )
 
 // Config configures the AMF LI IRI-POI. Init is only called when LI is enabled.

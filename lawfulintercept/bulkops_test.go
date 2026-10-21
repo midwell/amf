@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/omec-project/li/store"
-	"github.com/omec-project/li/types"
-	"github.com/omec-project/li/x2x3"
+	"github.com/omec-project/util/li/store"
+	"github.com/omec-project/util/li/types"
+	"github.com/omec-project/util/li/x2x3"
 )
 
 // admfPeerCert issues the certificate the test ADMF presents on X1, binding its identifier to the

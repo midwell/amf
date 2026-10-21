@@ -9,12 +9,12 @@ import (
 	"time"
 
 	amfctx "github.com/omec-project/amf/context"
-	"github.com/omec-project/li/store"
-	"github.com/omec-project/li/types"
-	"github.com/omec-project/li/x2x3"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/fsm"
+	"github.com/omec-project/util/li/store"
+	"github.com/omec-project/util/li/types"
+	"github.com/omec-project/util/li/x2x3"
 )
 
 // registeredTargets puts n registered UEs one warrant covers into the pool.

@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/omec-project/li/iri"
 	"github.com/omec-project/nas/v2/nasMessage"
+	"github.com/omec-project/util/li/iri"
 )
 
 // suciFromNAS builds a TS 33.128 SUCI record member from the raw 5GS mobile
