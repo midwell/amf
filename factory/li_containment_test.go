@@ -135,13 +135,13 @@ configuration:
 		}
 	})
 
-	for _, typo := range []string{"keepaliveTimeut", "admf_url"} {
+	for _, typo := range []string{typoKeepaliveTimeout, typoAdmfURL} {
 		t.Run(typo, func(t *testing.T) {
 			orig := AmfConfig
 			t.Cleanup(func() { AmfConfig = orig; liBlockErr = nil })
 
 			body := strings.Replace(good, "keepaliveTimeout", typo, 1)
-			if typo == "admf_url" {
+			if typo == typoAdmfURL {
 				body = strings.Replace(good, "admfUrl", typo, 1)
 			}
 

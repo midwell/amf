@@ -38,8 +38,8 @@ func TestNumberingReturnsToZeroWhenEveryWarrantIsWithdrawn(t *testing.T) {
 
 	sub := &subsystem{
 		store: store.New(),
-		neID:  "amf-1",
-		ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		neID:  testNEID,
+		ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 	}
 	awaitScans(t, sub)
 

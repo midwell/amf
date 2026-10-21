@@ -19,6 +19,21 @@ import (
 	"github.com/omec-project/util/fsm"
 )
 
+// Identities and addresses shared across this package's tests.
+const (
+	testNEID        = "amf-1"
+	testADMFID      = "admf-1"
+	testAgencyAddr  = "10.0.60.122:42069"
+	testAgency2Addr = "10.0.60.99:42069"
+	testX1Listen    = "127.0.0.1:0"
+	testOtherDID    = "33333333-3333-4333-8333-333333333333"
+	testSUPI        = "imsi-" + testTargetSUPI
+	testPEI         = "imeisv-3534250000000151"
+	testGPSI        = "msisdn-4915123456789"
+	testX2Only      = "X2Only"
+	testKeepaliveP2 = "30s"
+)
+
 // captureSender records the xIRI PDUs delivered, standing in for the X2 client
 // so tests can assert per-warrant delivery isolation.
 type captureSender struct{ pdus []*x2x3.PDU }
@@ -32,17 +47,17 @@ func (c *captureSender) Send(p *x2x3.PDU) error {
 // mapping tests.
 func targetIdentity() amfctx.UeIdentity {
 	return amfctx.UeIdentity{
-		Supi: "imsi-262019876543210",
-		Pei:  "imeisv-3534250000000151",
-		Gpsi: "msisdn-4915123456789",
+		Supi: testSUPI,
+		Pei:  testPEI,
+		Gpsi: testGPSI,
 	}
 }
 
 func TestTargetsOf(t *testing.T) {
 	id := amfctx.UeIdentity{
-		Supi: "imsi-262019876543210",
-		Pei:  "imeisv-3534250000000151",
-		Gpsi: "msisdn-4915123456789",
+		Supi: testSUPI,
+		Pei:  testPEI,
+		Gpsi: testGPSI,
 	}
 	got := targetsOf(id)
 	want := map[types.TargetIdentifierType]string{
@@ -67,9 +82,9 @@ func TestTargetsOf(t *testing.T) {
 
 func TestAMFRegistrationMapping(t *testing.T) {
 	id := amfctx.UeIdentity{
-		Supi: "imsi-262019876543210",
+		Supi: testSUPI,
 		Pei:  "imei-353425000000015",
-		Gpsi: "msisdn-4915123456789",
+		Gpsi: testGPSI,
 	}
 	reg := amfRegistration(id)
 	if reg.RegistrationResult != iri.RegResult3GPPAccess {
@@ -274,18 +289,18 @@ func TestDeliveryIsolation(t *testing.T) {
 	// which is the path every deployment predating the ListOfDIDs requirement is on, and
 	// which this test therefore also pins.
 	active.Store(&subsystem{
-		ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 		store: st, senderFor: func(string) sender { return capture },
-		mdf2: "10.0.60.122:42069",
+		mdf2: testAgencyAddr,
 	})
 	t.Cleanup(func() { active.Store(nil) })
 
 	// Exercised through the exported entry point, so the snapshot is taken the
 	// way a live NAS path takes it.
 	ReportRegistration(&amfctx.AmfUe{
-		Supi: "imsi-262019876543210",
-		Pei:  "imeisv-3534250000000151",
-		Gpsi: "msisdn-4915123456789",
+		Supi: testSUPI,
+		Pei:  testPEI,
+		Gpsi: testGPSI,
 	})
 
 	if len(capture.pdus) != 2 {
@@ -374,7 +389,7 @@ func TestFiveGGUTIPrefersTheUEsOwnGUTI(t *testing.T) {
 // duplicate visible if the guard in HandleRegistrationComplete is ever removed.
 func TestMobilityUpdateIsReportedOnce(t *testing.T) {
 	id := amfctx.UeIdentity{
-		Supi:                "imsi-262019876543210",
+		Supi:                testSUPI,
 		RegistrationType5GS: nasMessage.RegistrationType5GSMobilityRegistrationUpdating,
 	}
 	if _, ok := registrationEvent(id).(iri.AMFLocationUpdate); !ok {
@@ -448,15 +463,15 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 
 	capture := newAddressCapture()
 	active.Store(&subsystem{
-		ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 		store: st, senderFor: capture.senderFor,
 		// Configured, and deliberately neither agency's address: if the fix were absent
 		// this is where both records would arrive, and the assertion below would say so.
-		mdf2: "10.0.60.99:42069",
+		mdf2: testAgency2Addr,
 	})
 	t.Cleanup(func() { active.Store(nil) })
 
-	ReportRegistration(&amfctx.AmfUe{Supi: "imsi-262019876543210"})
+	ReportRegistration(&amfctx.AmfUe{Supi: testSUPI})
 
 	for _, c := range []struct{ addr, xid string }{{agencyA, xidA}, {agencyB, xidB}} {
 		got := capture.sent[c.addr]
@@ -469,7 +484,7 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 			t.Errorf("%s received a record for a warrant it was not provisioned for", c.addr)
 		}
 	}
-	if n := len(capture.sent["10.0.60.99:42069"]); n != 0 {
+	if n := len(capture.sent[testAgency2Addr]); n != 0 {
 		t.Errorf("the configured endpoint received %d records, want 0: both tasks named a destination", n)
 	}
 }
@@ -490,33 +505,33 @@ func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
 		{name: "the task named no destination at all"},
 		{
 			name:       "the task named only a destination that carries content",
-			deliveries: []types.DeliveryEndpoint{{Type: types.DeliveryX3, Address: "10.0.60.122:42069"}},
+			deliveries: []types.DeliveryEndpoint{{Type: types.DeliveryX3, Address: testAgencyAddr}},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			target := types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}
 			st := store.New()
 			st.Activate(types.InterceptTask{
-				XID: "aaaaaaaa-0000-0000-0000-000000000001", Targets: []types.TargetIdentifier{target},
+				XID: testSubstitutionXID, Targets: []types.TargetIdentifier{target},
 				Products: []types.ProductType{types.ProductIRI}, Deliveries: c.deliveries,
 			})
 
 			capture := newAddressCapture()
 			active.Store(&subsystem{
-				ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+				ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 				store: st, senderFor: capture.senderFor,
-				mdf2: "10.0.60.99:42069",
+				mdf2: testAgency2Addr,
 			})
 			t.Cleanup(func() { active.Store(nil) })
 
-			ReportRegistration(&amfctx.AmfUe{Supi: "imsi-262019876543210"})
+			ReportRegistration(&amfctx.AmfUe{Supi: testSUPI})
 
-			if n := len(capture.sent["10.0.60.99:42069"]); n != 1 {
+			if n := len(capture.sent[testAgency2Addr]); n != 1 {
 				t.Errorf("the configured endpoint received %d records, want 1", n)
 			}
 			// And nothing went to the content endpoint: signalling delivered there would
 			// be a disclosure to an endpoint the ADMF designated for something else.
-			if n := len(capture.sent["10.0.60.122:42069"]); n != 0 {
+			if n := len(capture.sent[testAgencyAddr]); n != 0 {
 				t.Errorf("the X3 endpoint received %d xIRI records, want 0", n)
 			}
 		})
@@ -541,19 +556,19 @@ func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
 			target := types.TargetIdentifier{Type: types.TargetSUPI, Value: "262019876543210"}
 			st := store.New()
 			st.Activate(types.InterceptTask{
-				XID: "aaaaaaaa-0000-0000-0000-000000000001", Targets: []types.TargetIdentifier{target},
+				XID: testSubstitutionXID, Targets: []types.TargetIdentifier{target},
 				Products: []types.ProductType{types.ProductIRI}, RecordScope: c.scope,
 			})
 
 			capture := &captureSender{}
 			active.Store(&subsystem{
-				ids:   x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+				ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 				store: st, senderFor: func(string) sender { return capture },
-				mdf2: "10.0.60.99:42069",
+				mdf2: testAgency2Addr,
 			})
 			t.Cleanup(func() { active.Store(nil) })
 
-			ue := &amfctx.AmfUe{Supi: "imsi-262019876543210"}
+			ue := &amfctx.AmfUe{Supi: testSUPI}
 			ReportRegistration(ue) // a general record
 			if got := len(capture.pdus); got != c.wantGeneral {
 				t.Errorf("registration delivered %d records, want %d", got, c.wantGeneral)
@@ -644,7 +659,7 @@ func TestDeliveryFaultWithNoAccountingIsSilent(t *testing.T) {
 // precisely the failure that gets a status answer ignored.
 func TestDestinationsInUseFollowsTheTasking(t *testing.T) {
 	st := store.New()
-	sub := &subsystem{store: st, mdf2: "10.0.60.99:42069"}
+	sub := &subsystem{store: st, mdf2: testAgency2Addr}
 
 	if got := sub.destinationsInUse(); len(got) != 0 {
 		t.Errorf("an element holding no tasking delivers to %v, want nothing", got)
@@ -656,10 +671,10 @@ func TestDestinationsInUseFollowsTheTasking(t *testing.T) {
 		Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: "208930100007488"}},
 		Products: []types.ProductType{types.ProductIRI},
 		Deliveries: []types.DeliveryEndpoint{
-			{Type: types.DeliveryX2, Address: "10.0.60.122:42069"},
+			{Type: types.DeliveryX2, Address: testAgencyAddr},
 		},
 	})
-	if got := sub.destinationsInUse(); len(got) != 1 || got[0] != "10.0.60.122:42069" {
+	if got := sub.destinationsInUse(); len(got) != 1 || got[0] != testAgencyAddr {
 		t.Errorf("destinationsInUse() = %v, want the endpoint the warrant named", got)
 	}
 

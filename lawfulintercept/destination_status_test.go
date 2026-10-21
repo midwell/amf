@@ -22,7 +22,7 @@ import (
 // supplied without anything failing to compile.
 func TestTheX1AnswerCarriesThisElementsOwnDeliveryFault(t *testing.T) {
 	const (
-		admf = "admf-1"
+		admf = testADMFID
 		did  = "11111111-1111-1111-1111-111111111111"
 		addr = "10.0.60.122:42069"
 	)
@@ -34,15 +34,15 @@ func TestTheX1AnswerCarriesThisElementsOwnDeliveryFault(t *testing.T) {
 		unreachableAt: func(a string) bool { return down && a == addr },
 	}
 	cfg := Config{
-		NEID: "amf-1", AdmfID: admf,
-		Destinations: []Destination{{DID: did, DeliveryType: "X2Only", Address: addr}},
+		NEID: testNEID, AdmfID: admf,
+		Destinations: []Destination{{DID: did, DeliveryType: testX2Only, Address: addr}},
 	}
 	srv := newX1Server(st, cfg, sub)
 
 	ask := func(t *testing.T) bool {
 		t.Helper()
-		resp, err := srv.Process(bulkRequest("GetAllDestinationDetailsRequest", admf, "amf-1"),
-			admfPeerCert(t, admf))
+		resp, err := srv.Process(bulkRequest("GetAllDestinationDetailsRequest"),
+			admfPeerCert(t))
 		if err != nil {
 			t.Fatalf("Process: %v", err)
 		}

@@ -24,8 +24,8 @@ var errDelivery = errors.New("MDF unreachable")
 func targetUE() *amfctx.AmfUe {
 	return &amfctx.AmfUe{
 		Supi: "imsi-" + testTargetSUPI,
-		Pei:  "imeisv-3534250000000151",
-		Gpsi: "msisdn-4915123456789",
+		Pei:  testPEI,
+		Gpsi: testGPSI,
 	}
 }
 
@@ -35,7 +35,7 @@ func activateIRI(t *testing.T, snd sender, supi string) {
 	t.Helper()
 	st := store.New()
 	if !st.Activate(types.InterceptTask{
-		XID:      "aaaaaaaa-0000-0000-0000-000000000001",
+		XID:      testSubstitutionXID,
 		Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: supi}},
 		Products: []types.ProductType{types.ProductIRI},
 		State:    types.TaskActive,
@@ -44,8 +44,8 @@ func activateIRI(t *testing.T, snd sender, supi string) {
 	}
 	active.Store(&subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069",
-		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: testAgencyAddr,
+		ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 	})
 	t.Cleanup(func() { active.Store(nil) })
 }

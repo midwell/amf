@@ -30,9 +30,9 @@ func activateIRIReporting(t *testing.T, snd sender, supi, admfURL string) {
 	}
 	active.Store(&subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2:     "10.0.60.122:42069",
-		ids:      x2x3.NewIdentity("amf-1", amfInterceptionPoint),
-		reporter: x1.NewReporter(admfURL, "admf-1", "amf-1", nil),
+		mdf2:     testAgencyAddr,
+		ids:      x2x3.NewIdentity(testNEID, amfInterceptionPoint),
+		reporter: x1.NewReporter(admfURL, testADMFID, testNEID, nil),
 	})
 	t.Cleanup(func() { active.Store(nil) })
 }

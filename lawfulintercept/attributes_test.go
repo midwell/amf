@@ -45,7 +45,7 @@ func seqOf(t *testing.T, pdu *x2x3.PDU) uint32 {
 func activateIRIWithTargets(t *testing.T, snd sender, targets []types.TargetIdentifier, addrs ...string) {
 	t.Helper()
 	task := types.InterceptTask{
-		XID:      "aaaaaaaa-0000-0000-0000-000000000001",
+		XID:      testSubstitutionXID,
 		Targets:  targets,
 		Products: []types.ProductType{types.ProductIRI},
 		State:    types.TaskActive,
@@ -59,8 +59,8 @@ func activateIRIWithTargets(t *testing.T, snd sender, targets []types.TargetIden
 	}
 	active.Store(&subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069",
-		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: testAgencyAddr,
+		ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 	})
 	t.Cleanup(func() { active.Store(nil) })
 }
@@ -80,7 +80,7 @@ func TestXIRICarriesTheSixRequiredAttributes(t *testing.T) {
 
 	// The NFID is the identifier this element asserts on X1, so the mediation function
 	// and the ADMF name the same element.
-	if got := attrs[x2x3.AttrNFID]; len(got) != 1 || got[0] != "amf-1" {
+	if got := attrs[x2x3.AttrNFID]; len(got) != 1 || got[0] != testNEID {
 		t.Errorf("NFID = %q, want the configured network element identifier", got)
 	}
 	if got := attrs[x2x3.AttrIPID]; len(got) != 1 || got[0] != amfInterceptionPoint {
@@ -174,7 +174,7 @@ func TestSequenceNumbersAreOnePerRecordNotPerDestination(t *testing.T) {
 	snd := &captureSender{}
 	activateIRIWithTargets(t, snd,
 		[]types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}},
-		"10.0.60.122:42069", "10.0.60.123:42069")
+		testAgencyAddr, "10.0.60.123:42069")
 
 	ReportRegistration(targetUE())
 	if len(snd.pdus) != 2 {
@@ -240,7 +240,7 @@ func TestDroppedProductLeavesAGap(t *testing.T) {
 // traffic — a network function that crash-loops over its LI configuration announces to
 // every operator with log access that it is LI-provisioned.
 func TestInitRefusesWithoutAnElementIdentifier(t *testing.T) {
-	if err := Init(Config{X1Listen: "127.0.0.1:0"}); !errors.Is(err, errNoElementIdentifier) {
+	if err := Init(Config{X1Listen: testX1Listen}); !errors.Is(err, errNoElementIdentifier) {
 		t.Errorf("Init without a network element identifier returned %v, want errNoElementIdentifier", err)
 	}
 	if active.Load() != nil {
@@ -254,7 +254,7 @@ func TestInitRefusesWithoutAnElementIdentifier(t *testing.T) {
 // the process. It is dropped through the X1 deactivation hook, so this drives it the
 // way an ADMF does rather than by calling the hook directly.
 func TestDeactivationForgetsTheNumbering(t *testing.T) {
-	const xid, admf = "11111111-1111-4111-8111-111111111111", "admf-1"
+	const xid, admf = "11111111-1111-4111-8111-111111111111", testADMFID
 	snd := &captureSender{}
 	st := store.New()
 	st.Activate(types.InterceptTask{
@@ -265,10 +265,10 @@ func TestDeactivationForgetsTheNumbering(t *testing.T) {
 	})
 	sub := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069",
-		neID: "amf-1", ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: testAgencyAddr,
+		neID: testNEID, ids: x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 	}
-	srv := newX1Server(st, Config{NEID: "amf-1", AdmfID: admf}, sub)
+	srv := newX1Server(st, Config{NEID: testNEID, AdmfID: admf}, sub)
 	active.Store(sub)
 	t.Cleanup(func() { active.Store(nil) })
 
@@ -277,7 +277,7 @@ func TestDeactivationForgetsTheNumbering(t *testing.T) {
 		t.Fatalf("delivered %d records over %d contexts, want 1 and 1", len(snd.pdus), sub.ids.Contexts())
 	}
 
-	resp, err := srv.Process(bulkRequest("DeactivateAllTasksRequest", admf, "amf-1"), admfPeerCert(t, admf))
+	resp, err := srv.Process(bulkRequest("DeactivateAllTasksRequest"), admfPeerCert(t))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -389,7 +389,7 @@ func modifyRequest(xid, admfID, neID string, supis ...string) []byte {
 // arrived as an activation followed by a deactivation of the same XID, and the
 // deactivation's release ran after the activation's records were numbered.
 func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
-	const xid, admf = "11111111-1111-4111-8111-111111111111", "admf-1"
+	const xid, admf = "11111111-1111-4111-8111-111111111111", testADMFID
 	const otherSUPI = "262010000000777"
 
 	snd := &captureSender{}
@@ -405,10 +405,10 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 	})
 	sub := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069",
-		neID: "amf-1", ids: x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: testAgencyAddr,
+		neID: testNEID, ids: x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 	}
-	srv := newX1Server(st, Config{NEID: "amf-1", AdmfID: admf}, sub)
+	srv := newX1Server(st, Config{NEID: testNEID, AdmfID: admf}, sub)
 	active.Store(sub)
 	t.Cleanup(func() { active.Store(nil) })
 
@@ -419,7 +419,7 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 
 	// The warrant is retargeted: one identifier goes, one stays. The subject whose
 	// interception continues is the one whose numbering must continue with it.
-	resp, err := srv.Process(modifyRequest(xid, admf, "amf-1", testTargetSUPI, otherSUPI+"1"), admfPeerCert(t, admf))
+	resp, err := srv.Process(modifyRequest(xid, admf, testNEID, testTargetSUPI, otherSUPI+"1"), admfPeerCert(t))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}

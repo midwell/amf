@@ -43,8 +43,8 @@ func countingScanFixture(t *testing.T, task types.InterceptTask) (*subsystem, *w
 	snd := &withdrawingSender{}
 	s := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069",
-		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: testAgencyAddr,
+		ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 	}
 	awaitScans(t, s)
 
@@ -79,7 +79,7 @@ func TestAModificationThatCannotProduceARecordStartsNoScan(t *testing.T) {
 		wantScan bool
 	}{
 		{"destinations only", func(t types.InterceptTask) types.InterceptTask {
-			t.DIDs = []string{"33333333-3333-4333-8333-333333333333"}
+			t.DIDs = []string{testOtherDID}
 
 			return t
 		}, false},
@@ -177,8 +177,8 @@ func TestConcurrentActivationScansAreBounded(t *testing.T) {
 	snd := &withdrawingSender{}
 	s := &subsystem{
 		store: st, senderFor: func(string) sender { return snd },
-		mdf2: "10.0.60.122:42069",
-		ids:  x2x3.NewIdentity("amf-1", amfInterceptionPoint),
+		mdf2: testAgencyAddr,
+		ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 	}
 	awaitScans(t, s)
 

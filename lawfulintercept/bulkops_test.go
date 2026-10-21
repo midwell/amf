@@ -19,25 +19,25 @@ import (
 	"github.com/omec-project/li/x2x3"
 )
 
-// admfPeerCert issues the certificate an ADMF presents on X1, binding identifier to the
+// admfPeerCert issues the certificate the test ADMF presents on X1, binding its identifier to the
 // ADMF role the way TS 103 221-1 annex G does. It is self-signed because nothing here
 // verifies a chain — the server is handed the peer certificate directly, as the TLS layer
 // would hand it one it had already validated — and what is under test is what the element
 // does once the peer is authenticated.
-func admfPeerCert(t *testing.T, identifier string) *x509.Certificate {
+func admfPeerCert(t *testing.T) *x509.Certificate {
 	t.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	binding, err := url.Parse("urn:etsi:li:103221-1:cert-binding:ADMF:" + identifier)
+	binding, err := url.Parse("urn:etsi:li:103221-1:cert-binding:ADMF:" + testADMFID)
 	if err != nil {
 		t.Fatalf("parse binding URN: %v", err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: identifier},
+		Subject:      pkix.Name{CommonName: testADMFID},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		URIs:         []*url.URL{binding},
@@ -55,13 +55,14 @@ func admfPeerCert(t *testing.T, identifier string) *x509.Certificate {
 }
 
 // bulkRequest builds one of the two bulk X1 messages: the one that stops every
-// interception on this element, or the one that removes every destination it holds.
-func bulkRequest(msgType, admfID, neID string) []byte {
+// interception on this element, or the one that removes every destination it holds, sent by
+// the test ADMF to the test element.
+func bulkRequest(msgType string) []byte {
 	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <ns1:X1Request xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ns1:x1RequestMessage xsi:type="ns1:` + msgType + `">
-    <ns1:admfIdentifier>` + admfID + `</ns1:admfIdentifier>
-    <ns1:neIdentifier>` + neID + `</ns1:neIdentifier>
+    <ns1:admfIdentifier>` + testADMFID + `</ns1:admfIdentifier>
+    <ns1:neIdentifier>` + testNEID + `</ns1:neIdentifier>
     <ns1:messageTimestamp>2026-01-01T00:00:00.000000Z</ns1:messageTimestamp>
     <ns1:version>v1.6.1</ns1:version>
     <ns1:x1TransactionId>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</ns1:x1TransactionId>
@@ -80,7 +81,7 @@ func bulkRequest(msgType, admfID, neID string) []byte {
 // arriving as nothing, and the failure it must not introduce is an unstated value arriving
 // as something.
 func TestBulkDeactivationFollowsConfiguration(t *testing.T) {
-	const admfID, neID = "admf-1", "amf-1"
+	const neID = testNEID
 	no := false
 
 	cases := []struct {
@@ -102,12 +103,12 @@ func TestBulkDeactivationFollowsConfiguration(t *testing.T) {
 			})
 			srv := newX1Server(st, Config{
 				NEID:               neID,
-				AdmfID:             admfID,
+				AdmfID:             testADMFID,
 				DeactivateAllTasks: c.configured,
 			}, &subsystem{store: st, neID: neID, ids: x2x3.NewIdentity(neID, amfInterceptionPoint)})
 
-			resp, err := srv.Process(bulkRequest("DeactivateAllTasksRequest", admfID, neID),
-				admfPeerCert(t, admfID))
+			resp, err := srv.Process(bulkRequest("DeactivateAllTasksRequest"),
+				admfPeerCert(t))
 			if err != nil {
 				t.Fatalf("Process: %v", err)
 			}
@@ -151,7 +152,7 @@ func TestBulkDeactivationFollowsConfiguration(t *testing.T) {
 // call is shaped to invite — behaves correctly for bulk deactivation and ignores the
 // operator entirely for bulk removal, and every other test here passes.
 func TestBulkRemovalFollowsConfiguration(t *testing.T) {
-	const admfID, neID = "admf-1", "amf-1"
+	const neID = testNEID
 	yes := true
 
 	cases := []struct {
@@ -168,12 +169,12 @@ func TestBulkRemovalFollowsConfiguration(t *testing.T) {
 			st := store.New()
 			srv := newX1Server(st, Config{
 				NEID:                  neID,
-				AdmfID:                admfID,
+				AdmfID:                testADMFID,
 				RemoveAllDestinations: c.configured,
 			}, &subsystem{store: st, neID: neID, ids: x2x3.NewIdentity(neID, amfInterceptionPoint)})
 
-			resp, err := srv.Process(bulkRequest("RemoveAllDestinationsRequest", admfID, neID),
-				admfPeerCert(t, admfID))
+			resp, err := srv.Process(bulkRequest("RemoveAllDestinationsRequest"),
+				admfPeerCert(t))
 			if err != nil {
 				t.Fatalf("Process: %v", err)
 			}

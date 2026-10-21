@@ -12,11 +12,12 @@ import (
 	"github.com/omec-project/util/fsm"
 )
 
-// dualRegisteredUE is a UE registered over both accesses, which is the only case in
-// which the identifier binding can outlive a deregistration.
-func dualRegisteredUE(threeGPP, nonThreeGPP fsm.StateType) *context.AmfUe {
+// dualRegisteredUE is a UE registered over 3GPP access and in nonThreeGPP over non-3GPP
+// access. Registered on both is the only case in which the identifier binding can outlive
+// a deregistration.
+func dualRegisteredUE(nonThreeGPP fsm.StateType) *context.AmfUe {
 	return &context.AmfUe{State: map[models.AccessType]*fsm.State{
-		models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(threeGPP),
+		models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(context.Registered),
 		models.ACCESSTYPE_NON_3_GPP_ACCESS: fsm.NewState(nonThreeGPP),
 	}}
 }
@@ -40,20 +41,20 @@ func TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased(t *testing.T) {
 	}{
 		{
 			name:      "one access of a dual-registered UE keeps the binding",
-			ue:        dualRegisteredUE(context.Registered, context.Registered),
+			ue:        dualRegisteredUE(context.Registered),
 			arrivedOn: models.ACCESSTYPE__3_GPP_ACCESS,
 			want:      false,
 		},
 		{
 			name:      "both accesses at once releases it",
-			ue:        dualRegisteredUE(context.Registered, context.Registered),
+			ue:        dualRegisteredUE(context.Registered),
 			both:      true,
 			arrivedOn: models.ACCESSTYPE__3_GPP_ACCESS,
 			want:      true,
 		},
 		{
 			name:      "the last access a UE holds releases it",
-			ue:        dualRegisteredUE(context.Registered, context.Deregistered),
+			ue:        dualRegisteredUE(context.Deregistered),
 			arrivedOn: models.ACCESSTYPE__3_GPP_ACCESS,
 			want:      true,
 		},
@@ -85,7 +86,7 @@ func TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased(t *testing.T) {
 // sound for addressing a NAS message, and the wrong default here: an unknown access
 // would silently claim the binding had been released.
 func TestTheDeregistrationScopeIsNotTakenFromAFallback(t *testing.T) {
-	ue := dualRegisteredUE(context.Registered, context.Registered)
+	ue := dualRegisteredUE(context.Registered)
 
 	// A network-initiated deregistration is for one access, and passes false outright.
 	if deregisteringEveryAccess(ue, false, models.ACCESSTYPE__3_GPP_ACCESS) {

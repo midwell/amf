@@ -23,15 +23,15 @@ import (
 // named. The two used to be one test, an empty resolved list, and they are different
 // facts.
 func TestTheConfiguredEndpointServesAnUnnamedDestinationOnly(t *testing.T) {
-	sub := &subsystem{mdf2: "10.0.60.122:42069"}
+	sub := &subsystem{mdf2: testAgencyAddr}
 
 	named := types.InterceptTask{
 		XID:      "11111111-1111-4111-8111-111111111111",
 		Products: []types.ProductType{types.ProductIRI, types.ProductCC},
 		// Named, and resolved — to a destination that carries content and not signalling.
-		DIDs: []string{"33333333-3333-4333-8333-333333333333"},
+		DIDs: []string{testOtherDID},
 		Deliveries: []types.DeliveryEndpoint{{
-			DID: "33333333-3333-4333-8333-333333333333", Type: types.DeliveryX3,
+			DID: testOtherDID, Type: types.DeliveryX3,
 			Address: "10.0.70.9:42069",
 		}},
 	}
@@ -47,7 +47,7 @@ func TestTheConfiguredEndpointServesAnUnnamedDestinationOnly(t *testing.T) {
 		Products: []types.ProductType{types.ProductIRI},
 	}
 	got := sub.x2Destinations(unnamed)
-	if len(got) != 1 || got[0] != "10.0.60.122:42069" {
+	if len(got) != 1 || got[0] != testAgencyAddr {
 		t.Errorf("xIRI for a task naming no destination goes to %v, want the configured MDF2: an "+
 			"ADMF that provisions no destination is the case the fallback exists for, and "+
 			"refusing it would be an outage rather than a conformance fix", got)

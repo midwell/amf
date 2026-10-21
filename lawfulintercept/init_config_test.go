@@ -38,7 +38,7 @@ func liPKI(t *testing.T) (certPath, keyPath, caPath string) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "amf-1"},
+		Subject:               pkix.Name{CommonName: testNEID},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
@@ -145,11 +145,11 @@ func TestUnreadableKeepaliveWindowStopsInterceptionAndTellsTheADMF(t *testing.T)
 	t.Cleanup(func() { active.Store(nil) })
 
 	err := Init(Config{
-		NEID:     "amf-1",
-		X1Listen: "127.0.0.1:0",
-		MDF2:     "10.0.60.122:42069",
+		NEID:     testNEID,
+		X1Listen: testX1Listen,
+		MDF2:     testAgencyAddr,
 		Cert:     cert, Key: key, CACert: ca,
-		AdmfURL: admf.srv.URL, AdmfID: "admf-1",
+		AdmfURL: admf.srv.URL, AdmfID: testADMFID,
 		// The typo this exists for: seconds meant, no unit given.
 		KeepaliveTimeout: "30",
 	})
@@ -185,9 +185,9 @@ func TestAStatedEmptyWindowIsHonoured(t *testing.T) {
 	t.Cleanup(func() { active.Store(nil) })
 
 	if err := Init(Config{
-		NEID:     "amf-1",
-		X1Listen: "127.0.0.1:0",
-		MDF2:     "10.0.60.122:42069",
+		NEID:     testNEID,
+		X1Listen: testX1Listen,
+		MDF2:     testAgencyAddr,
 		Cert:     cert, Key: key, CACert: ca,
 		KeepaliveTimeout: "",
 	}); err != nil {
@@ -218,11 +218,11 @@ func TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess(t *testin
 	t.Cleanup(func() { active.Store(nil) })
 
 	err := Init(Config{
-		NEID:     "amf-1",
-		X1Listen: "127.0.0.1:0",
-		MDF2:     "10.0.60.122:42069",
+		NEID:     testNEID,
+		X1Listen: testX1Listen,
+		MDF2:     testAgencyAddr,
 		Cert:     cert, Key: key, CACert: ca,
-		AdmfURL: admf.srv.URL, AdmfID: "admf-1",
+		AdmfURL: admf.srv.URL, AdmfID: testADMFID,
 		KeepaliveTimeout: "1ns",
 	})
 	if err == nil {
@@ -247,7 +247,7 @@ func TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess(t *testin
 // be > 0", which 1ns satisfies — so the library handed every future caller a panic. It
 // returns instead: no watchdog, rather than a process.
 func TestTheWatchdogRefusesAWindowItCannotMeasure(t *testing.T) {
-	srv := x1.NewServer(store.New(), "amf-1")
+	srv := x1.NewServer(store.New(), testNEID)
 
 	done := make(chan struct{})
 	go func() {
@@ -289,11 +289,11 @@ func TestNoX1ListenAddressStopsInterceptionAndTellsTheADMF(t *testing.T) {
 	t.Cleanup(func() { active.Store(nil) })
 
 	err := Init(Config{
-		NEID: "amf-1",
+		NEID: testNEID,
 		// x1Listen absent. This is the whole fixture.
-		MDF2: "10.0.60.122:42069",
+		MDF2: testAgencyAddr,
 		Cert: cert, Key: key, CACert: ca,
-		AdmfURL: admf.srv.URL, AdmfID: "admf-1",
+		AdmfURL: admf.srv.URL, AdmfID: testADMFID,
 	})
 	if !errors.Is(err, errNoX1Listen) {
 		t.Fatalf("Init returned %v, want errNoX1Listen — an empty address binds successfully on "+

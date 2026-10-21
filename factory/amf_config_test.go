@@ -340,6 +340,13 @@ func TestLiBulkSwitchesAreTriState(t *testing.T) {
 	})
 }
 
+// Misspellings of the two LI keys whose defaults fail unsafely, shared by the tests that
+// check a typo in either stops the network function from starting.
+const (
+	typoKeepaliveTimeout = "keepaliveTimeut"
+	typoAdmfURL          = "admf_url"
+)
+
 // TestLiBlockRefusesUnknownKeys covers the whole startup path, not strictLiBlock alone: the
 // property is that a mistyped LI key stops the network function from starting, and that is only
 // true if InitConfigFactory calls the check.
@@ -387,15 +394,15 @@ configuration:
 		name string
 		typo string
 	}{
-		{"a misspelled fail-safe window", "keepaliveTimeut"},
-		{"a misspelled ADMF endpoint", "admf_url"},
+		{"a misspelled fail-safe window", typoKeepaliveTimeout},
+		{"a misspelled ADMF endpoint", typoAdmfURL},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := AmfConfig
 			t.Cleanup(func() { AmfConfig = orig })
 
 			body := strings.Replace(good, "admfUrl", tt.typo, 1)
-			if tt.typo == "keepaliveTimeut" {
+			if tt.typo == typoKeepaliveTimeout {
 				body = strings.Replace(good, "keepaliveTimeout", tt.typo, 1)
 			}
 			// **Both halves, and the second is the one a previous round lost.** The key must be
