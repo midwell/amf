@@ -47,7 +47,7 @@ func (b *blockingSender) count() int {
 func registeredUE(t *testing.T, supi string) {
 	t.Helper()
 
-	ue := &amfctx.AmfUe{Supi: "imsi-" + supi}
+	ue := &amfctx.AmfUe{Supi: "imsi-" + supi, Guti: testGUTI, Tmsi: 42}
 	ue.State = map[models.AccessType]*fsm.State{
 		models.ACCESSTYPE__3_GPP_ACCESS: fsm.NewState(amfctx.Registered),
 	}
@@ -260,7 +260,7 @@ func TestAWithdrawalDuringAScanStopsTheRemainingRecords(t *testing.T) {
 	// stop. They share a SUPI value the task targets and differ by pool key, which is
 	// all this scan reads them for.
 	for i := range 5 {
-		ue := &amfctx.AmfUe{Supi: "imsi-" + supi}
+		ue := &amfctx.AmfUe{Supi: "imsi-" + supi, Guti: testGUTI, Tmsi: 42}
 		ue.State = map[models.AccessType]*fsm.State{
 			models.ACCESSTYPE__3_GPP_ACCESS: fsm.NewState(amfctx.Registered),
 		}
@@ -325,7 +325,7 @@ func TestARetargetDuringAScanStopsRecordsForThePreviousSubject(t *testing.T) {
 	awaitScans(t, s)
 
 	for i := range 5 {
-		ue := &amfctx.AmfUe{Supi: "imsi-" + subject}
+		ue := &amfctx.AmfUe{Supi: "imsi-" + subject, Guti: testGUTI, Tmsi: 42}
 		ue.State = map[models.AccessType]*fsm.State{
 			models.ACCESSTYPE__3_GPP_ACCESS: fsm.NewState(amfctx.Registered),
 		}

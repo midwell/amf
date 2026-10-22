@@ -26,6 +26,11 @@ func targetUE() *amfctx.AmfUe {
 		Supi: "imsi-" + testTargetSUPI,
 		Pei:  testPEI,
 		Gpsi: testGPSI,
+		// A registered UE holds the GUTI its AMF assigned: PLMN 262-01, AMF identifier
+		// 010203, 5G-TMSI 42. Without one the record's mandatory GUTI would be empty, which
+		// the encoder refuses — as a conformant mediation function would.
+		Guti: testGUTI,
+		Tmsi: 42,
 	}
 }
 

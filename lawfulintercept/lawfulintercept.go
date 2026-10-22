@@ -1292,7 +1292,7 @@ func targetsOf(id amfctx.UeIdentity) []types.TargetIdentifier {
 	if v := afterPrefix(id.Supi, "imsi-", "nai-"); v != "" {
 		ids = append(ids, types.TargetIdentifier{Type: types.TargetSUPI, Value: v})
 	}
-	if v := afterPrefix(id.Pei, "imeisv-", "imei-"); v != "" {
+	if v := peiValue(id.Pei); v != "" {
 		ids = append(ids, types.TargetIdentifier{Type: types.TargetPEI, Value: v})
 	}
 	if v := afterPrefix(id.Gpsi, "msisdn-", "extid-"); v != "" {
@@ -1549,9 +1549,36 @@ func peiChoice(id amfctx.UeIdentity) any {
 		return iri.IMEISV(v)
 	}
 	if v, ok := strings.CutPrefix(id.Pei, "imei-"); ok {
-		return iri.IMEI(v)
+		return iri.IMEI(imeiWithoutCheckDigit(v))
 	}
 	return nil
+}
+
+// peiValue is ue's PEI in the form X1 tasking names it: the IMEISV whole, and the IMEI as
+// fourteen digits.
+func peiValue(pei string) string {
+	if v, ok := strings.CutPrefix(pei, "imeisv-"); ok {
+		return v
+	}
+	if v, ok := strings.CutPrefix(pei, "imei-"); ok {
+		return imeiWithoutCheckDigit(v)
+	}
+	return ""
+}
+
+// imeiWithoutCheckDigit drops the check digit from a fifteen-digit IMEI.
+//
+// The AMF holds a PEI in TS 29.571 form, "imei-" and fifteen digits, because NAS carries the
+// IMEI that way: TS 24.008 clause 10.5.1.4 says "the IMEI is composed of 15 digits", the last
+// being the check digit TS 23.003 computes over the other fourteen. TS 33.128 defines IMEI as
+// NumericString (SIZE(14)) and TS 103 221-1's peiImei as fourteen digits, so both the record
+// and the target identifier X1 tasking names are the TAC and serial number alone. A value of
+// any other length is passed through for the encoder to refuse, rather than guessed at.
+func imeiWithoutCheckDigit(v string) string {
+	if len(v) == 15 {
+		return v[:14]
+	}
+	return v
 }
 
 // gpsiChoice returns ue's GPSI as the iri "gpsi" CHOICE arm (MSISDN), or nil.
@@ -1608,8 +1635,10 @@ func taskTargets(task types.InterceptTask, id amfctx.UeIdentity) bool {
 // the UE is actually known by, which is the whole point of the field.
 //
 // The served-GUAMI list remains the fallback for a UE that has no GUTI yet. If
-// even that is empty the MCC/MNC stay unset, and the codec is left to omit the
-// record's GUTI rather than emit an empty NumericString the schema forbids.
+// even that is empty there is no PLMN to put in a GUTI, so this returns the zero
+// GUTI: a record where the GUTI is optional omits it, and one where it is mandatory
+// is refused by the encoder and reported, rather than sent with an empty MCC and MNC
+// a conformant mediation function would discard.
 func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 	g := iri.FiveGGUTI{FiveGTMSI: iri.FiveGTMSI(uint32(id.Tmsi))}
 
@@ -1621,7 +1650,7 @@ func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 
 	guamis := amfctx.AMF_Self().ServedGuamiList
 	if len(guamis) == 0 {
-		return g
+		return iri.FiveGGUTI{}
 	}
 	sg := guamis[0]
 	g.MCC = iri.MCC(sg.PlmnId.Mcc)

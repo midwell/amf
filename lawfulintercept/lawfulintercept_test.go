@@ -30,6 +30,9 @@ const (
 	testSUPI        = "imsi-" + testTargetSUPI
 	testPEI         = "imeisv-3534250000000151"
 	testGPSI        = "msisdn-4915123456789"
+	// testGUTI is the 5G-GUTI a registered test UE holds: PLMN 262-01, AMF identifier 010203,
+	// 5G-TMSI 42. A record's mandatory GUTI cannot be empty.
+	testGUTI        = "26201" + "010203" + "0000002a"
 	testX2Only      = "X2Only"
 	testKeepaliveP2 = "30s"
 )
@@ -50,6 +53,9 @@ func targetIdentity() amfctx.UeIdentity {
 		Supi: testSUPI,
 		Pei:  testPEI,
 		Gpsi: testGPSI,
+		// The GUTI its AMF assigned; see targetUE.
+		Guti: testGUTI,
+		Tmsi: 42,
 	}
 }
 
@@ -93,7 +99,8 @@ func TestAMFRegistrationMapping(t *testing.T) {
 	if supi, ok := reg.SUPI.(iri.IMSI); !ok || supi != iri.IMSI("262019876543210") {
 		t.Errorf("SUPI = %#v", reg.SUPI)
 	}
-	if pei, ok := reg.PEI.(iri.IMEI); !ok || pei != iri.IMEI("353425000000015") {
+	// Fourteen digits: TS 33.128's IMEI has no check digit. See imeiWithoutCheckDigit.
+	if pei, ok := reg.PEI.(iri.IMEI); !ok || pei != iri.IMEI("35342500000001") {
 		t.Errorf("PEI = %#v", reg.PEI)
 	}
 	if gpsi, ok := reg.GPSI.(iri.MSISDN); !ok || gpsi != iri.MSISDN("4915123456789") {
@@ -301,6 +308,8 @@ func TestDeliveryIsolation(t *testing.T) {
 		Supi: testSUPI,
 		Pei:  testPEI,
 		Gpsi: testGPSI,
+		Guti: testGUTI,
+		Tmsi: 42,
 	})
 
 	if len(capture.pdus) != 2 {
@@ -471,7 +480,7 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 	})
 	t.Cleanup(func() { active.Store(nil) })
 
-	ReportRegistration(&amfctx.AmfUe{Supi: testSUPI})
+	ReportRegistration(&amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42})
 
 	for _, c := range []struct{ addr, xid string }{{agencyA, xidA}, {agencyB, xidB}} {
 		got := capture.sent[c.addr]
@@ -524,7 +533,7 @@ func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
 			})
 			t.Cleanup(func() { active.Store(nil) })
 
-			ReportRegistration(&amfctx.AmfUe{Supi: testSUPI})
+			ReportRegistration(&amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42})
 
 			if n := len(capture.sent[testAgency2Addr]); n != 1 {
 				t.Errorf("the configured endpoint received %d records, want 1", n)
@@ -568,7 +577,7 @@ func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
 			})
 			t.Cleanup(func() { active.Store(nil) })
 
-			ue := &amfctx.AmfUe{Supi: testSUPI}
+			ue := &amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42}
 			ReportRegistration(ue) // a general record
 			if got := len(capture.pdus); got != c.wantGeneral {
 				t.Errorf("registration delivered %d records, want %d", got, c.wantGeneral)
