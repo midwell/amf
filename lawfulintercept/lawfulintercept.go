@@ -349,12 +349,12 @@ func Init(cfg Config) error {
 	if cfg.AdmfURL != "" {
 		reporter = x1.NewReporter(cfg.AdmfURL, cfg.AdmfID, cfg.NEID, mat.ClientTLS())
 	}
-	// The fail-safe window, now that there is somewhere to report a value this element
-	// cannot read. Interception does not start on one — a deployment that asked for the
-	// fail-safe and silently did not get it holds tasking nothing will ever reclaim,
-	// and looks healthy while it does — but the network function does, because an
-	// element that refuses to run over its LI configuration is distinguishable from one
-	// that has none by anybody who can see whether it is running.
+	// The keepalive timers, now that there is somewhere to report a value this element
+	// cannot read (they are read below, once the block itself is trusted). Interception
+	// does not start on one — the element would otherwise run a procedure other than the
+	// one agreed with the agency, and look healthy while it did — but the network function
+	// does, because an element that refuses to run over its LI configuration is
+	// distinguishable from one that has none by anybody who can see whether it is running.
 	// The listener's address, before anything binds it. An empty address is a bind that
 	// succeeds on an unpredictable port rather than one that fails, so nothing downstream
 	// will ever report it — see errNoX1Listen. Reported to the ADMF, because an element that
@@ -363,7 +363,7 @@ func Init(cfg Config) error {
 	// The refused `li` block, now that there is somewhere to report it. Checked before any
 	// value out of that block is used, because the block is exactly what could not be read:
 	// the keys that did decode are not trustworthy as a set, and one of the ones that did not
-	// may be the fail-safe window or the fault endpoint.
+	// may be a keepalive timer or the fault endpoint.
 	if cfg.BlockError != nil {
 		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
 			"this element's interception configuration carries a setting it does not "+

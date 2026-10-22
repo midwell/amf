@@ -228,6 +228,23 @@ func TestTaskTargets(t *testing.T) {
 	if taskTargets(miss, id) {
 		t.Error("non-matching task falsely recognised")
 	}
+
+	// All of a task's criteria must match (TS 103 221-1 table 6.2.1.2-1). This predicate decides
+	// the activation scan, a record's re-validation and whether a UE is covered.
+	both := types.InterceptTask{Targets: []types.TargetIdentifier{
+		{Type: types.TargetSUPI, Value: "262019876543210"},
+		{Type: types.TargetPEI, Value: "3534250000000151"},
+	}}
+	if !taskTargets(both, id) {
+		t.Error("a task naming this UE's SUPI and PEI was not recognised")
+	}
+	otherPEI := types.InterceptTask{Targets: []types.TargetIdentifier{
+		{Type: types.TargetSUPI, Value: "262019876543210"},
+		{Type: types.TargetPEI, Value: "9999999999999999"},
+	}}
+	if taskTargets(otherPEI, id) {
+		t.Error("a task naming a PEI this UE does not present matched on its SUPI alone")
+	}
 }
 
 func TestRegistered(t *testing.T) {

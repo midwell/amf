@@ -175,41 +175,13 @@ func (amf *AMF) Start() {
 	// (An init failure is a deployment/config error; production may route LI
 	// operational logs to a restricted sink per the undetectability requirement.)
 	if li := factory.AmfConfig.Configuration.Li; li != nil {
-		// The fail-safe window is passed on as the operator wrote it, and read inside
-		// Init. Reading it here meant refusing it here, and the refusal was a `return`
-		// from this function — which is not this subsystem's to make. It stopped every
-		// other subsystem too: the service-based interface, NGAP, registration with the
-		// network. The process then exited 0, so a mistyped duration in an optional
-		// block became a restart loop carrying a success code.
-		//
-		// Inside Init the refusal is scoped to interception, and the fault reporter
-		// exists by then — so the ADMF is told that this element is not intercepting,
-		// which nothing here could have told it.
-		dests := make([]lawfulintercept.Destination, 0, len(li.Destinations))
-		for _, d := range li.Destinations {
-			dests = append(dests, lawfulintercept.Destination{
-				DID: d.DID, DeliveryType: d.DeliveryType, Address: d.Address,
-			})
-		}
-		if err = lawfulintercept.Init(lawfulintercept.Config{
-			// The strict `li`-block decode's verdict, carried from the factory rather than
-			// acted on there. Same reasoning as the fail-safe window above: the refusal is
-			// scoped to interception here, and the fault reporter exists by then.
-			BlockError: factory.LiBlockError(),
-			X1Listen:   li.X1Listen, MDF2: li.MDF2, NEID: li.NEID,
-			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
-			Destinations: dests,
-			AdmfURL:      li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: li.KeepaliveTimeout,
-			KeepaliveTimeP1:        li.KeepaliveTimeP1,
-			KeepaliveTimeP3:        li.KeepaliveTimeP3,
-			KeepaliveRetainTasking: li.KeepaliveRetainTasking,
-			KeepaliveDisabled:      li.KeepaliveDisabled,
-			X2X3KeepaliveEnabled:   li.X2X3KeepaliveEnabled,
-			X2X3KeepaliveTimeP1:    li.X2X3KeepaliveTimeP1,
-			X2X3KeepaliveTimeP2:    li.X2X3KeepaliveTimeP2,
-			DeactivateAllTasks:     li.DeactivateAllTasks,
-			RemoveAllDestinations:  li.RemoveAllDestinations,
-		}); err != nil {
+		// The keepalive timers and the strict `li`-block decode's verdict are passed on as the
+		// operator wrote them and acted on inside Init. A refusal made here would be a return
+		// from this function, which stops every other subsystem too — the service-based
+		// interface, NGAP, registration with the network. Inside Init the refusal is scoped to
+		// interception, and the fault reporter exists by then, so the ADMF is told that this
+		// element is not intercepting.
+		if err = lawfulintercept.Init(lawfulintercept.ConfigFromFactory(li, factory.LiBlockError())); err != nil {
 			// Do not name the subsystem or echo err (which carries LI-identifying
 			// text) on the general operator log: that would reveal to an unauthorized
 			// operator that this NE is LI-provisioned, which network-element-level
