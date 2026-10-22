@@ -69,7 +69,7 @@ var unrepresentableNas = map[int64]bool{4: true, 5: true}
 // value NGAP does not define at all is in neither list — so without a bound it would be shifted
 // like any other and produce a number above the group's TS 33.128 maximum. The bounds added to
 // `iri.enumConstraints` then refuse it, and the record is not built at all: a delivery loss where
-// D2 asks for a precision loss.
+// an unrepresentable cause should cost only precision.
 //
 // **This is reachable, not merely defensive.** NGAP's Cause groups are extensible ENUMERATEDs, so
 // a gNB built to a later release can send a value above what this module knows, and the decoder
@@ -133,7 +133,7 @@ func liCauseValue(group lawfulintercept.HandoverCauseGroup, ngapValue int64) (va
 	// Outside what the pinned NGAP module defines for this group: either a value from a later
 	// NGAP release, or a caller's mistake. +1 would produce a number outside the group's TS
 	// 33.128 range, which the record's constraint check refuses — costing the record rather than
-	// its precision. Treated as unrepresentable instead, which is what D2 asks for.
+	// its precision. Treated as unrepresentable instead, as every cause TS 33.128 cannot express is.
 	//
 	// A group absent from the table has a highest of zero, so only its first value maps. That is
 	// the safe direction: a group added to lawfulintercept without a bound here substitutes

@@ -55,8 +55,8 @@ func awaitReport(t *testing.T, admf *admfStub, want string) string {
 	return strings.Join(admf.received(), "\n")
 }
 
-// TestASubstitutedCauseIsDistinguishableFromAGenuineUnspecified is the assertion that makes D2's
-// substitution honest rather than merely defensible.
+// TestASubstitutedCauseIsDistinguishableFromAGenuineUnspecified is the assertion that makes
+// substituting `unspecified` honest rather than merely defensible.
 //
 // The two records are byte-identical in the field that matters: a handover whose cause this
 // element cannot express carries `unspecified`, and so does a handover whose cause the network

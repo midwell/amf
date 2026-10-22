@@ -234,7 +234,7 @@ func TestDroppedProductLeavesAGap(t *testing.T) {
 	}
 }
 
-// TestInitRefusesWithoutAnElementIdentifier is design D9: an element that cannot say
+// TestInitRefusesWithoutAnElementIdentifier: an element that cannot say
 // which network function produced a record does not deliver one. The refusal is a
 // returned error rather than a fatal start-up, because the AMF must carry on serving
 // traffic — a network function that crash-loops over its LI configuration announces to

@@ -933,7 +933,7 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already 
 	}
 	// The event these records report is the *activation*, not the registration each UE
 	// completed earlier, so one instant taken here is the right timestamp for all of
-	// them (design D5). Sampling per record would time the scan.
+	// them. Sampling per record would time the scan.
 	//
 	// Taken before the scan is handed off, so moving the scan off this goroutine does
 	// not move the instant the records report.
@@ -1159,8 +1159,8 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.T
 		// The number is taken here, per record *generated* for this task, and not below
 		// per record delivered. That ordering is deliberate twice over: a task resolving
 		// to no destination therefore consumes a number nobody receives, which is
-		// harmless because nobody is receiving a stream to see a gap in (design D3
-		// accepts the same effect for a destination added mid-task); and moving the call
+		// harmless because nobody is receiving a stream to see a gap in (a destination
+		// added mid-task sees the same effect, and is accepted for it); and moving the call
 		// inside the destination loop would number each destination separately, which is
 		// the per-connection numbering clause 5.3.9 forbids.
 		attrs := s.ids.Attributes(xid, [x2x3.CorrelationIDLength]byte{}, at,
