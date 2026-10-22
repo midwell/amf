@@ -200,11 +200,15 @@ func (amf *AMF) Start() {
 			Cert: li.Cert, Key: li.Key, CACert: li.CACert,
 			Destinations: dests,
 			AdmfURL:      li.AdmfURL, AdmfID: li.AdmfID, KeepaliveTimeout: li.KeepaliveTimeout,
-			X2X3KeepaliveEnabled:  li.X2X3KeepaliveEnabled,
-			X2X3KeepaliveTimeP1:   li.X2X3KeepaliveTimeP1,
-			X2X3KeepaliveTimeP2:   li.X2X3KeepaliveTimeP2,
-			DeactivateAllTasks:    li.DeactivateAllTasks,
-			RemoveAllDestinations: li.RemoveAllDestinations,
+			KeepaliveTimeP1:        li.KeepaliveTimeP1,
+			KeepaliveTimeP3:        li.KeepaliveTimeP3,
+			KeepaliveRetainTasking: li.KeepaliveRetainTasking,
+			KeepaliveDisabled:      li.KeepaliveDisabled,
+			X2X3KeepaliveEnabled:   li.X2X3KeepaliveEnabled,
+			X2X3KeepaliveTimeP1:    li.X2X3KeepaliveTimeP1,
+			X2X3KeepaliveTimeP2:    li.X2X3KeepaliveTimeP2,
+			DeactivateAllTasks:     li.DeactivateAllTasks,
+			RemoveAllDestinations:  li.RemoveAllDestinations,
 		}); err != nil {
 			// Do not name the subsystem or echo err (which carries LI-identifying
 			// text) on the general operator log: that would reveal to an unauthorized

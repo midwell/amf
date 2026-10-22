@@ -57,16 +57,20 @@ type Config struct {
 
 	AdmfURL string // ADMF X1 endpoint for NE-initiated issue reports (empty = disabled)
 	AdmfID  string // the responsible ADMF's identifier: authenticates inbound X1 peers and addresses outbound reports (empty accepts any certified ADMF)
-	// KeepaliveTimeout is the fail-safe window as the operator wrote it: purge all
-	// tasking if no X1 message arrives within it. Empty leaves the fail-safe off,
-	// which is a choice an operator can state.
+	// KeepaliveTimeout, KeepaliveTimeP1 and KeepaliveTimeP3 are the timers of the X1
+	// keepalive procedure (TS 103 221-1 clause 6.6.2) as the operator wrote them:
+	// TIME_P2, TIME_P1 and TIME_P3. Empty takes the clause default (1h, 1m, 2h). The
+	// procedure runs unless KeepaliveDisabled is set, because the clause enables it by
+	// default; KeepaliveRetainTasking keeps it from ever deactivating tasking.
 	//
-	// A string rather than a duration, and parsed inside Init, because a value this
+	// Strings rather than durations, and parsed inside Init, because a value this
 	// element cannot read has to be *reported* — and the only channel it may be
 	// reported on is the one the reporter opens, which does not exist until Init runs.
-	// Parsed by the caller, the refusal had nowhere to go and (worse) was made by
-	// returning from the network function's own start-up.
-	KeepaliveTimeout string
+	KeepaliveTimeout       string
+	KeepaliveTimeP1        string
+	KeepaliveTimeP3        string
+	KeepaliveRetainTasking bool
+	KeepaliveDisabled      bool
 
 	// The three settings of the TS 103 221-2 clause 6.2.4 keepalive mechanism, as the
 	// operator wrote them. Parsed here rather than by the caller because an unusable
@@ -122,6 +126,10 @@ type sender interface {
 }
 
 type subsystem struct {
+	// keepalive is the X1 keepalive procedure this element runs, or nil when the operator
+	// disabled it.
+	keepalive *x1.KeepaliveProcedure
+
 	// scans counts the activation scans this subsystem has dispatched. Nothing in
 	// production waits on it — the whole point of the scan is that a provisioning answer
 	// does not — but a scan is this subsystem's work, and owning it is what lets a test wait
@@ -238,6 +246,9 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 	// elements under an identity that is not theirs.
 	opts := []x1.Option{
 		x1.WithADMF(cfg.AdmfID),
+		// The keepalive procedure's reports travel on the element's fault channel: the 9050
+		// fault when the ADMF goes quiet, its clearing, and the 10000 alert after a purge.
+		x1.KeepaliveReporter(sub.reporter),
 		x1.WithConfiguredDestinations(configuredDestinations(cfg.Destinations, sub.reporter)...),
 		// The conditions this POI can observe about itself, which li/x1 cannot: see
 		// subsystem.deliveryFault.
@@ -368,11 +379,11 @@ func Init(cfg Config) error {
 
 		return errNoX1Listen
 	}
-	keepalive, err := parseKeepaliveTimeout(cfg.KeepaliveTimeout)
+	keepalive, err := keepaliveProcedure(cfg)
 	if err != nil {
 		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
-			"the configured keepalive fail-safe window is not a duration this element can "+
-				"read, so interception has not been started")
+			"the configured X1 keepalive timers are not durations this element can use, so "+
+				"interception has not been started")
 
 		return err
 	}
@@ -493,10 +504,12 @@ func Init(cfg Config) error {
 	// blocks until the listener closes; the bind already succeeded above.
 	//nolint:errcheck // serve-until-close; a bind failure already surfaced above
 	go func() { _ = srv.ServeTLS(ln, "", "") }()
-	// Keepalive fail-safe: purge tasking if the ADMF goes silent (TS 103 221-1).
-	// A nil stop channel: it runs for as long as this element can hold tasking.
-	if keepalive > 0 {
-		go x1srv.WatchKeepalive(keepalive, nil)
+	// The X1 keepalive procedure (TS 103 221-1 clause 6.6.2): report the ADMF's silence,
+	// and deactivate tasking it can no longer withdraw. A nil stop channel: it runs for as
+	// long as this element can hold tasking.
+	sub.keepalive = keepalive
+	if keepalive != nil {
+		go x1srv.WatchKeepalive(*keepalive, nil)
 	}
 	active.Store(sub)
 	// Tasking lives in memory, so this element has just discarded every warrant it
@@ -1907,38 +1920,61 @@ func canApply(task types.InterceptTask) error {
 	return nil
 }
 
-// parseKeepaliveTimeout reads the fail-safe window an operator wrote.
+// keepaliveProcedure reads the X1 keepalive procedure an operator configured, or nil when
+// they disabled it (TS 103 221-1 clause 6.6.2: "By default (with no prior agreement) they
+// are enabled", so only a stated agreement turns it off).
+func keepaliveProcedure(cfg Config) (*x1.KeepaliveProcedure, error) {
+	if cfg.KeepaliveDisabled {
+		return nil, nil //nolint:nilnil // a disabled procedure is not an error
+	}
+
+	p := x1.KeepaliveProcedure{RetainTasking: cfg.KeepaliveRetainTasking}
+	for _, t := range []struct {
+		name, value string
+		into        *time.Duration
+	}{
+		{"keepaliveTimeout", cfg.KeepaliveTimeout, &p.TimeP2},
+		{"keepaliveTimeP1", cfg.KeepaliveTimeP1, &p.TimeP1},
+		{"keepaliveTimeP3", cfg.KeepaliveTimeP3, &p.TimeP3},
+	} {
+		d, err := parseKeepaliveTimer(t.name, t.value)
+		if err != nil {
+			return nil, err
+		}
+		*t.into = d
+	}
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+
+	return &p, nil
+}
+
+// parseKeepaliveTimer reads one keepalive timer an operator wrote. Empty is the clause
+// default, returned as zero.
 //
-// Empty is not an error: an operator who writes nothing has stated that the fail-safe
-// is off, and that choice is honoured. A value that does not parse is a choice this
-// element could not read, and the difference matters because reading it as zero — which
-// is what discarding the parse error did — turns a mistyped duration into a silently
-// disabled fail-safe on an element that otherwise looks healthy.
+// A value that does not parse is refused rather than read as zero: zero means "the
+// default", so discarding the parse error would turn a mistyped duration into a silently
+// different timer on an element that otherwise looks healthy.
 //
-// A non-positive duration is refused for the same reason it is at the UPF: "0s" and
-// "-5m" are values an operator wrote, and neither can mean the window they asked for.
-//
-// So is one below x1.MinKeepaliveWindow. "1ns" passes the chart's duration regex — ns
-// is a Go duration unit — and passed the positive test here, and then panicked the
-// process: the window is halved to produce the watchdog's tick interval, and integer
-// division reached zero inside time.NewTicker, on a goroutine. An LI configuration
-// mistake is permitted to cost interception and never the network function, so this is
-// refused here, reported to the ADMF by the caller, and refused again in the library
-// itself for any caller that does not check.
-func parseKeepaliveTimeout(v string) (time.Duration, error) {
+// A non-positive duration is refused for the same reason: "0s" and "-5m" are values an
+// operator wrote, and neither can mean the timer they asked for. So is one below
+// x1.MinKeepaliveWindow, which the procedure cannot measure; the library refuses it too,
+// for any caller that does not check.
+func parseKeepaliveTimer(name, v string) (time.Duration, error) {
 	if v == "" {
 		return 0, nil
 	}
 
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return 0, fmt.Errorf("li: keepaliveTimeout %q is not a duration", v)
+		return 0, fmt.Errorf("li: %s %q is not a duration", name, v)
 	}
 	if d <= 0 {
-		return 0, fmt.Errorf("li: keepaliveTimeout %q is not a positive duration", v)
+		return 0, fmt.Errorf("li: %s %q is not a positive duration", name, v)
 	}
 	if d < x1.MinKeepaliveWindow {
-		return 0, fmt.Errorf("li: keepaliveTimeout %q is shorter than the minimum fail-safe window %s", v, x1.MinKeepaliveWindow)
+		return 0, fmt.Errorf("li: %s %q is shorter than the minimum keepalive timer %s", name, v, x1.MinKeepaliveWindow)
 	}
 
 	return d, nil
