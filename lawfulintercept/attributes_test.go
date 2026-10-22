@@ -98,8 +98,11 @@ func TestXIRICarriesTheSixRequiredAttributes(t *testing.T) {
 	if got := attrs[x2x3.AttrMatchedTargetIdentifier]; len(got) != 1 || got[0] != "<supiimsi>"+testTargetSUPI+"</supiimsi>" {
 		t.Errorf("matched target identifier = %q, want the SUPI the task named", got)
 	}
+	// The PEI twice: the IMEISV the UE presented, and the IMEI it carries, which is the
+	// device's identity an IMEI warrant names.
 	wantOther := map[string]bool{
 		"<peiImeisv>3534250000000151</peiImeisv>": true,
+		derivedIMEIFragment:                       true,
 		"<gpsiMsisdn>4915123456789</gpsiMsisdn>":  true,
 	}
 	other := attrs[x2x3.AttrOtherTargetIdentifier]
@@ -133,8 +136,9 @@ func TestEveryMatchedIdentityIsReported(t *testing.T) {
 	if got := len(attrs[x2x3.AttrMatchedTargetIdentifier]); got != 2 {
 		t.Errorf("matched identities = %d (%q), want both the task named", got, attrs[x2x3.AttrMatchedTargetIdentifier])
 	}
-	if got := attrs[x2x3.AttrOtherTargetIdentifier]; len(got) != 1 || got[0] != "<peiImeisv>3534250000000151</peiImeisv>" {
-		t.Errorf("other identities = %q, want only the PEI", got)
+	if got := attrs[x2x3.AttrOtherTargetIdentifier]; len(got) != 2 ||
+		got[0] != "<peiImeisv>3534250000000151</peiImeisv>" || got[1] != derivedIMEIFragment {
+		t.Errorf("other identities = %q, want only the PEI, as the IMEISV and the IMEI it carries", got)
 	}
 }
 
@@ -338,8 +342,9 @@ func TestTheTimestampIsTheEventsNotThePDUs(t *testing.T) {
 // belongs to li/types, next to where such a type would be added.
 func TestEveryIdentityThisPOIProducesRenders(t *testing.T) {
 	ids := targetsOf(targetUE().IdentitySnapshot())
-	if len(ids) != 3 {
-		t.Fatalf("the fixture yields %d identities, want the SUPI, PEI and GPSI this POI reads", len(ids))
+	if len(ids) != 4 {
+		t.Fatalf("the fixture yields %d identities, want the SUPI, the PEI (as its IMEISV and the "+
+			"IMEI it carries) and the GPSI this POI reads", len(ids))
 	}
 	for _, id := range ids {
 		if _, ok := id.XMLFragment(); !ok {
@@ -444,3 +449,30 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 			"discarded numbering its subject's context was still using", got)
 	}
 }
+
+// TestAnIMEIWarrantMatchesAUEThatPresentedItsIMEISV: an IMEISV is the IMEI's Type Allocation
+// Code and Serial Number followed by a software version, so a UE that presented one is the
+// device a warrant naming the fourteen-digit IMEI targets. Matching only the IMEISV as presented
+// would leave that warrant producing nothing for a UE the AMF identified by IMEISV, which is
+// every UE that did not offer a PEI before the AMF asked for one.
+func TestAnIMEIWarrantMatchesAUEThatPresentedItsIMEISV(t *testing.T) {
+	snd := &captureSender{}
+	activateIRIWithTargets(t, snd, []types.TargetIdentifier{
+		{Type: types.TargetPEI, Value: "35342500000001"},
+	})
+
+	ReportRegistration(targetUE())
+	if len(snd.pdus) != 1 {
+		t.Fatalf("delivered %d records for an IMEI warrant naming a UE that presented its IMEISV, want 1",
+			len(snd.pdus))
+	}
+
+	attrs := attrsOf(snd.pdus[0])
+	if got := attrs[x2x3.AttrMatchedTargetIdentifier]; len(got) != 1 || got[0] != derivedIMEIFragment {
+		t.Errorf("matched target identifier = %q, want the IMEI the warrant named", got)
+	}
+}
+
+// derivedIMEIFragment is the IMEI the test UE's IMEISV carries (its first fourteen digits), as
+// the X2 target identifier attributes render it.
+const derivedIMEIFragment = "<peiImei>35342500000001</peiImei>"

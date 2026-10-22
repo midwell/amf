@@ -260,3 +260,46 @@ func TestAnOrdinaryDeliveryFailureIsNotReportedAsALoss(t *testing.T) {
 		t.Errorf("a connection failure was reported as lost product:\n%s", joined)
 	}
 }
+
+// TestADroppedRunOfXIRIsIsReportedWithItsCount: a resend that does not land loses every unit
+// from the one the write stopped in to the end of its batch, and the library counts them. The
+// report must say how many, or the agency's gap is larger than this element's account of it.
+func TestADroppedRunOfXIRIsIsReportedWithItsCount(t *testing.T) {
+	cert, key, ca, _ := loopbackPKI(t)
+	admf := newADMFStub(t)
+	t.Cleanup(func() { active.Store(nil) })
+
+	if err := Init(Config{
+		NEID:     testNEID,
+		X1Listen: testX1Listen,
+		MDF2:     testAgencyAddr,
+		Cert:     cert, Key: key, CACert: ca,
+		AdmfURL: admf.srv.URL, AdmfID: testADMFID,
+	}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sub := active.Load()
+	if sub == nil {
+		t.Fatal("interception did not start")
+	}
+	watcher := x1.NewDestinationWatcher(func() []x1.DestinationHealth { return nil }, sub.reporter, 0)
+
+	sub.reportDeliveryError(&x2x3.DeliveryError{
+		Lost: 5,
+		Err:  fmt.Errorf("%w: send to 10.0.60.122:42069", x2x3.ErrUnitDropped),
+	}, watcher)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		joined := strings.Join(admf.received(), "\n")
+		if strings.Contains(joined, "x2DeliveryLost") {
+			if !strings.Contains(joined, "5 xIRIs") {
+				t.Errorf("the loss was reported without the number of xIRIs it cost:\n%s", joined)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("a dropped run of xIRIs was reported by nothing:\n%s", strings.Join(admf.received(), "\n"))
+}

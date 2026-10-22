@@ -546,12 +546,30 @@ func Init(cfg Config) error {
 // A method rather than a closure inside Init so the mapping can be asserted directly. What
 // produces ErrUnitDropped is the transport, and that is tested where it lives, in li/x2x3;
 // what this element does with it is this function.
+//
+// The report says how many xIRIs the drop cost. A write that stops inside one unit is resent
+// from that unit to the end of its batch, so a resend that does not land loses every unit in
+// that tail, and the library counts them (x2x3.LostUnits). Saying "an xIRI" for what may be a
+// run of them would leave the agency's gap larger than this element's own account of it.
 func (s *subsystem) reportDeliveryError(err error, watcher *x1.DestinationWatcher) {
 	if errors.Is(err, x2x3.ErrUnitDropped) {
-		s.reporter.NotifyAsync(x1.NEIssueX2DeliveryLost,
-			"an xIRI was partially written to a reachable mediation function and dropped")
+		s.reporter.NotifyAsync(x1.NEIssueX2DeliveryLost, droppedXIRIs(x2x3.LostUnits(err)))
 	}
 	watcher.Nudge()
+}
+
+// droppedXIRIs describes a drop of n xIRIs on the way to a reachable mediation function. An
+// error that carries no count (n is 0) still lost at least the unit it names, so it is not
+// described as a number this element cannot back.
+func droppedXIRIs(n int) string {
+	switch {
+	case n > 1:
+		return fmt.Sprintf("%d xIRIs were partially written to a reachable mediation function and dropped", n)
+	case n == 1:
+		return "an xIRI was partially written to a reachable mediation function and dropped"
+	default:
+		return "at least one xIRI was partially written to a reachable mediation function and dropped"
+	}
 }
 
 // ReportRegistration emits a registration xIRI for ue if it matches an active
@@ -1295,6 +1313,9 @@ func targetsOf(id amfctx.UeIdentity) []types.TargetIdentifier {
 	if v := peiValue(id.Pei); v != "" {
 		ids = append(ids, types.TargetIdentifier{Type: types.TargetPEI, Value: v})
 	}
+	if v := imeiOfIMEISV(id.Pei); v != "" {
+		ids = append(ids, types.TargetIdentifier{Type: types.TargetPEI, Value: v})
+	}
 	if v := afterPrefix(id.Gpsi, "msisdn-", "extid-"); v != "" {
 		ids = append(ids, types.TargetIdentifier{Type: types.TargetGPSI, Value: v})
 	}
@@ -1564,6 +1585,26 @@ func peiValue(pei string) string {
 		return imeiWithoutCheckDigit(v)
 	}
 	return ""
+}
+
+// imeiOfIMEISV is the IMEI a UE's IMEISV carries, or "" if its PEI is not an IMEISV.
+//
+// An IMEISV is the IMEI's Type Allocation Code and Serial Number, eight and six digits, followed
+// by a two-digit Software Version Number (TS 23.003), so its first fourteen digits
+// are the IMEI without its check digit: the form TS 103 221-1's peiImei names. A UE that presented
+// an IMEISV is the device an IMEI warrant names, and presenting the IMEI as well is what lets that
+// warrant match it. The record's PEI stays the IMEISV the UE actually presented.
+func imeiOfIMEISV(pei string) string {
+	v, ok := strings.CutPrefix(pei, "imeisv-")
+	if !ok || len(v) != 16 {
+		return ""
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return v[:14]
 }
 
 // imeiWithoutCheckDigit drops the check digit from a fifteen-digit IMEI.
