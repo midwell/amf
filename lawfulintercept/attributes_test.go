@@ -99,8 +99,8 @@ func TestXIRICarriesTheSixRequiredAttributes(t *testing.T) {
 		t.Errorf("matched target identifier = %q, want the SUPI the task named", got)
 	}
 	wantOther := map[string]bool{
-		"<peiImei>3534250000000151</peiImei>":    true,
-		"<gpsiMsisdn>4915123456789</gpsiMsisdn>": true,
+		"<peiImeisv>3534250000000151</peiImeisv>": true,
+		"<gpsiMsisdn>4915123456789</gpsiMsisdn>":  true,
 	}
 	other := attrs[x2x3.AttrOtherTargetIdentifier]
 	if len(other) != len(wantOther) {
@@ -133,7 +133,7 @@ func TestEveryMatchedIdentityIsReported(t *testing.T) {
 	if got := len(attrs[x2x3.AttrMatchedTargetIdentifier]); got != 2 {
 		t.Errorf("matched identities = %d (%q), want both the task named", got, attrs[x2x3.AttrMatchedTargetIdentifier])
 	}
-	if got := attrs[x2x3.AttrOtherTargetIdentifier]; len(got) != 1 || got[0] != "<peiImei>3534250000000151</peiImei>" {
+	if got := attrs[x2x3.AttrOtherTargetIdentifier]; len(got) != 1 || got[0] != "<peiImeisv>3534250000000151</peiImeisv>" {
 		t.Errorf("other identities = %q, want only the PEI", got)
 	}
 }
@@ -390,7 +390,12 @@ func modifyRequest(xid, admfID, neID string, supis ...string) []byte {
 // deactivation's release ran after the activation's records were numbered.
 func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 	const xid, admf = "11111111-1111-4111-8111-111111111111", testADMFID
-	const otherSUPI = "262010000000777"
+	const (
+		otherSUPI = "262010000000777"
+		// replacementSUPI takes otherSUPI's place in the modification. A valid IMSI of its own:
+		// X1 refuses a value outside its schema type, so appending a digit would test a refusal.
+		replacementSUPI = "262010000000888"
+	)
 
 	snd := &captureSender{}
 	st := store.New()
@@ -419,7 +424,7 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 
 	// The warrant is retargeted: one identifier goes, one stays. The subject whose
 	// interception continues is the one whose numbering must continue with it.
-	resp, err := srv.Process(modifyRequest(xid, admf, testNEID, testTargetSUPI, otherSUPI+"1"), admfPeerCert(t))
+	resp, err := srv.Process(modifyRequest(xid, admf, testNEID, testTargetSUPI, replacementSUPI), admfPeerCert(t))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
