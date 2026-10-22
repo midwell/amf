@@ -389,18 +389,8 @@ func modifyRequest(xid, admfID, neID string, supis ...string) []byte {
 // a context repeats a number the mediation function has already seen for that
 // (XID, Correlation ID) pair. A repeated number there is not a cosmetic defect: it
 // is how a mediation function detects loss, so it must mean loss and nothing else.
-//
-// The previous contract made this unavoidable rather than accidental. A retarget
-// arrived as an activation followed by a deactivation of the same XID, and the
-// deactivation's release ran after the activation's records were numbered.
 func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 	const xid, admf = "11111111-1111-4111-8111-111111111111", testADMFID
-	const (
-		otherSUPI = "262010000000777"
-		// replacementSUPI takes otherSUPI's place in the modification. A valid IMSI of its own:
-		// X1 refuses a value outside its schema type, so appending a digit would test a refusal.
-		replacementSUPI = "262010000000888"
-	)
 
 	snd := &captureSender{}
 	st := store.New()
@@ -408,7 +398,7 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 		XID: xid,
 		Targets: []types.TargetIdentifier{
 			{Type: types.TargetSUPI, Value: testTargetSUPI},
-			{Type: types.TargetSUPI, Value: otherSUPI},
+			{Type: types.TargetGPSI, Value: "4915123456789"},
 		},
 		Products: []types.ProductType{types.ProductIRI},
 		State:    types.TaskActive,
@@ -427,9 +417,9 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 		t.Fatalf("setup delivered %d records, first numbered %d", len(snd.pdus), seqOf(t, snd.pdus[0]))
 	}
 
-	// The warrant is retargeted: one identifier goes, one stays. The subject whose
-	// interception continues is the one whose numbering must continue with it.
-	resp, err := srv.Process(modifyRequest(xid, admf, testNEID, testTargetSUPI, replacementSUPI), admfPeerCert(t))
+	// The warrant is narrowed to the subject's SUPI: the GPSI criterion goes and the
+	// subject stays matched, so its numbering must continue with it.
+	resp, err := srv.Process(modifyRequest(xid, admf, testNEID, testTargetSUPI), admfPeerCert(t))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -476,3 +466,29 @@ func TestAnIMEIWarrantMatchesAUEThatPresentedItsIMEISV(t *testing.T) {
 // derivedIMEIFragment is the IMEI the test UE's IMEISV carries (its first fourteen digits), as
 // the X2 target identifier attributes render it.
 const derivedIMEIFragment = "<peiImei>35342500000001</peiImei>"
+
+// TestAWarrantNamingTwoIdentitiesMatchesOnlyTheSubjectPresentingBoth is TS 103 221-1 table
+// 6.2.1.2-1: "Where multiple criteria are present, all criteria are required to be
+// matched." A warrant naming a SUPI and a GPSI describes the subscriber holding both; a UE
+// presenting the SUPI with another GPSI is someone else, and reporting it would intercept
+// a subject the warrant does not describe.
+func TestAWarrantNamingTwoIdentitiesMatchesOnlyTheSubjectPresentingBoth(t *testing.T) {
+	snd := &captureSender{}
+	activateIRIWithTargets(t, snd, []types.TargetIdentifier{
+		{Type: types.TargetSUPI, Value: testTargetSUPI},
+		{Type: types.TargetGPSI, Value: "4915123456789"},
+	})
+
+	ReportRegistration(targetUE())
+	if len(snd.pdus) != 1 {
+		t.Fatalf("the subject presenting both identities produced %d records, want 1", len(snd.pdus))
+	}
+
+	other := targetUE()
+	other.Gpsi = "msisdn-4915100000000"
+	ReportRegistration(other)
+	if len(snd.pdus) != 1 {
+		t.Errorf("a UE presenting only the warrant's SUPI produced %d more records, want none",
+			len(snd.pdus)-1)
+	}
+}
