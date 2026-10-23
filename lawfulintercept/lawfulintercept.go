@@ -221,13 +221,29 @@ func (s *subsystem) destinationUnreachable(addr string) bool {
 func (s *subsystem) destinationsInUse() []string {
 	var addrs []string
 	for _, t := range s.store.Snapshot() {
-		if !t.WantsProduct(types.ProductIRI) {
-			continue
-		}
-		addrs = append(addrs, s.x2Destinations(t)...)
+		addrs = append(addrs, s.iriDestinations(t)...)
 	}
 
 	return addrs
+}
+
+// iriDestinations is where t's xIRI goes from this element: nowhere for a task that wants no
+// xIRI, otherwise what x2Destinations resolves — the question the delivery path asks, so the
+// status answer and the destination watcher describe the destinations product goes to.
+func (s *subsystem) iriDestinations(t types.InterceptTask) []string {
+	if !t.WantsProduct(types.ProductIRI) {
+		return nil
+	}
+	return s.x2Destinations(t)
+}
+
+// x2Health is what the destination watcher samples: the X2 destinations the tasking delivers
+// xIRI to, each with its reachability. It resolves through iriDestinations, so the configured
+// MDF2 serving a task that named no DID is watched and an MDF2 no task delivers xIRI to is
+// not. Latent here rather than live: canApply refuses a task wanting no xIRI, so none reaches
+// this element's store through X1.
+func (s *subsystem) x2Health(unreachableAt func(addr string) bool) []x1.DestinationHealth {
+	return x1.DestinationHealthOf(s.store.Snapshot(), types.DeliveryX2, s.iriDestinations, unreachableAt)
 }
 
 // active holds the running subsystem, or nil when LI is not configured.
@@ -475,11 +491,9 @@ func Init(cfg Config) error {
 	// questions.
 	if reporter != nil {
 		watcher = x1.NewDestinationWatcher(func() []x1.DestinationHealth {
-			// x2Destinations, not DeliveryAddresses: it is what delivery resolves, so
-			// the configured MDF2 serving a task that named no DID is watched too.
-			return x1.DestinationHealthOf(sub.store.Snapshot(), types.DeliveryX2,
-				sub.x2Destinations,
-				func(addr string) bool { return pool.UnreachableAt(addr) })
+			// What delivery resolves, not DeliveryAddresses: the configured MDF2
+			// serving a task that named no DID is watched too.
+			return sub.x2Health(func(addr string) bool { return pool.UnreachableAt(addr) })
 		}, reporter, 0)
 		go watcher.Watch(nil)
 	}
