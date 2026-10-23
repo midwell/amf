@@ -154,9 +154,9 @@ type subsystem struct {
 	// the interrogation cannot disagree — which they did, one hard-coding activeAndWorking
 	// while the other reported the endpoint unreachable.
 	unreachableAt func(addr string) bool
-	// mdf2 is the configured X2 endpoint. It serves a task that names no destination
-	// this element can resolve, and nothing else — an element that preferred it to the
-	// destinations a task named is the gap this exists behind rather than in front of.
+	// mdf2 is the configured X2 endpoint. It serves a task that names no destination, and
+	// nothing else — an element that preferred it to the destinations a task named is the
+	// gap this exists behind rather than in front of.
 	mdf2 string
 	neID string
 	// ids supplies the conditional attributes that belong to this element rather than
@@ -1227,15 +1227,19 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.T
 // endpoint local configuration happens to name, and li-security-isolation admits no
 // exception for it.
 //
-// So the fallback keys on len(t.DIDs). A task naming an identifier this element cannot
-// resolve at all no longer reaches here: x1 refuses it at activation.
+// So the fallback keys on len(t.DIDs). Neither of the cases that would hit it reaches here
+// through X1: a task naming an identifier this element cannot resolve is refused at
+// activation with 2040, and one whose named destinations serve none of the X2 delivery its
+// deliveryType orders is refused with 3040 (TS 103 221-1 clause 6.2.1.2). The test stays as
+// the guard for a task arriving any other way.
 func (s *subsystem) x2Destinations(t types.InterceptTask) []string {
 	if addrs := t.DeliveryAddresses(types.DeliveryX2); len(addrs) > 0 {
 		return addrs
 	}
 	if len(t.DIDs) > 0 {
-		// The task named where its product goes and none of it is an X2 endpoint. This
-		// element has nothing to say about where the xIRI should go instead.
+		// The task named where its product goes and none of it is an X2 endpoint — refused
+		// by x1 before it can be held, and refused again here. This element has nothing to
+		// say about where the xIRI should go instead.
 		return nil
 	}
 	if s.mdf2 == "" {
