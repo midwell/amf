@@ -88,7 +88,10 @@ func TestAUEPolicyCompleteWithNoCommandIsReportedNotProduced(t *testing.T) {
 	if !strings.Contains(got, "recordNotProduced") {
 		t.Errorf("a COMPLETE with no COMMAND held was not reported as recordNotProduced:\n%s", got)
 	}
-	if strings.Contains(got, "recordNotEncoded") {
+	// A refused record would be reported on its own goroutine, in no order relative to the
+	// report above, so its absence is only shown after a wait.
+	time.Sleep(time.Second)
+	if got = strings.Join(admf.received(), "\n"); strings.Contains(got, "recordNotEncoded") {
 		t.Errorf("a COMPLETE with no COMMAND held was encoded as a record and refused:\n%s", got)
 	}
 }
@@ -125,9 +128,9 @@ func TestInterleavedUEPolicyProceduresEachReportTheirOwnCommand(t *testing.T) {
 	}
 }
 
-// TestAUEPolicyProcedureIsReportedOnce: a T3501 retransmission repeats the COMMAND under its
-// PTI, and a COMPLETE ends the procedure. One record either way.
-func TestAUEPolicyProcedureIsReportedOnce(t *testing.T) {
+// TestARetransmittedCommandIsHeldOnce: a T3501 retransmission repeats the COMMAND under its
+// PTI. It replaces the one held rather than adding a second, so one COMPLETE is one record.
+func TestARetransmittedCommandIsHeldOnce(t *testing.T) {
 	snd := &captureSender{}
 	activateIRI(t, snd, testTargetSUPI)
 	ue := targetUE()
@@ -136,10 +139,35 @@ func TestAUEPolicyProcedureIsReportedOnce(t *testing.T) {
 	NoteUEPolicyCommand(ue, command)
 	NoteUEPolicyCommand(ue, command)
 	ReportUEPolicyComplete(ue, uePolicyAnswer(7, uePolicyComplete))
-	ReportUEPolicyComplete(ue, uePolicyAnswer(7, uePolicyComplete))
 
 	if got := uePolicyRecords(t, snd); len(got) != 1 {
-		t.Errorf("delivered %d records for one procedure, want 1", len(got))
+		t.Errorf("delivered %d records for one COMPLETE, want 1", len(got))
+	}
+}
+
+// TestARetransmittedCompleteIsAnotherRecordNotALoss: a UE that receives a retransmitted COMMAND
+// it has already answered retransmits its COMPLETE (TS 24.501 clause D.2.1.6 e), and TS 33.128
+// clause 6.2.2.2.12 triggers on each N1MessageNotify carrying a COMPLETE. The second COMPLETE
+// confirms the same COMMAND: it is a second record carrying it, not a recordNotProduced for a
+// COMMAND the first COMPLETE used up.
+func TestARetransmittedCompleteIsAnotherRecordNotALoss(t *testing.T) {
+	admf := newADMFStub(t)
+	snd := &captureSender{}
+	activateIRIReporting(t, snd, admf)
+	ue := targetUE()
+
+	command := uePolicyCommandOf(7, 16)
+	NoteUEPolicyCommand(ue, command)
+	ReportUEPolicyComplete(ue, uePolicyAnswer(7, uePolicyComplete))
+	ReportUEPolicyComplete(ue, uePolicyAnswer(7, uePolicyComplete))
+
+	got := uePolicyRecords(t, snd)
+	if len(got) != 2 || !bytes.Equal(got[0], command) || !bytes.Equal(got[1], command) {
+		t.Errorf("records = % x, want the COMMAND twice", got)
+	}
+	time.Sleep(time.Second)
+	if r := strings.Join(admf.received(), "\n"); strings.Contains(r, "recordNotProduced") {
+		t.Errorf("a retransmitted COMPLETE was reported as a record not produced:\n%s", r)
 	}
 }
 
@@ -197,10 +225,10 @@ func TestHeldUEPolicyCommandsAreBounded(t *testing.T) {
 	if n := len(p.byUE[weak.Make(ue)]); n != maxPendingPerUE {
 		t.Errorf("one UE holds %d COMMANDs, want at most %d", n, maxPendingPerUE)
 	}
-	if p.take(ue, 1) != nil {
+	if p.lookup(ue, 1) != nil {
 		t.Error("the oldest COMMAND survived the per-UE bound")
 	}
-	if p.take(ue, maxPendingPerUE+1) == nil {
+	if p.lookup(ue, maxPendingPerUE+1) == nil {
 		t.Error("the newest COMMAND was dropped instead of the oldest")
 	}
 
@@ -221,13 +249,13 @@ func TestHeldUEPolicyCommandsAreBounded(t *testing.T) {
 	if n := p.held(); n != maxPendingUEs {
 		t.Errorf("%d UEs held, want %d", n, maxPendingUEs)
 	}
-	if p.take(late, 1) == nil {
+	if p.lookup(late, 1) == nil {
 		t.Error("a UE past the bound was not held: UEs that left unanswered block every later target")
 	}
-	if p.take(ues[1], 1) != nil {
+	if p.lookup(ues[1], 1) != nil {
 		t.Error("the UE whose newest COMMAND was oldest was not the one evicted")
 	}
-	if p.take(ues[0], 2) == nil {
+	if p.lookup(ues[0], 2) == nil {
 		t.Error("a UE with a recent COMMAND was evicted ahead of an older one")
 	}
 }
@@ -269,12 +297,12 @@ func TestAnExpiredUEPolicyCommandIsNotReported(t *testing.T) {
 	p.remember(ue, 1, uePolicyCommandOf(1, 16))
 	now = now.Add(uePolicyHoldFor - time.Second)
 	p.remember(ue, 2, uePolicyCommandOf(2, 16))
-	if p.take(ue, 1) == nil {
+	if p.lookup(ue, 1) == nil {
 		t.Fatal("a COMMAND inside its hold was not held")
 	}
 
 	now = now.Add(uePolicyHoldFor)
-	if p.take(ue, 2) != nil {
+	if p.lookup(ue, 2) != nil {
 		t.Error("a COMMAND past its hold was reported as confirmed")
 	}
 
@@ -330,12 +358,13 @@ func TestAShortUEPolicyCommandIsRefusedNotDelivered(t *testing.T) {
 		t.Errorf("delivered %d records for a COMMAND the definition forbids. A conformant "+
 			"mediation function discards it, and this element would believe it had delivered", n)
 	}
-	if n := active.Load().policies.held(); n != 0 {
-		t.Errorf("the COMPLETE left %d UE(s) held: it was not matched to its COMMAND, so this "+
-			"test is not exercising the encoder's refusal", n)
-	}
-	if got := awaitReport(t, admf, "recordNotEncoded"); !strings.Contains(got, "recordNotEncoded") {
+	got := awaitReport(t, admf, "recordNotEncoded")
+	if !strings.Contains(got, "recordNotEncoded") {
 		t.Errorf("the refused record was not reported against the warrant; the ADMF received:\n%s", got)
+	}
+	if strings.Contains(got, "recordNotProduced") {
+		t.Errorf("the COMPLETE was not matched to its COMMAND, so this test is not exercising "+
+			"the encoder's refusal; the ADMF received:\n%s", got)
 	}
 }
 
