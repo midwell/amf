@@ -1640,10 +1640,17 @@ func imeiWithoutCheckDigit(v string) string {
 	return v
 }
 
-// gpsiChoice returns ue's GPSI as the iri "gpsi" CHOICE arm (MSISDN), or nil.
+// gpsiChoice returns ue's GPSI as the iri "gpsi" CHOICE arm, or nil. TS 29.571 spells a GPSI
+// "msisdn-" and an MSISDN, or "extid-" and an External Identifier, which TS 23.003 clause
+// 19.7.2 gives the form of a NAI; TS 33.128 carries them as GPSIMSISDN and GPSINAI. Both are
+// target identifiers targetsOf matches, so a subject known only by its External Identifier is
+// still named in its records.
 func gpsiChoice(id amfctx.UeIdentity) any {
 	if v, ok := strings.CutPrefix(id.Gpsi, "msisdn-"); ok {
 		return iri.MSISDN(v)
+	}
+	if v, ok := strings.CutPrefix(id.Gpsi, "extid-"); ok {
+		return iri.NAI(v)
 	}
 	return nil
 }
