@@ -69,15 +69,12 @@ func TestAUEPolicyCompleteReportsTheCommandItConfirms(t *testing.T) {
 	}
 }
 
-// TestAUEPolicyCompleteWithNoCommandReportsNothing: the record's uEPolicy is mandatory and is
-// the COMMAND; the COMPLETE is not that content. A COMPLETE whose COMMAND this element did not
-// hold produces nothing, rather than a record carrying the two-octet COMPLETE, which the
-// encoder refuses — on every policy exchange — as a recordNotEncoded fault.
-//
-// Nothing delivered is not enough to show that: the refused record is not delivered either. So
-// the assertion is also on the fault channel, which TestAShortUEPolicyCommandIsRefusedNotDelivered
-// shows does carry recordNotEncoded in this harness.
-func TestAUEPolicyCompleteWithNoCommandReportsNothing(t *testing.T) {
+// TestAUEPolicyCompleteWithNoCommandIsReportedNotProduced: the record's uEPolicy is mandatory
+// and is the COMMAND; the COMPLETE is not that content. A COMPLETE whose COMMAND this element did
+// not hold produces no record — not one carrying the two-octet COMPLETE, which the encoder
+// refuses on every policy exchange as recordNotEncoded — and the warrant is told the record it
+// mandates was not produced, rather than the loss being silent.
+func TestAUEPolicyCompleteWithNoCommandIsReportedNotProduced(t *testing.T) {
 	admf := newADMFStub(t)
 	snd := &captureSender{}
 	activateIRIReporting(t, snd, admf)
@@ -87,8 +84,11 @@ func TestAUEPolicyCompleteWithNoCommandReportsNothing(t *testing.T) {
 	if n := len(snd.pdus); n != 0 {
 		t.Errorf("a COMPLETE with no COMMAND held produced %d record(s)", n)
 	}
-	time.Sleep(time.Second)
-	if got := strings.Join(admf.received(), "\n"); strings.Contains(got, "recordNotEncoded") {
+	got := admf.awaitReport(t, "recordNotProduced")
+	if !strings.Contains(got, "recordNotProduced") {
+		t.Errorf("a COMPLETE with no COMMAND held was not reported as recordNotProduced:\n%s", got)
+	}
+	if strings.Contains(got, "recordNotEncoded") {
 		t.Errorf("a COMPLETE with no COMMAND held was encoded as a record and refused:\n%s", got)
 	}
 }

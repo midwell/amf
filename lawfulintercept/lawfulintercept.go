@@ -1103,6 +1103,25 @@ func (s *subsystem) reportEvent(id amfctx.UeIdentity, event any) {
 	s.deliverIRI(s.matchingTasks(id), targetsOf(id), time.Now(), event)
 }
 
+// reportNotProduced tells each warrant that wants event's record class that a record the
+// clause mandates for it was not produced, because the content it carries was not held when its
+// trigger occurred. event is the zero value of the record that was not produced and serves
+// only to name it. Like recordNotEncoded it is a task-scoped event, reported once per
+// occurrence (throttled per warrant by the reporter) and never retracted, and it runs off the
+// UE's NAS goroutine.
+func (s *subsystem) reportNotProduced(id amfctx.UeIdentity, event any, why string) {
+	class := recordClassOf(event)
+	for _, t := range s.matchingTasks(id) {
+		if !t.WantsProduct(types.ProductIRI) || !produces(t, class) {
+			continue
+		}
+		s.reporter.NotifyTaskAsync(string(t.DeliveryXID()),
+			x1.TaskReportNonTerminatingFault, x1.TaskIssueRecordNotProduced,
+			fmt.Sprintf("%s: a %T record for this warrant was not produced: %s",
+				x1.TaskIssueRecordNotProduced, event, why))
+	}
+}
+
 // deliverIRI encodes event once and delivers it as an X2 xIRI to every task in
 // tasks that wants IRI product, at the destinations that task named. It is silent
 // on any error (encoding or delivery) so that interception can never be inferred

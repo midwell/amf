@@ -9,6 +9,7 @@ import (
 	"weak"
 
 	amfctx "github.com/omec-project/amf/context"
+	"github.com/omec-project/util/li/iri"
 )
 
 // The UE policy delivery service message types this package reads, TS 24.501 table D.6.1.1.
@@ -212,7 +213,7 @@ func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
 // to the PCF in Namf_Communication_N1MessageNotify. A MANAGE UE POLICY COMPLETE produces one
 // AMFUEPolicyTransfer carrying the COMMAND held under its PTI. A COMPLETE with nothing held
 // produces none, because the record's uEPolicy is mandatory and the COMPLETE itself is not
-// that content. Nothing is held when the COMMAND was relayed before the UE was a target or
+// that content; it is reported to each matching warrant as recordNotProduced instead. Nothing is held when the COMMAND was relayed before the UE was a target or
 // before this AMF started, when its hold ran out or the bounds above evicted it, or when the
 // UE answered under a PTI other than the COMMAND's, which TS 24.501 clause D.1.2 allows of
 // earlier UEs. A MANAGE UE POLICY COMMAND REJECT ends the procedure without a record, since the
@@ -228,9 +229,10 @@ func ReportUEPolicyComplete(ue *amfctx.AmfUe, container []byte) {
 	case uePolicyComplete:
 		command := sub.policies.take(ue, container[0])
 		if command == nil {
-			// The mandated record cannot be produced, and this is the one place that knows it.
-			// It is where that loss is reported to the warrant, once the interception library
-			// has a task event for a record whose content the element did not have.
+			// The mandated record cannot be produced, and this is the one place that knows it,
+			// so the loss is reported to each warrant that wanted it rather than left silent.
+			sub.reportNotProduced(ue.IdentitySnapshot(), iri.AMFUEPolicyTransfer{},
+				"a UE policy COMPLETE arrived with no COMMAND held for its PTI")
 			return
 		}
 		id := ue.IdentitySnapshot()
