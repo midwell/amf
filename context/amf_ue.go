@@ -950,6 +950,23 @@ func (ue *AmfUe) IsNtn() bool {
 	return false
 }
 
+// removalHook is called by Remove with the UE it removes. It is for a package this one cannot
+// import: amf/lawfulintercept holds per-UE state keyed by the UE, and registers a hook so
+// that state ends with the context on every path that removes one, rather than only on the
+// paths that remembered to tell it.
+var removalHook atomic.Pointer[func(*AmfUe)]
+
+// SetRemovalHook registers f to be called by Remove with the UE being removed, replacing any
+// hook registered before; nil clears it. f runs on the removing goroutine, after the UE is
+// marked removed and outside its lock, so it must not block.
+func SetRemovalHook(f func(*AmfUe)) {
+	if f == nil {
+		removalHook.Store(nil)
+		return
+	}
+	removalHook.Store(&f)
+}
+
 func (ue *AmfUe) Remove() {
 	ue.Mutex.Lock()
 	ranUes := make([]*RanUe, 0, len(ue.RanUe))
@@ -960,6 +977,10 @@ func (ue *AmfUe) Remove() {
 	eventChannel := ue.EventChannel
 	ue.removed = true
 	ue.Mutex.Unlock()
+
+	if hook := removalHook.Load(); hook != nil {
+		(*hook)(ue)
+	}
 
 	// TryLock, not Lock: Remove must never wait on a handler's own admitMu hold -- the NGAP
 	// connection reader that calls this on a DRSM ownership mismatch depends on returning

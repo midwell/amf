@@ -5,9 +5,11 @@ package lawfulintercept
 
 import (
 	"bytes"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+	"weak"
 
 	amfctx "github.com/omec-project/amf/context"
 )
@@ -163,7 +165,7 @@ func TestAnUntaskedUEHoldsNoUEPolicyCommand(t *testing.T) {
 
 	NoteUEPolicyCommand(targetUE(), uePolicyCommandOf(1, 16))
 
-	if n := len(active.Load().policies.byUE); n != 0 {
+	if n := active.Load().policies.held(); n != 0 {
 		t.Errorf("an untasked UE's COMMAND was held: %d UE(s) held", n)
 	}
 }
@@ -178,13 +180,13 @@ func TestDeregisteringFromEveryAccessForgetsTheUEPolicyCommands(t *testing.T) {
 	NoteUEPolicyCommand(ue, uePolicyCommandOf(1, 16))
 	ReportIdentifierDeassociation(ue)
 
-	if n := len(active.Load().policies.byUE); n != 0 {
+	if n := active.Load().policies.held(); n != 0 {
 		t.Errorf("%d UE(s) still held after the UE left every access", n)
 	}
 }
 
-// TestHeldUEPolicyCommandsAreBounded: per UE, the oldest gives way; in total, a UE beyond the
-// bound is not held.
+// TestHeldUEPolicyCommandsAreBounded: per UE, the oldest COMMAND gives way; in total, the UE
+// whose newest COMMAND is oldest gives way to a new one.
 func TestHeldUEPolicyCommandsAreBounded(t *testing.T) {
 	var p pendingPolicies
 	ue := &amfctx.AmfUe{}
@@ -192,7 +194,7 @@ func TestHeldUEPolicyCommandsAreBounded(t *testing.T) {
 	for pti := uint8(1); pti <= maxPendingPerUE+1; pti++ {
 		p.remember(ue, pti, uePolicyCommandOf(pti, 16))
 	}
-	if n := len(p.byUE[ue]); n != maxPendingPerUE {
+	if n := len(p.byUE[weak.Make(ue)]); n != maxPendingPerUE {
 		t.Errorf("one UE holds %d COMMANDs, want at most %d", n, maxPendingPerUE)
 	}
 	if p.take(ue, 1) != nil {
@@ -202,14 +204,105 @@ func TestHeldUEPolicyCommandsAreBounded(t *testing.T) {
 		t.Error("the newest COMMAND was dropped instead of the oldest")
 	}
 
-	p = pendingPolicies{}
-	for range maxPendingUEs {
-		p.remember(&amfctx.AmfUe{}, 1, uePolicyCommandOf(1, 16))
+	now := time.Unix(1_700_000_000, 0)
+	p = pendingPolicies{now: func() time.Time { return now }}
+	ues := make([]*amfctx.AmfUe, maxPendingUEs)
+	for i := range ues {
+		ues[i] = &amfctx.AmfUe{}
+		p.remember(ues[i], 1, uePolicyCommandOf(1, 16))
+		now = now.Add(time.Millisecond)
 	}
+	// The first UE answers its newest procedure last, so it is not the oldest.
+	p.remember(ues[0], 2, uePolicyCommandOf(2, 16))
+	now = now.Add(time.Millisecond)
+
 	late := &amfctx.AmfUe{}
 	p.remember(late, 1, uePolicyCommandOf(1, 16))
-	if _, held := p.byUE[late]; held || len(p.byUE) != maxPendingUEs {
-		t.Errorf("%d UEs held, want at most %d", len(p.byUE), maxPendingUEs)
+	if n := p.held(); n != maxPendingUEs {
+		t.Errorf("%d UEs held, want %d", n, maxPendingUEs)
+	}
+	if p.take(late, 1) == nil {
+		t.Error("a UE past the bound was not held: UEs that left unanswered block every later target")
+	}
+	if p.take(ues[1], 1) != nil {
+		t.Error("the UE whose newest COMMAND was oldest was not the one evicted")
+	}
+	if p.take(ues[0], 2) == nil {
+		t.Error("a UE with a recent COMMAND was evicted ahead of an older one")
+	}
+}
+
+// TestVanishedUEsDoNotBlockAFreshTarget is the exhaustion case: as many targets as the bound
+// are each sent a COMMAND and never answer, and their contexts are never removed. A target
+// after them still has its exchange recorded. With a refusing bound, it was not, silently,
+// until the AMF restarted.
+func TestVanishedUEsDoNotBlockAFreshTarget(t *testing.T) {
+	snd := &captureSender{}
+	activateIRI(t, snd, testTargetSUPI)
+
+	gone := make([]*amfctx.AmfUe, maxPendingUEs)
+	for i := range gone {
+		gone[i] = targetUE()
+		NoteUEPolicyCommand(gone[i], uePolicyCommandOf(1, 16))
+	}
+
+	fresh := targetUE()
+	command := uePolicyCommandOf(7, 20)
+	NoteUEPolicyCommand(fresh, command)
+	ReportUEPolicyComplete(fresh, uePolicyAnswer(7, uePolicyComplete))
+
+	got := uePolicyRecords(t, snd)
+	if len(got) != 1 || !bytes.Equal(got[0], command) {
+		t.Fatalf("the fresh target produced %d record(s), want one carrying its COMMAND", len(got))
+	}
+}
+
+// TestAnExpiredUEPolicyCommandIsNotReported: a COMMAND held past the procedure's own
+// supervision belongs to a procedure the PCF has abandoned, so a COMPLETE under its PTI does
+// not confirm it. An expired COMMAND is also dropped when the next one is held, so a UE that
+// never answers does not hold it for the life of the context.
+func TestAnExpiredUEPolicyCommandIsNotReported(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	p := pendingPolicies{now: func() time.Time { return now }}
+	ue, other := &amfctx.AmfUe{}, &amfctx.AmfUe{}
+
+	p.remember(ue, 1, uePolicyCommandOf(1, 16))
+	now = now.Add(uePolicyHoldFor - time.Second)
+	p.remember(ue, 2, uePolicyCommandOf(2, 16))
+	if p.take(ue, 1) == nil {
+		t.Fatal("a COMMAND inside its hold was not held")
+	}
+
+	now = now.Add(uePolicyHoldFor)
+	if p.take(ue, 2) != nil {
+		t.Error("a COMMAND past its hold was reported as confirmed")
+	}
+
+	p.remember(ue, 3, uePolicyCommandOf(3, 16))
+	now = now.Add(uePolicyHoldFor)
+	p.remember(other, 1, uePolicyCommandOf(1, 16))
+	if n := p.held(); n != 1 {
+		t.Errorf("%d UEs held after the first's COMMAND expired, want 1: an unanswered "+
+			"COMMAND outlived its hold", n)
+	}
+}
+
+// TestRemovingTheUEContextForgetsItsUEPolicyCommands: a context removed on any path —
+// purge, transfer to another AMF, a registration torn down — completes no procedure through
+// it. Only the deregistration handlers forgot, so every other path left its COMMANDs held.
+func TestRemovingTheUEContextForgetsItsUEPolicyCommands(t *testing.T) {
+	activateIRI(t, &captureSender{}, testTargetSUPI)
+	ue := targetUE()
+
+	NoteUEPolicyCommand(ue, uePolicyCommandOf(1, 16))
+	if n := active.Load().policies.held(); n != 1 {
+		t.Fatalf("%d UE(s) held before the removal, want 1", n)
+	}
+
+	ue.Remove()
+
+	if n := active.Load().policies.held(); n != 0 {
+		t.Errorf("%d UE(s) still held after the UE context was removed", n)
 	}
 }
 
@@ -237,7 +330,7 @@ func TestAShortUEPolicyCommandIsRefusedNotDelivered(t *testing.T) {
 		t.Errorf("delivered %d records for a COMMAND the definition forbids. A conformant "+
 			"mediation function discards it, and this element would believe it had delivered", n)
 	}
-	if n := len(active.Load().policies.byUE); n != 0 {
+	if n := active.Load().policies.held(); n != 0 {
 		t.Errorf("the COMPLETE left %d UE(s) held: it was not matched to its COMMAND, so this "+
 			"test is not exercising the encoder's refusal", n)
 	}
@@ -254,7 +347,31 @@ func TestOnlyACommandIsHeld(t *testing.T) {
 	const uePolicyProvisioningReject = 0x06
 	NoteUEPolicyCommand(targetUE(), []byte{1, uePolicyProvisioningReject, 0x00})
 
-	if n := len(active.Load().policies.byUE); n != 0 {
+	if n := active.Load().policies.held(); n != 0 {
 		t.Errorf("a downlink policy message other than a COMMAND was held: %d UE(s)", n)
 	}
+}
+
+// TestAHeldCommandDoesNotKeepTheUEContextAlive: an entry is keyed by a weak pointer, so a UE
+// context nothing else references is collected even while a COMMAND is held for it. Keyed by
+// the pointer itself, every entry the bounds had not yet reached pinned a whole context.
+func TestAHeldCommandDoesNotKeepTheUEContextAlive(t *testing.T) {
+	var p pendingPolicies
+	w := rememberForUnreferencedUE(&p)
+
+	for i := 0; i < 10 && w.Value() != nil; i++ {
+		runtime.GC()
+	}
+	if w.Value() != nil {
+		t.Error("a held COMMAND kept its UE context reachable")
+	}
+	if n := p.held(); n != 1 {
+		t.Fatalf("%d UE(s) held, want the one entry: the test did not hold a COMMAND", n)
+	}
+}
+
+func rememberForUnreferencedUE(p *pendingPolicies) weak.Pointer[amfctx.AmfUe] {
+	ue := &amfctx.AmfUe{}
+	p.remember(ue, 1, uePolicyCommandOf(1, 16))
+	return weak.Make(ue)
 }

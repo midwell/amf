@@ -88,6 +88,11 @@ func removePendingPayloadFiles(m *context.N1N2Message) {
 	}
 }
 
+// reportUEPolicyComplete is the Lawful Interception hook for an uplink UE policy container,
+// reached through a package variable so a test can observe that the transport handler raises
+// it. Production behaviour is the same function.
+var reportUEPolicyComplete = lawfulintercept.ReportUEPolicyComplete
+
 func HandleULNASTransport(ctx ctxt.Context, ue *context.AmfUe, anType models.AccessType,
 	ulNasTransport *nasMessage.ULNASTransport,
 ) error {
@@ -114,7 +119,7 @@ func HandleULNASTransport(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 		// Lawful Interception: the uplink half, where a MANAGE UE POLICY COMPLETE triggers
 		// the record. The COMMAND it carries is noted on the downlink, in
 		// BuildDLNASTransport.
-		lawfulintercept.ReportUEPolicyComplete(ue, policy)
+		reportUEPolicyComplete(ue, policy)
 	case nasMessage.PayloadContainerTypeUEParameterUpdate:
 		ue.GmmLog.Infoln("AMF Transfer UEParameterUpdate To UDM")
 		upuMac, err := nasConvert.UpuAckToModels(ulNasTransport.GetPayloadContainerContents())
