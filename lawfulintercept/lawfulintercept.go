@@ -674,6 +674,9 @@ type Handover struct {
 	TypeSubstituted bool
 	HasCause        bool
 	HasPDUSessionID bool
+	// HasSourceToTarget says HANDOVER REQUIRED's container was carried forward. A flag, like
+	// HasCause, so that what was carried is stated rather than inferred from a length.
+	HasSourceToTarget bool
 }
 
 // HandoverCauseGroup names which arm of the TS 33.128 HandoverCause CHOICE a
@@ -715,14 +718,20 @@ func ReportHandoverCommand(h Handover) {
 // REQUIRED.
 //
 // Eight members are mandatory. If any of the carried ones is missing the record
-// cannot be completed, and nothing is emitted rather than a record with a
-// fabricated cause or an empty container.
+// cannot be completed: it is not emitted with a fabricated cause or container, and the
+// warrant is told as recordNotProduced rather than left to find a handover missing. The
+// acknowledge's target-to-source container may be empty — the AMF copies what the RAN sent,
+// and TS 38.413 sets it no minimum length (gnbsim rel-2.3.0 sends it so) — and is reported
+// as the RAN sent it.
 func ReportHandoverRequest(h Handover) {
 	sub := active.Load()
 	if sub == nil || h.UE == nil {
 		return
 	}
-	if !h.HasCause || !h.HasPDUSessionID || len(h.SourceToTarget) == 0 || len(h.TargetToSource) == 0 {
+	if !h.HasCause || !h.HasPDUSessionID || !h.HasSourceToTarget {
+		sub.reportNotProduced(h.UE.IdentitySnapshot(), iri.AMFRANHandoverRequest{},
+			"a member HANDOVER REQUIRED carries forward was not held when the acknowledge arrived")
+
 		return
 	}
 	// A cause the record's definition cannot express is carried as that group's `unspecified`

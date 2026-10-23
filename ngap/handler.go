@@ -3714,6 +3714,17 @@ func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
 	if sourceUe == nil || sourceUe.AmfUe == nil {
 		return
 	}
+	h := handoverOf(sourceUe, targetToSource, handoverList)
+
+	lawfulintercept.ReportHandoverRequest(h)
+	lawfulintercept.ReportHandoverCommand(h)
+}
+
+// handoverOf assembles what the two handover records are built from: the source UE's
+// association, the values HANDOVER REQUIRED stashed, and the acknowledge's own container.
+func handoverOf(sourceUe *context.RanUe, targetToSource []byte,
+	handoverList ngapType.PDUSessionResourceHandoverList,
+) lawfulintercept.Handover {
 	// The record's vocabulary, not NGAP's — the two number these four values differently, and
 	// casting across produced `handoverType: 0` for an intra-5GS handover, which the arm's
 	// enumeration does not define. See liHandoverType.
@@ -3726,6 +3737,10 @@ func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
 		TypeSubstituted: typeSubstituted,
 		TargetToSource:  targetToSource,
 		SourceToTarget:  sourceUe.HandOverSourceToTarget,
+		// The stash is nil only when no HANDOVER REQUIRED left one: SendHandoverRequest refuses
+		// an empty container before stashing. The target-to-source container is the
+		// acknowledge's own mandatory IE, which its handler checks present, and may be empty.
+		HasSourceToTarget: sourceUe.HandOverSourceToTarget != nil,
 	}
 	if len(handoverList.List) > 0 {
 		h.PDUSessionID = int32(handoverList.List[0].PDUSessionID.Value)
@@ -3735,8 +3750,7 @@ func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
 		h.CauseGroup, h.CauseValue, h.CauseSubstituted, h.HasCause = ngapCauseToLI(c)
 	}
 
-	lawfulintercept.ReportHandoverRequest(h)
-	lawfulintercept.ReportHandoverCommand(h)
+	return h
 }
 
 // ngapCauseToLI splits an NGAP Cause into the group and value the TS 33.128

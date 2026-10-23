@@ -6,6 +6,7 @@ package lawfulintercept
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	amfctx "github.com/omec-project/amf/context"
@@ -81,17 +82,18 @@ func TestReportServiceAccept(t *testing.T) {
 
 func sampleHandover() Handover {
 	return Handover{
-		UE:              targetUE(),
-		AMFUENGAPID:     7,
-		RANUENGAPID:     9,
-		HandoverType:    1,
-		TargetToSource:  []byte{0xDE, 0xAD, 0x00},
-		SourceToTarget:  []byte{0x00, 0xBE, 0xEF},
-		PDUSessionID:    5,
-		CauseGroup:      CauseGroupRadioNetwork,
-		CauseValue:      17,
-		HasCause:        true,
-		HasPDUSessionID: true,
+		UE:                targetUE(),
+		AMFUENGAPID:       7,
+		RANUENGAPID:       9,
+		HandoverType:      1,
+		TargetToSource:    []byte{0xDE, 0xAD, 0x00},
+		SourceToTarget:    []byte{0x00, 0xBE, 0xEF},
+		PDUSessionID:      5,
+		CauseGroup:        CauseGroupRadioNetwork,
+		CauseValue:        17,
+		HasCause:          true,
+		HasPDUSessionID:   true,
+		HasSourceToTarget: true,
 	}
 }
 
@@ -142,28 +144,58 @@ func TestReportHandoverRecords(t *testing.T) {
 }
 
 // TestHandoverRequestNeedsEveryMandatoryMember: eight members are mandatory, and
-// two of them are carried from an earlier message. If a carried one is missing —
+// three of them are carried from HANDOVER REQUIRED. If a carried one is missing —
 // a handover whose REQUIRED was never seen, or whose state was already cleared —
-// the record cannot be completed, and emitting a partial one would be worse than
-// emitting none. The command record has no carried members and is unaffected.
+// the record cannot be completed: none is emitted, and the warrant is told the record
+// was not produced rather than left to find a handover missing. The command record has
+// no carried members and is unaffected.
 func TestHandoverRequestNeedsEveryMandatoryMember(t *testing.T) {
 	missing := map[string]func(*Handover){
 		"no cause":            func(h *Handover) { h.HasCause = false },
 		"no PDU session":      func(h *Handover) { h.HasPDUSessionID = false },
-		"no source container": func(h *Handover) { h.SourceToTarget = nil },
-		"no target container": func(h *Handover) { h.TargetToSource = nil },
+		"no source container": func(h *Handover) { h.HasSourceToTarget, h.SourceToTarget = false, nil },
 	}
 	for name, break_ := range missing {
 		t.Run(name, func(t *testing.T) {
+			admf := newADMFStub(t)
 			snd := &captureSender{}
-			activateIRI(t, snd, testTargetSUPI)
+			activateIRIReporting(t, snd, admf)
 			h := sampleHandover()
 			break_(&h)
 			ReportHandoverRequest(h)
 			if len(snd.pdus) != 0 {
 				t.Errorf("an incomplete handover produced %d record(s)", len(snd.pdus))
 			}
+			if got := admf.awaitReport(t, "recordNotProduced"); !strings.Contains(got, "recordNotProduced") {
+				t.Errorf("an incomplete handover was not reported as recordNotProduced:\n%s", got)
+			}
 		})
+	}
+}
+
+// TestAnEmptyTargetToSourceContainerIsReportedAsTheRANSentIt: the AMF copies the transparent
+// containers, and TS 38.413 sets them no minimum length, so a RAN may answer the HANDOVER
+// REQUEST with an empty target-to-source container — gnbsim rel-2.3.0 does. That is the RAN's
+// value, not a missing one: both records are delivered carrying it, and nothing is reported as
+// lost.
+func TestAnEmptyTargetToSourceContainerIsReportedAsTheRANSentIt(t *testing.T) {
+	snd := &captureSender{}
+	activateIRI(t, snd, testTargetSUPI)
+
+	h := sampleHandover()
+	h.TargetToSource = []byte{}
+	ReportHandoverRequest(h)
+	ReportHandoverCommand(h)
+
+	records := decodeRecords(t, snd)
+	if len(records) != 2 {
+		t.Fatalf("delivered %d records for a handover whose RAN sent an empty container, want 2", len(records))
+	}
+	if got := records[0].member(t, 9).Bytes; len(got) != 0 {
+		t.Errorf("request targetToSourceContainer = % x, want the empty container the RAN sent", got)
+	}
+	if got := records[1].member(t, 5).Bytes; len(got) != 0 {
+		t.Errorf("command targetToSourceContainer = % x, want the empty container the RAN sent", got)
 	}
 }
 
