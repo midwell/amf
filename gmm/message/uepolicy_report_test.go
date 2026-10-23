@@ -38,26 +38,23 @@ func relayingUe(t *testing.T) *context.RanUe {
 	}
 }
 
-// TestADownlinkUEPolicyContainerIsReported is the direction that produced no record at all.
-//
-// TS 33.128 defines AMFUEPolicyTransfer as the record of this AMF passing a UE policy
-// container, and it passes them both ways: uplink to the PCF, and downlink to the UE from two
-// separate N1N2 relay paths. Only the uplink was hooked — so an agency's account of a tasked
-// subject's policy exchange showed one side of a two-sided conversation, with nothing to say
-// the other side was missing.
+// TestADownlinkUEPolicyContainerIsNoted: TS 33.128 clause 6.2.2.2.12 makes the record's
+// uEPolicy the MANAGE UE POLICY COMMAND, which this AMF relays downlink from two separate N1N2
+// relay paths. The record is produced on the UE's COMPLETE, so a COMMAND this hook misses is a
+// record the COMPLETE cannot produce.
 //
 // The hook is on the send rather than beside the two call sites, which is the third time this
 // shape has cost a record: a hook placed beside one caller is not inherited by the next.
-func TestADownlinkUEPolicyContainerIsReported(t *testing.T) {
+func TestADownlinkUEPolicyContainerIsNoted(t *testing.T) {
 	var got []byte
 	reported := 0
 
-	restore := reportUEPolicyTransfer
-	reportUEPolicyTransfer = func(_ *context.AmfUe, policy []byte) {
+	restore := noteUEPolicyCommand
+	noteUEPolicyCommand = func(_ *context.AmfUe, policy []byte) {
 		reported++
 		got = append([]byte(nil), policy...)
 	}
-	t.Cleanup(func() { reportUEPolicyTransfer = restore })
+	t.Cleanup(func() { noteUEPolicyCommand = restore })
 
 	ue := relayingUe(t)
 
@@ -66,23 +63,23 @@ func TestADownlinkUEPolicyContainerIsReported(t *testing.T) {
 		nasMessage.PayloadContainerTypeUEPolicy, policy, 0, 0, nil, 0)
 
 	if reported != 1 {
-		t.Fatalf("a downlink UE policy container was reported %d times, want 1: the AMF performed "+
-			"a transfer TS 33.128 defines a record for and produced none", reported)
+		t.Fatalf("a downlink UE policy container was noted %d times, want 1: the COMMAND a "+
+			"record carries was never held", reported)
 	}
 	if !bytes.Equal(got, policy) {
-		t.Errorf("the record carries %v, want the container that was sent %v", got, policy)
+		t.Errorf("the hook was handed %v, want the container that was sent %v", got, policy)
 	}
 }
 
-// TestADownlinkContainerOfAnotherKindIsNotReported keeps the gate: the record is about UE
-// policy, and reporting an SM or SMS container as one would tell an agency about an exchange
-// that did not happen.
-func TestADownlinkContainerOfAnotherKindIsNotReported(t *testing.T) {
+// TestADownlinkContainerOfAnotherKindIsNotNoted keeps the gate: the record is about UE
+// policy, and holding an SM or SMS container as one would report an exchange that did not
+// happen.
+func TestADownlinkContainerOfAnotherKindIsNotNoted(t *testing.T) {
 	reported := 0
 
-	restore := reportUEPolicyTransfer
-	reportUEPolicyTransfer = func(*context.AmfUe, []byte) { reported++ }
-	t.Cleanup(func() { reportUEPolicyTransfer = restore })
+	restore := noteUEPolicyCommand
+	noteUEPolicyCommand = func(*context.AmfUe, []byte) { reported++ }
+	t.Cleanup(func() { noteUEPolicyCommand = restore })
 
 	ue := relayingUe(t)
 
@@ -95,11 +92,11 @@ func TestADownlinkContainerOfAnotherKindIsNotReported(t *testing.T) {
 	}
 
 	if reported != 0 {
-		t.Errorf("%d containers of other kinds were reported as UE policy transfers", reported)
+		t.Errorf("%d containers of other kinds were noted as UE policy COMMANDs", reported)
 	}
 }
 
-// TestTheBuilderIsWhereTheUEPolicyReportLives pins the seam, not the caller.
+// TestTheBuilderIsWhereTheUEPolicyHookLives pins the seam, not the caller.
 //
 // The hook sat on SendDLNASTransport, which looked like the seam every downlink UE-policy
 // container crosses and was not: producer/n1n2message.go builds the message with this builder and
@@ -108,19 +105,19 @@ func TestADownlinkContainerOfAnotherKindIsNotReported(t *testing.T) {
 // precisely the caller that can carry a policy, and precisely the one the hook did not cover.
 //
 // So the assertion is about the builder. A relay path that builds a DL NAS Transport carrying a
-// policy container is reported whether or not it goes on to use SendDLNASTransport, which is what
-// makes a path added later reported without anybody remembering to hook it.
-func TestTheBuilderIsWhereTheUEPolicyReportLives(t *testing.T) {
+// policy container is noted whether or not it goes on to use SendDLNASTransport, which is what
+// makes a path added later covered without anybody remembering to hook it.
+func TestTheBuilderIsWhereTheUEPolicyHookLives(t *testing.T) {
 	ue := relayingUe(t)
 
 	var reported [][]byte
 
-	restore := reportUEPolicyTransfer
-	reportUEPolicyTransfer = func(_ *context.AmfUe, pdu []byte) {
+	restore := noteUEPolicyCommand
+	noteUEPolicyCommand = func(_ *context.AmfUe, pdu []byte) {
 		reported = append(reported, pdu)
 	}
 
-	t.Cleanup(func() { reportUEPolicyTransfer = restore })
+	t.Cleanup(func() { noteUEPolicyCommand = restore })
 
 	policy := []byte{0x2e, 0x01, 0x03, 0x04, 0x05}
 
@@ -131,14 +128,14 @@ func TestTheBuilderIsWhereTheUEPolicyReportLives(t *testing.T) {
 	}
 
 	if len(reported) != 1 {
-		t.Fatalf("a downlink UE policy container built outside SendDLNASTransport produced %d "+
-			"records, want 1. The N1N2 relay path builds and sends the message itself, so a hook "+
-			"on the sender never sees it: the agency's account of a tasked subject's policy "+
-			"exchange shows one side of a two-sided conversation", len(reported))
+		t.Fatalf("a downlink UE policy container built outside SendDLNASTransport was noted %d "+
+			"times, want 1. The N1N2 relay path builds and sends the message itself, so a hook "+
+			"on the sender never sees it, and the COMPLETE that follows has no COMMAND to "+
+			"report", len(reported))
 	}
 
 	if string(reported[0]) != string(policy) {
-		t.Errorf("the record carried %x, want the container that was transferred %x",
+		t.Errorf("the hook was handed %x, want the container that was transferred %x",
 			reported[0], policy)
 	}
 
@@ -151,7 +148,7 @@ func TestTheBuilderIsWhereTheUEPolicyReportLives(t *testing.T) {
 	}
 
 	if len(reported) != 0 {
-		t.Errorf("an SM container produced %d UE-policy records; the gate must stay on the "+
+		t.Errorf("an SM container was noted %d times as a UE policy; the gate must stay on the "+
 			"container type", len(reported))
 	}
 }

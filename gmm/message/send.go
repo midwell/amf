@@ -45,10 +45,10 @@ func SendDLNASTransport(ue *context.RanUe, anType models.AccessType, payloadCont
 	ngap_message.SendDownlinkNasTransport(ue, nasMsg, nil)
 }
 
-// reportUEPolicyTransfer is the Lawful Interception hook, reached through a package variable
+// noteUEPolicyCommand is the Lawful Interception hook, reached through a package variable
 // so a test can observe which of this package's paths raise it — which is the whole of what
 // was wrong. Production behaviour is the same function.
-var reportUEPolicyTransfer = lawfulintercept.ReportUEPolicyTransfer
+var noteUEPolicyCommand = lawfulintercept.NoteUEPolicyCommand
 
 func SendNotification(ue *context.RanUe, nasMsg []byte) {
 	if ue == nil {

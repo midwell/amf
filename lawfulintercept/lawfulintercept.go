@@ -164,6 +164,9 @@ type subsystem struct {
 	// shared with the SMF's IRI-POI and the UPF's CC-POI through li/x2x3.
 	ids      *x2x3.Identity
 	reporter *x1.Reporter // nil when NE-initiated reporting is not configured
+	// policies holds the UE policy COMMANDs relayed to targets and not yet answered — see
+	// NoteUEPolicyCommand.
+	policies pendingPolicies
 }
 
 // deliveryFault is what this element can answer about itself when an ADMF asks for its
@@ -626,19 +629,6 @@ func ReportServiceAccept(ue *amfctx.AmfUe) {
 	sub.reportEvent(id, amfServiceAccept(id))
 }
 
-// ReportUEPolicyTransfer emits an AMFUEPolicyTransfer xIRI when the AMF passes a
-// UE policy container for the target. policy is copied, never parsed: the MDF and
-// the agency's tooling interpret it, and parsing an attacker-influenced payload
-// here would add exposure for no investigative gain.
-func ReportUEPolicyTransfer(ue *amfctx.AmfUe, policy []byte) {
-	sub := active.Load()
-	if sub == nil || ue == nil || len(policy) == 0 {
-		return
-	}
-	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, amfUEPolicyTransfer(id, policy))
-}
-
 // Handover describes one handover as the AMF sees it when the HANDOVER REQUEST
 // ACKNOWLEDGE arrives — the point where TS 33.128 places both handover records.
 // The caller assembles it so this package never touches ngapType.
@@ -866,6 +856,8 @@ func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
 	if sub == nil || ue == nil {
 		return
 	}
+	// Registered on no access, so no UE policy procedure it had open will complete.
+	sub.policies.forget(ue)
 	id := ue.IdentitySnapshot()
 	sub.reportEvent(id, amfIdentifierDeassociation(id))
 }

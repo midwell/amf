@@ -79,51 +79,6 @@ func TestReportServiceAccept(t *testing.T) {
 	}
 }
 
-func TestReportUEPolicyTransfer(t *testing.T) {
-	snd := &captureSender{}
-	activateIRI(t, snd, testTargetSUPI)
-
-	// Interior and trailing zero bytes: the shapes a payload-mangling codec breaks.
-	//
-	// Sixteen octets, because `UEPolicy ::= OCTET STRING (SIZE(16..65540))` and the encoder
-	// checks it — at the shortest permitted length, which is the sharpest boundary to encode.
-	//
-	// The previous value was five, and lengthening it is what made this test pass. That was
-	// half a fix: the constraint is right to be enforced, but a fixture changed until the
-	// encoder accepts it turns a live gap into a green test and leaves the production
-	// consequence covered by nothing. See TestAShortUEPolicyContainerIsRefusedAndReported.
-	policy := []byte{
-		0x01, 0x00, 0x00, 0xFF, 0x00, 0x7F, 0x80, 0x00,
-		0x00, 0x02, 0x03, 0x04, 0xFE, 0xFF, 0x00, 0x00,
-	}
-	ReportUEPolicyTransfer(targetUE(), policy)
-
-	records := decodeRecords(t, snd)
-	if len(records) != 1 {
-		t.Fatalf("delivered %d records, want 1", len(records))
-	}
-	if records[0].event != eventUEPolicyTransfer {
-		t.Fatalf("delivered XIRIEvent [%d], want aMFUEPolicyTransfer [%d]", records[0].event, eventUEPolicyTransfer)
-	}
-	if got := records[0].member(t, 6).Bytes; !bytes.Equal(got, policy) {
-		t.Errorf("uEPolicy = % x, want % x — the payload must arrive byte-identical", got, policy)
-	}
-}
-
-// TestReportUEPolicyTransferIgnoresEmpty: uEPolicy is mandatory, so a transfer
-// with no container produces nothing rather than a record asserting an empty
-// policy.
-func TestReportUEPolicyTransferIgnoresEmpty(t *testing.T) {
-	snd := &captureSender{}
-	activateIRI(t, snd, testTargetSUPI)
-
-	ReportUEPolicyTransfer(targetUE(), nil)
-
-	if len(snd.pdus) != 0 {
-		t.Errorf("an empty policy produced %d record(s)", len(snd.pdus))
-	}
-}
-
 func sampleHandover() Handover {
 	return Handover{
 		UE:              targetUE(),
@@ -262,7 +217,9 @@ func TestNewRecordsSilentForUntaskedSubscriber(t *testing.T) {
 	activateIRI(t, snd, "999999999999999") // someone else
 
 	ReportServiceAccept(targetUE())
-	ReportUEPolicyTransfer(targetUE(), []byte{0x01})
+	ue := targetUE()
+	NoteUEPolicyCommand(ue, uePolicyCommandOf(1, 16))
+	ReportUEPolicyComplete(ue, []byte{1, uePolicyComplete})
 	ReportHandoverRequest(sampleHandover())
 	ReportHandoverCommand(sampleHandover())
 
@@ -278,14 +235,16 @@ func TestNewRecordsSurviveMissingContext(t *testing.T) {
 	t.Run("no subsystem", func(t *testing.T) {
 		active.Store(nil)
 		ReportServiceAccept(targetUE())
-		ReportUEPolicyTransfer(targetUE(), []byte{0x01})
+		NoteUEPolicyCommand(targetUE(), uePolicyCommandOf(1, 16))
+		ReportUEPolicyComplete(targetUE(), []byte{1, uePolicyComplete})
 		ReportHandoverRequest(sampleHandover())
 		ReportHandoverCommand(sampleHandover())
 	})
 	t.Run("nil UE", func(t *testing.T) {
 		activateIRI(t, &captureSender{}, testTargetSUPI)
 		ReportServiceAccept(nil)
-		ReportUEPolicyTransfer(nil, []byte{0x01})
+		NoteUEPolicyCommand(nil, uePolicyCommandOf(1, 16))
+		ReportUEPolicyComplete(nil, []byte{1, uePolicyComplete})
 		h := sampleHandover()
 		h.UE = nil
 		ReportHandoverRequest(h)
@@ -335,37 +294,5 @@ func TestPeriodicRegistrationIsReportedOnceAsPeriodic(t *testing.T) {
 					"tell a keepalive from a movement from a new attachment", got, tc.want)
 			}
 		})
-	}
-}
-
-// TestAShortUEPolicyContainerIsRefusedAndReported covers the production consequence the fixture
-// above was lengthened to avoid.
-//
-// TS 33.128 makes `uEPolicy` mandatory in AMFUEPolicyTransfer and defines it as
-// `OCTET STRING (SIZE(16..65540))`. A UE policy container is a UE POLICY DELIVERY SERVICE message,
-// and the shortest ones are three octets — `MANAGE UE POLICY COMPLETE` is exactly that. So the
-// element must produce the record and must not encode it; both halves of the specification cannot
-// hold, and this project follows the schema and declares the contradiction (li CONFORMANCE
-// finding 6).
-//
-// What must not happen is that the gap is invisible. Relaxing the bound would not deliver the
-// record — a mediation function validating against the published module discards a three-octet
-// container exactly as this encoder does — it would only move the discard to the far end, where
-// this element cannot see it. That is the unattributable-record failure the constraint checking
-// exists to close.
-//
-// So the assertion is: nothing is delivered, and the condition is reported against the warrant
-// naming the record type, rather than as a generic delivery loss naming neither.
-func TestAShortUEPolicyContainerIsRefusedAndReported(t *testing.T) {
-	snd := &captureSender{}
-	activateIRI(t, snd, testTargetSUPI)
-
-	// A MANAGE UE POLICY COMPLETE: extended protocol discriminator, PTI, message identity.
-	ReportUEPolicyTransfer(targetUE(), []byte{0x2e, 0x01, 0x03})
-
-	if records := decodeRecords(t, snd); len(records) != 0 {
-		t.Errorf("delivered %d records for a container the definition forbids. A conformant "+
-			"mediation function discards it, and this element would believe it had delivered",
-			len(records))
 	}
 }

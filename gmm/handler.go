@@ -111,10 +111,10 @@ func HandleULNASTransport(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 		ue.GmmLog.Infoln("AMF Transfer UEPolicy To PCF")
 		policy := ulNasTransport.GetPayloadContainerContents()
 		callback.SendN1MessageNotify(ue, models.N1MESSAGECLASS_UPDP, policy, nil)
-		// Lawful Interception: the uplink half. The downlink half is hooked on
-		// SendDLNASTransport, which is the seam both N1N2 relay paths cross — see there for
-		// why it is on the send rather than beside each caller.
-		lawfulintercept.ReportUEPolicyTransfer(ue, policy)
+		// Lawful Interception: the uplink half, where a MANAGE UE POLICY COMPLETE triggers
+		// the record. The COMMAND it carries is noted on the downlink, in
+		// BuildDLNASTransport.
+		lawfulintercept.ReportUEPolicyComplete(ue, policy)
 	case nasMessage.PayloadContainerTypeUEParameterUpdate:
 		ue.GmmLog.Infoln("AMF Transfer UEParameterUpdate To UDM")
 		upuMac, err := nasConvert.UpuAckToModels(ulNasTransport.GetPayloadContainerContents())
