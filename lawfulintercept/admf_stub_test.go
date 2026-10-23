@@ -29,7 +29,8 @@ import (
 // testTrust is the LI trust anchor every test in this package shares. It is also the
 // element's own certificate, as liPKI has always written it: a self-signed CA standing for
 // both, with an IP SAN so a peer on the loopback presenting it is verified rather than merely
-// trusted. Sharing one is what lets the ADMF stub present a certificate the element verifies
+// trusted, and binding testNEID in the NE role by the TS 103 221-1 annex G URN, as a real
+// element's certificate does for the ADMF that checks it. Sharing one is what lets the ADMF stub present a certificate the element verifies
 // whichever of liPKI, loopbackPKI and newADMFStub a test happens to call first.
 type testTrust struct {
 	certPEM, keyPEM []byte
@@ -62,6 +63,10 @@ func newTestTrust() (*testTrust, error) {
 	if err != nil {
 		return nil, err
 	}
+	binding, err := url.Parse(certBindingURN("NE", testNEID))
+	if err != nil {
+		return nil, err
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: testNEID},
@@ -72,6 +77,7 @@ func newTestTrust() (*testTrust, error) {
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		URIs:                  []*url.URL{binding},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -111,7 +117,7 @@ func (tr *testTrust) admfCertificate(t *testing.T, admfID string) tls.Certificat
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := url.Parse("urn:etsi:li:103221-1:cert-binding:ADMF:" + admfID)
+	binding, err := url.Parse(certBindingURN("ADMF", admfID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,16 +159,27 @@ func liPKI(t *testing.T) (certPath, keyPath, caPath string) {
 	return certPath, keyPath, caPath
 }
 
+// certBindingURN is the TS 103 221-1 annex G certificate binding URN for identifier in role.
+func certBindingURN(role, identifier string) string {
+	return "urn:etsi:li:103221-1:cert-binding:" + role + ":" + identifier
+}
+
 // admfStub is an ADMF that receives NE issue reports and records their bodies. It is what the
 // element's reporter talks to in production: an https endpoint presenting a certificate that
 // binds testADMFID, requiring the element's own certificate, and answering each report with a
 // response bound to it — so a report is committed as delivered, as it is against a real ADMF,
 // rather than refused unsent or left unacknowledged.
+//
+// It checks what a real ADMF checks before acknowledging: that the element's certificate binds
+// testNEID in the NE role (clause 8.2.4), and that the report names this ADMF and that NE. A
+// report failing either is answered with an ErrorResponse, as an ADMF would, and fails the
+// test when it ends, so a reporter sending the wrong identity cannot pass by being echoed.
 type admfStub struct {
 	srv *httptest.Server
 
-	mu     sync.Mutex
-	bodies []string
+	mu       sync.Mutex
+	bodies   []string
+	mismatch []string
 }
 
 func newADMFStub(t *testing.T) *admfStub {
@@ -170,14 +187,38 @@ func newADMFStub(t *testing.T) *admfStub {
 
 	tr := liTrust(t)
 	a := &admfStub{}
+	// Registered before the server's Close, so it runs after it: every report has been
+	// answered by the time the mismatches are read.
+	t.Cleanup(func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for _, m := range a.mismatch {
+			t.Errorf("the ADMF refused a report: %s", m)
+		}
+	})
 	a.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test handler
+
+		problem := ""
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 ||
+			!bindsURN(r.TLS.PeerCertificates[0], certBindingURN("NE", testNEID)) {
+			problem = "the client certificate does not bind " + testNEID + " in the NE role"
+		}
 
 		a.mu.Lock()
 		a.bodies = append(a.bodies, string(body))
 		a.mu.Unlock()
 
-		if answer, ok := admfAnswer(body); ok {
+		answer, wrong, ok := admfAnswer(body)
+		if problem == "" {
+			problem = wrong
+		}
+		if problem != "" {
+			a.mu.Lock()
+			a.mismatch = append(a.mismatch, problem)
+			a.mu.Unlock()
+		}
+		if ok {
 			_, _ = w.Write([]byte(answer)) //nolint:errcheck // test handler
 		}
 	}))
@@ -210,9 +251,20 @@ func (a *admfStub) received() []string {
 	return append([]string(nil), a.bodies...)
 }
 
+// bindsURN reports whether cert carries urn as a uniformResourceIdentifier subjectAltName.
+func bindsURN(cert *x509.Certificate, urn string) bool {
+	for _, u := range cert.URIs {
+		if u != nil && u.String() == urn {
+			return true
+		}
+	}
+	return false
+}
+
 // admfAnswer is the response an ADMF gives a report: the request's own response type, its
-// identifiers, version and transaction echoed, and an OK of AcknowledgedAndCompleted.
-func admfAnswer(request []byte) (string, bool) {
+// identifiers, version and transaction echoed, and an OK of AcknowledgedAndCompleted. A report
+// naming another ADMF or NE is answered with an ErrorResponse instead, and wrong says why.
+func admfAnswer(request []byte) (answer, wrong string, ok bool) {
 	var in struct {
 		Messages []struct {
 			Type            string `xml:"http://www.w3.org/2001/XMLSchema-instance type,attr"`
@@ -224,18 +276,32 @@ func admfAnswer(request []byte) (string, bool) {
 		} `xml:"x1RequestMessage"`
 	}
 	if err := xml.Unmarshal(request, &in); err != nil || len(in.Messages) != 1 {
-		return "", false
+		return "", "", false
 	}
 	m := in.Messages[0]
 	local := m.Type[strings.LastIndex(m.Type, ":")+1:]
 
+	switch {
+	case m.AdmfIdentifier != testADMFID:
+		wrong = "it names ADMF " + m.AdmfIdentifier + ", not " + testADMFID
+	case m.NeIdentifier != testNEID:
+		wrong = "it names NE " + m.NeIdentifier + ", not " + testNEID
+	}
+	typ, outcome := strings.TrimSuffix(local, "Request")+"Response", `<x1:oK>AcknowledgedAndCompleted</x1:oK>`
+	if wrong != "" {
+		typ = "ErrorResponse"
+		outcome = `<x1:requestMessageType>` + local + `</x1:requestMessageType>` +
+			`<x1:errorInformation><x1:errorCode>1000</x1:errorCode>` +
+			`<x1:errorDescription>` + wrong + `</x1:errorDescription></x1:errorInformation>`
+	}
+
 	return `<?xml version="1.0"?><x1:X1Response xmlns:x1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">` +
-		`<x1:x1ResponseMessage xsi:type="x1:` + strings.TrimSuffix(local, "Request") + `Response">` +
+		`<x1:x1ResponseMessage xsi:type="x1:` + typ + `">` +
 		`<x1:admfIdentifier>` + m.AdmfIdentifier + `</x1:admfIdentifier>` +
 		`<x1:neIdentifier>` + m.NeIdentifier + `</x1:neIdentifier>` +
 		`<x1:messageTimestamp>` + m.Timestamp + `</x1:messageTimestamp>` +
 		`<x1:version>` + m.Version + `</x1:version>` +
 		`<x1:x1TransactionId>` + m.X1TransactionID + `</x1:x1TransactionId>` +
-		`<x1:oK>AcknowledgedAndCompleted</x1:oK>` +
-		`</x1:x1ResponseMessage></x1:X1Response>`, true
+		outcome +
+		`</x1:x1ResponseMessage></x1:X1Response>`, wrong, true
 }

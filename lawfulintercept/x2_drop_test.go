@@ -95,9 +95,9 @@ func TestProductDroppedByAFullQueueIsReported(t *testing.T) {
 	s := sub.senderFor(mdf2)
 
 	// Comfortably past the queue's 1024, offered faster than a peer that never reads
-	// can take them. A PDU the framing accepts, as production builds one: a PDU Marshal
-	// refuses is lost before any queue, so the test would pass on that refusal and say
-	// nothing about the full queue it is named for.
+	// can take them. The PDU has the shape production builds, so it frames: the queue
+	// overflows before framing, so the drop report held with an unframeable PDU too, but
+	// only a framed one ever reaches the peer and makes the slow destination's state real.
 	pdu := &x2x3.PDU{
 		Type:          x2x3.PDUTypeX2,
 		PayloadFormat: x2x3.PayloadFormat3GPP33128,
