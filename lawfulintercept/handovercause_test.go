@@ -18,7 +18,7 @@ import (
 // activateIRIReporting is activateIRI for testTargetSUPI with a fault channel pointed at an
 // ADMF stub, so a test can assert both halves of a condition: what the record carries, and
 // what was said about it.
-func activateIRIReporting(t *testing.T, snd sender, admfURL string) {
+func activateIRIReporting(t *testing.T, snd sender, admf *admfStub) {
 	t.Helper()
 	st := store.New()
 	if !st.Activate(types.InterceptTask{
@@ -33,7 +33,7 @@ func activateIRIReporting(t *testing.T, snd sender, admfURL string) {
 		store: st, senderFor: func(string) sender { return snd },
 		mdf2:     testAgencyAddr,
 		ids:      x2x3.NewIdentity(testNEID, amfInterceptionPoint),
-		reporter: x1.NewReporter(admfURL, testADMFID, testNEID, nil),
+		reporter: x1.NewReporter(admf.srv.URL, testADMFID, testNEID, admf.clientTLS()),
 	})
 	t.Cleanup(func() { active.Store(nil) })
 }
@@ -69,7 +69,7 @@ func awaitReport(t *testing.T, admf *admfStub, want string) string {
 func TestASubstitutedCauseIsDistinguishableFromAGenuineUnspecified(t *testing.T) {
 	admf := newADMFStub(t)
 	snd := &captureSender{}
-	activateIRIReporting(t, snd, admf.srv.URL)
+	activateIRIReporting(t, snd, admf)
 
 	// First the genuine one: the network gave `unspecified`, and this element has nothing to
 	// add. Asserted before the substituted case so a report appearing here cannot be confused
@@ -128,7 +128,7 @@ func TestASubstitutedCauseIsDistinguishableFromAGenuineUnspecified(t *testing.T)
 func TestTheSubstitutionReportNamesNoTargetAndNoWarrant(t *testing.T) {
 	admf := newADMFStub(t)
 	snd := &captureSender{}
-	activateIRIReporting(t, snd, admf.srv.URL)
+	activateIRIReporting(t, snd, admf)
 
 	h := sampleHandover()
 	h.CauseValue = int64(iri.CauseRadioNetworkUnspecified)

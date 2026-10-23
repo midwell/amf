@@ -80,7 +80,7 @@ func TestAUEPolicyCompleteReportsTheCommandItConfirms(t *testing.T) {
 func TestAUEPolicyCompleteWithNoCommandReportsNothing(t *testing.T) {
 	admf := newADMFStub(t)
 	snd := &captureSender{}
-	activateIRIReporting(t, snd, admf.srv.URL)
+	activateIRIReporting(t, snd, admf)
 
 	ReportUEPolicyComplete(targetUE(), uePolicyAnswer(5, uePolicyComplete))
 
@@ -320,7 +320,7 @@ func TestRemovingTheUEContextForgetsItsUEPolicyCommands(t *testing.T) {
 func TestAShortUEPolicyCommandIsRefusedNotDelivered(t *testing.T) {
 	admf := newADMFStub(t)
 	snd := &captureSender{}
-	activateIRIReporting(t, snd, admf.srv.URL)
+	activateIRIReporting(t, snd, admf)
 	ue := targetUE()
 
 	NoteUEPolicyCommand(ue, uePolicyCommandOf(4, 13))
