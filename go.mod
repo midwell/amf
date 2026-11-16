@@ -12,7 +12,7 @@ require (
 	github.com/omec-project/nas/v2 v2.2.7
 	github.com/omec-project/ngap/v2 v2.1.10
 	github.com/omec-project/openapi/v2 v2.4.1
-	github.com/omec-project/util v1.9.3
+	github.com/omec-project/util v1.10.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/urfave/cli/v3 v3.14.0
@@ -83,5 +83,3 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e // indirect
 )
-
-replace github.com/omec-project/util => github.com/midwell/util v0.0.0-20261023180626-bc6bf3a9199a
