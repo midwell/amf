@@ -64,7 +64,7 @@ func TestTheIdentifierAssociationIsReportedOnEveryAccessPath(t *testing.T) {
 		want      int
 	}{
 		{"presenting the GUTI it keeps", gutiOctets(heldGUTI), 0},
-		{"presenting a GUTI the AMF reallocated", gutiOctets("20893cafe0000000002"), 1},
+		{"presenting a GUTI other than the one held", gutiOctets("20893cafe0000000002"), 1},
 		{"presenting a SUCI", []uint8{nasMessage.MobileIdentity5GSTypeSuci, 0x02, 0xf8, 0x39}, 1},
 	} {
 		t.Run("mobility update "+c.name, func(t *testing.T) {

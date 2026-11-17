@@ -11,6 +11,9 @@ import (
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/fsm"
 	"github.com/omec-project/util/li/iri"
+	"github.com/omec-project/util/li/store"
+	"github.com/omec-project/util/li/types"
+	"github.com/omec-project/util/li/x2x3"
 )
 
 // ueRegisteredOver is the target UE with the given accesses in the Registered state and the
@@ -66,23 +69,58 @@ func TestARegistrationRecordNamesTheAccessesTheUEIsRegisteredOver(t *testing.T) 
 	}
 }
 
-// The start-of-interception record takes the accesses the UE is registered over when the
-// warrant arrives; no registration is completing then.
-func TestAStartOfInterceptionNamesTheAccessesTheUEIsRegisteredOver(t *testing.T) {
+// TS 33.128 clause 6.2.2.2.5: "If the UE is registered over both 3GPP NG-RAN and non-3GPP
+// access, the IRI-POI present in the AMF shall generate an xIRI containing an
+// AMFStartOfInterceptionWithRegisteredUE record for each access type." So the activation
+// scan makes one record per access the UE is registered over, each naming that access.
+func TestAStartOfInterceptionIsMadeForEachAccessTheUEIsRegisteredOver(t *testing.T) {
 	for _, c := range []struct {
+		name       string
 		registered []models.AccessType
-		want       iri.AMFRegistrationResult
+		want       []iri.AMFRegistrationResult
 	}{
-		{[]models.AccessType{models.ACCESSTYPE__3_GPP_ACCESS}, iri.RegResult3GPPAccess},
-		{[]models.AccessType{models.ACCESSTYPE_NON_3_GPP_ACCESS}, iri.RegResultNon3GPPAccess},
+		{"over 3GPP", []models.AccessType{models.ACCESSTYPE__3_GPP_ACCESS}, []iri.AMFRegistrationResult{iri.RegResult3GPPAccess}},
+		{"over non-3GPP", []models.AccessType{models.ACCESSTYPE_NON_3_GPP_ACCESS}, []iri.AMFRegistrationResult{iri.RegResultNon3GPPAccess}},
 		{
-			[]models.AccessType{models.ACCESSTYPE__3_GPP_ACCESS, models.ACCESSTYPE_NON_3_GPP_ACCESS},
-			iri.RegResult3GPPAndNon3GPP,
+			name:       "over both",
+			registered: []models.AccessType{models.ACCESSTYPE__3_GPP_ACCESS, models.ACCESSTYPE_NON_3_GPP_ACCESS},
+			want:       []iri.AMFRegistrationResult{iri.RegResult3GPPAccess, iri.RegResultNon3GPPAccess},
 		},
 	} {
-		if got := registrationResultOf(ueRegisteredOver(c.registered...), nil); got != c.want {
-			t.Errorf("registered over %v: result %d, want %d", c.registered, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			task := types.InterceptTask{
+				XID:      testSubstitutionXID,
+				Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}},
+				Products: []types.ProductType{types.ProductIRI},
+				State:    types.TaskActive,
+			}
+			st := store.New()
+			if !st.Activate(task) {
+				t.Fatal("activate")
+			}
+			snd := &captureSender{}
+			s := &subsystem{
+				store: st, senderFor: func(string) sender { return snd },
+				mdf2: testAgencyAddr,
+				ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
+			}
+			amfctx.AMF_Self().UePool.Store(testTargetSUPI, ueRegisteredOver(c.registered...))
+			t.Cleanup(func() { amfctx.AMF_Self().UePool.Delete(testTargetSUPI) })
+
+			s.reportStartOfInterception(task, nil)
+			s.scans.Wait()
+
+			records := decodeRecords(t, snd)
+			if len(records) != len(c.want) {
+				t.Fatalf("delivered %d records, want %d", len(records), len(c.want))
+			}
+			for i, want := range c.want {
+				// AMFStartOfInterceptionWithRegisteredUE: registrationResult is member [1].
+				if got := integer(t, records[i].member(t, 1)); got != int64(want) {
+					t.Errorf("record %d: registrationResult = %d, want %d", i, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -94,10 +132,14 @@ func TestARegistrationRejectIsReportedOnlyForAnAuthenticatedUE(t *testing.T) {
 	for _, c := range []struct {
 		name          string
 		authenticated bool
+		macFailed     bool
 		want          int
 	}{
-		{"authenticated", true, 1},
-		{"not authenticated", false, 0},
+		{"authenticated", true, false, 1},
+		{"not authenticated", false, false, 0},
+		// A request that failed its integrity check proves nothing, whatever context the
+		// AMF held for the UE before it.
+		{"holding a context the request failed", true, true, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			snd := &captureSender{}
@@ -109,6 +151,7 @@ func TestARegistrationRejectIsReportedOnlyForAnAuthenticatedUE(t *testing.T) {
 				ue.SecurityContextAvailable = true
 				ue.NgKsi = models.NgKsi{Ksi: 1}
 			}
+			ue.MacFailed = c.macFailed
 
 			ReportRegistrationReject(ue, nasMessage.Cause5GMMProtocolErrorUnspecified)
 

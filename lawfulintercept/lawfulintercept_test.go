@@ -252,21 +252,21 @@ func TestRegistered(t *testing.T) {
 		models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(amfctx.Deregistered),
 		models.ACCESSTYPE_NON_3_GPP_ACCESS: fsm.NewState(amfctx.Deregistered),
 	}}
-	if registered(dereg) {
-		t.Error("deregistered UE reported as registered")
+	if got := registeredAccesses(dereg); len(got) != 0 {
+		t.Errorf("deregistered UE reported as registered over %v", got)
 	}
 
 	reg := &amfctx.AmfUe{State: map[models.AccessType]*fsm.State{
 		models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(amfctx.Registered),
 		models.ACCESSTYPE_NON_3_GPP_ACCESS: fsm.NewState(amfctx.Deregistered),
 	}}
-	if !registered(reg) {
-		t.Error("registered UE (on 3GPP access) not recognised")
+	if got := registeredAccesses(reg); len(got) != 1 || got[0] != iri.RegResult3GPPAccess {
+		t.Errorf("UE registered on 3GPP access reported as registered over %v", got)
 	}
 
 	// A UE with no State map must not panic and is not registered.
-	if registered(&amfctx.AmfUe{}) {
-		t.Error("UE with nil State reported as registered")
+	if got := registeredAccesses(&amfctx.AmfUe{}); len(got) != 0 {
+		t.Errorf("UE with nil State reported as registered over %v", got)
 	}
 }
 

@@ -362,7 +362,9 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 			// Lawful Interception IRI-POI: each branch below that goes ahead deregisters the UE
 			// and removes its context, so it reports an AMFDeregistration before writing the
 			// state and an AMFIdentifierDeassociation after: Remove ends the binding on every
-			// access.
+			// access. The deregistration names the access this procedure was for; a UE also
+			// registered over the other access loses that registration with the context, and
+			// it is not reported separately.
 			// Remove() deletes the whole UE; publish the Del first or a resolved-SUPI subscriber is
 			// left stale in Kafka (the Add published on SUPI resolution never gets a matching Del).
 			// Serialized with the EventChannel so this can't race an in-flight NAS message for the

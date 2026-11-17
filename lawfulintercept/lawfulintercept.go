@@ -604,7 +604,7 @@ func ReportRegistration(ue *amfctx.AmfUe, access models.AccessType) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, registrationEvent(id, registrationResultOf(ue, &access)))
+	sub.reportEvent(id, registrationEvent(id, registrationResultOf(ue, access)))
 }
 
 // registrationEvent picks the xIRI for a completed registration: a mobility
@@ -618,24 +618,18 @@ func registrationEvent(id amfctx.UeIdentity, result iri.AMFRegistrationResult) a
 	return amfRegistration(id, result)
 }
 
-// registrationResultOf is the 5GS registration result of TS 24.501 clause 9.11.3.6: the
-// accesses ue is registered over. completedOn, when set, is the access a registration is
-// completing on, which is not yet in the Registered state when the record is made. The
-// result is built as BuildRegistrationAccept builds the IE, and the NAS access bits are the
-// record's AMFRegistrationResult values (1, 2, and 3 for both).
-func registrationResultOf(ue *amfctx.AmfUe, completedOn *models.AccessType) iri.AMFRegistrationResult {
-	var result iri.AMFRegistrationResult
-	for access, bit := range map[models.AccessType]iri.AMFRegistrationResult{
-		models.ACCESSTYPE__3_GPP_ACCESS:    iri.RegResult3GPPAccess,
-		models.ACCESSTYPE_NON_3_GPP_ACCESS: iri.RegResultNon3GPPAccess,
-	} {
-		if completedOn != nil && *completedOn == access {
-			result |= bit
-			continue
-		}
-		if st := ue.State[access]; st != nil && st.Is(amfctx.Registered) {
-			result |= bit
-		}
+// registrationResultOf is the 5GS registration result of TS 24.501 clause 9.11.3.6 for a
+// registration completing on completedOn: that access, which is not yet in the Registered
+// state when the record is made, and any other access ue is registered over. It is built as
+// BuildRegistrationAccept builds the IE, and the NAS access bits are the record's
+// AMFRegistrationResult values (1, 2, and 3 for both).
+func registrationResultOf(ue *amfctx.AmfUe, completedOn models.AccessType) iri.AMFRegistrationResult {
+	result := iri.RegResult3GPPAccess
+	if completedOn == models.ACCESSTYPE_NON_3_GPP_ACCESS {
+		result = iri.RegResultNon3GPPAccess
+	}
+	for _, other := range registeredAccesses(ue) {
+		result |= other
 	}
 
 	return result
@@ -869,7 +863,9 @@ func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
 	// TS 33.128 clause 6.2.2.2.6: an unsuccessful registration is reported only if the UE
 	// has been successfully authenticated. A UE holding a valid NAS security context has
 	// been: by this procedure's authentication and security mode, or by an earlier one
-	// whose context protected this request.
+	// whose context protected this request. The context is marked available when the
+	// SECURITY MODE COMMAND is built, so a UE for which none is built (NEA0 and NIA0
+	// selected) holds none, and its rejects are not reported.
 	if !ue.SecurityContextIsValid() {
 		return
 	}
@@ -1075,9 +1071,15 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 		// ue.State needs no such care: its keys are fixed at UE creation and each
 		// *fsm.State guards its own transitions.
 		id := ue.IdentitySnapshot()
-		if registered(ue) && taskTargets(task, id) && !covered(already, id) {
+		if !taskTargets(task, id) || covered(already, id) {
+			return true
+		}
+		// TS 33.128 clause 6.2.2.2.5: a UE registered over both accesses draws one record for
+		// each access type, each naming that access as its registration result. A UE
+		// registered over neither draws none.
+		for _, access := range registeredAccesses(ue) {
 			events = append(events, startRecord{
-				event: amfStartOfInterception(id, registrationResultOf(ue, nil)), ids: targetsOf(id), id: id,
+				event: amfStartOfInterception(id, access), ids: targetsOf(id), id: id,
 			})
 		}
 		return true
@@ -1451,8 +1453,7 @@ func amfUnsuccessfulRegistration(id amfctx.UeIdentity, cause uint8) iri.AMFUnsuc
 }
 
 // amfStartOfInterception maps an already-registered UE identity snapshot to a TS 33.128
-// AMFStartOfInterceptionWithRegisteredUE record, with the accesses the UE is registered
-// over as its registration result.
+// AMFStartOfInterceptionWithRegisteredUE record for the access result names.
 func amfStartOfInterception(id amfctx.UeIdentity, result iri.AMFRegistrationResult) iri.AMFStartOfInterceptionWithRegisteredUE {
 	return iri.AMFStartOfInterceptionWithRegisteredUE{
 		SUCI:               suciOf(id),
@@ -1729,14 +1730,23 @@ func accessType(a models.AccessType) iri.AccessType {
 	return iri.AccessThreeGPP
 }
 
-// registered reports whether ue is in the Registered state on any access.
-func registered(ue *amfctx.AmfUe) bool {
-	for _, st := range ue.State {
-		if st != nil && st.Is(amfctx.Registered) {
-			return true
+// registeredAccesses lists the accesses ue is in the Registered state on, 3GPP first, as the
+// registration results that name them.
+func registeredAccesses(ue *amfctx.AmfUe) []iri.AMFRegistrationResult {
+	var accesses []iri.AMFRegistrationResult
+	for _, a := range []struct {
+		access models.AccessType
+		result iri.AMFRegistrationResult
+	}{
+		{models.ACCESSTYPE__3_GPP_ACCESS, iri.RegResult3GPPAccess},
+		{models.ACCESSTYPE_NON_3_GPP_ACCESS, iri.RegResultNon3GPPAccess},
+	} {
+		if st := ue.State[a.access]; st != nil && st.Is(amfctx.Registered) {
+			accesses = append(accesses, a.result)
 		}
 	}
-	return false
+
+	return accesses
 }
 
 // taskTargets reports whether ue's identifiers satisfy every criterion task names.

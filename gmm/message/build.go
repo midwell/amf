@@ -739,11 +739,14 @@ func BuildRegistrationAccept(
 	return payload, nil
 }
 
-// carriesNewAssociation reports whether a REGISTRATION ACCEPT for ue carries a 5G-GUTI the UE
-// did not register with. An initial registration always does: the AMF allocates one. A
-// mobility or periodic update does when the UE registered with another identity, or with a
-// 5G-GUTI other than the one ue now holds. HandleRegistrationRequest reallocates the 5G-GUTI
-// when the request failed its integrity check (ReAllocateGutiToUe).
+// carriesNewAssociation reports whether a REGISTRATION ACCEPT for ue reports a new
+// identifier association. An initial registration always does: it binds the SUPI to the
+// 5G-GUTI afresh, whichever one the UE presented, and a deregistration has released any
+// earlier binding. A mobility or periodic update does when the accept carries a 5G-GUTI the
+// UE did not register with: it presented another identity, or a 5G-GUTI other than the one
+// ue now holds. That happens when the request failed its integrity check and
+// HandleRegistrationRequest reallocated the 5G-GUTI (ReAllocateGutiToUe), unless the request
+// presented a 5G-GUTI of a served GUAMI, which then replaces the reallocated one.
 func carriesNewAssociation(ue *context.AmfUe) bool {
 	if ue.GetRegistrationType5GS() == nasMessage.RegistrationType5GSInitialRegistration {
 		return true
