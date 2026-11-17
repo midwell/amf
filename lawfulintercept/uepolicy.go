@@ -23,8 +23,8 @@ const (
 
 // Bounds on the COMMANDs held while their answers are awaited. A procedure is normally one
 // PTI at a time, retransmitted under the same PTI on T3501, so a UE rarely holds more than
-// one. Past maxPendingUEs the UE whose newest COMMAND is oldest is dropped to make room, so
-// UEs that leave without answering cannot keep a later target from being recorded.
+// one. Past maxPendingUEs live UEs, the UE whose newest COMMAND is oldest is dropped to make
+// room, so UEs that leave without answering cannot keep a later target from being recorded.
 const (
 	maxPendingPerUE   = 4
 	maxPendingUEs     = 1024

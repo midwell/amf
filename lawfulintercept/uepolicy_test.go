@@ -283,6 +283,9 @@ func TestVanishedUEsDoNotBlockAFreshTarget(t *testing.T) {
 	if len(got) != 1 || !bytes.Equal(got[0], command) {
 		t.Fatalf("the fresh target produced %d record(s), want one carrying its COMMAND", len(got))
 	}
+	// Kept reachable so the bound is met by live UEs and the fresh one's room comes from
+	// eviction, not from pruning collected entries.
+	runtime.KeepAlive(gone)
 }
 
 // TestAnExpiredUEPolicyCommandIsNotReported: a COMMAND held past the procedure's own
@@ -313,6 +316,8 @@ func TestAnExpiredUEPolicyCommandIsNotReported(t *testing.T) {
 		t.Errorf("%d UEs held after the first's COMMAND expired, want 1: an unanswered "+
 			"COMMAND outlived its hold", n)
 	}
+	// Kept reachable so its entry goes by expiry, not by being collected.
+	runtime.KeepAlive(ue)
 }
 
 // TestRemovingTheUEContextForgetsItsUEPolicyCommands: a context removed on any path —
@@ -430,7 +435,7 @@ func TestACollectedUEDoesNotPushALiveOneOut(t *testing.T) {
 		runtime.GC()
 	}
 	if collected.Value() != nil {
-		t.Skip("the UE context was not collected, so this test cannot reach the state it is about")
+		t.Fatal("the UE context was not collected, so this test cannot reach the state it is about")
 	}
 
 	p.remember(&amfctx.AmfUe{}, 1, uePolicyCommandOf(1, 16))
