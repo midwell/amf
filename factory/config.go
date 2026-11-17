@@ -71,7 +71,7 @@ type Configuration struct {
 	NrfUri                          string                    `yaml:"nrfUri,omitempty"`
 	WebuiUri                        string                    `yaml:"webuiUri"`
 	Security                        *Security                 `yaml:"security,omitempty"`
-	Li                              *Li                       `yaml:"li,omitempty"`
+	Li                              *Li                       `yaml:"-"` // decoded by strictLiBlock
 	NetworkName                     NetworkName               `yaml:"networkName,omitempty"`
 	T3502Value                      int                       `yaml:"t3502Value,omitempty"`
 	T3512Value                      int                       `yaml:"t3512Value,omitempty"`

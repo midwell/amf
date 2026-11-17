@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/omec-project/util/nfconfig"
-	"go.yaml.in/yaml/v4"
 )
 
 func TestWebuiUrl(t *testing.T) {
@@ -227,48 +226,67 @@ func TestValidateAmfId(t *testing.T) {
 // not read as unset. Unset is the permissive answer for bulk deactivation, so silently
 // defaulting a typo would leave the element performing exactly the operation the operator
 // wrote the key to withhold. It is the rule the UPF's config applies to its keepalive
-// window.
+// window. The refusal is recorded for the LI subsystem, like an unknown key, and the
+// configuration load itself succeeds.
 func TestLiBulkSwitchesAreTriState(t *testing.T) {
-	li := func(extra string) string {
-		return `configuration:
+	load := func(t *testing.T, extra string) error {
+		t.Helper()
+
+		orig := AmfConfig
+		t.Cleanup(func() { AmfConfig = orig; liBlockErr = nil })
+
+		path := filepath.Join(t.TempDir(), "amfcfg.yaml")
+		body := `configuration:
   li:
     x1Listen: ":8443"
     neId: amf-1` + extra + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		return InitConfigFactory(path)
 	}
 
 	t.Run("both switches carry through", func(t *testing.T) {
-		var cfg Config
-		if err := yaml.Unmarshal([]byte(li(`
+		if err := load(t, `
     deactivateAllTasks: false
-    removeAllDestinations: true`)), &cfg); err != nil {
-			t.Fatalf("unmarshal: %v", err)
+    removeAllDestinations: true`); err != nil {
+			t.Fatalf("load: %v", err)
 		}
-		if got := cfg.Configuration.Li.DeactivateAllTasks; got == nil || *got {
+		if err := LiBlockError(); err != nil {
+			t.Fatalf("li block refused: %v", err)
+		}
+		if got := AmfConfig.Configuration.Li.DeactivateAllTasks; got == nil || *got {
 			t.Errorf("deactivateAllTasks = %v, want a stated false — a dropped restriction leaves "+
 				"the element performing the operation the operator withheld", got)
 		}
-		if got := cfg.Configuration.Li.RemoveAllDestinations; got == nil || !*got {
+		if got := AmfConfig.Configuration.Li.RemoveAllDestinations; got == nil || !*got {
 			t.Errorf("removeAllDestinations = %v, want a stated true", got)
 		}
 	})
 
 	t.Run("saying nothing is not saying false", func(t *testing.T) {
-		var cfg Config
-		if err := yaml.Unmarshal([]byte(li("")), &cfg); err != nil {
-			t.Fatalf("unmarshal: %v", err)
+		if err := load(t, ""); err != nil {
+			t.Fatalf("load: %v", err)
 		}
-		if cfg.Configuration.Li.DeactivateAllTasks != nil || cfg.Configuration.Li.RemoveAllDestinations != nil {
+		if err := LiBlockError(); err != nil {
+			t.Fatalf("li block refused: %v", err)
+		}
+		if AmfConfig.Configuration.Li.DeactivateAllTasks != nil || AmfConfig.Configuration.Li.RemoveAllDestinations != nil {
 			t.Error("an li block that states no agreement must leave both unset, so the " +
 				"standard's own defaults apply")
 		}
 	})
 
 	t.Run("a value that is not a boolean is refused", func(t *testing.T) {
-		var cfg Config
-		if err := yaml.Unmarshal([]byte(li("\n    deactivateAllTasks: perhaps")), &cfg); err == nil {
+		if err := load(t, "\n    deactivateAllTasks: perhaps"); err != nil {
+			t.Fatalf("a value of the wrong type in the li block failed the whole configuration "+
+				"load, which stops the AMF: %v", err)
+		}
+		if LiBlockError() == nil {
 			t.Errorf("an unparseable value was accepted as %v; it must be refused rather than "+
 				"read as unset, which is the permissive answer",
-				cfg.Configuration.Li.DeactivateAllTasks)
+				AmfConfig.Configuration.Li.DeactivateAllTasks)
 		}
 	})
 }

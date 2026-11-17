@@ -24,13 +24,16 @@ const (
 
 // TODO: Support configuration update from REST api
 func InitConfigFactory(f string) error {
+	// Reset first, so a load that returns early cannot leave an earlier load's verdict behind.
+	liBlockErr = nil
 	if err := nfconfig.LoadYAML(f, &AmfConfig); err != nil {
 		return err
 	}
 	// The lenient decode above stays lenient — the AMF must keep starting on a configuration
-	// carrying a key this version does not model. The LI block is held to a stricter standard,
-	// on its own, because a key dropped there lands on a default that fails unsafely and says
-	// nothing: see strictLiBlock.
+	// carrying a key this version does not model. It does not decode the LI block at all (Config
+	// tags it `yaml:"-"`): the block is held to a stricter standard, on its own, because a key
+	// dropped there lands on a default that fails unsafely and says nothing, and a value of the
+	// wrong type there must not fail this load. See strictLiBlock.
 	//
 	// **Recorded, not returned.** Returning it would fail the whole configuration load, which
 	// stops the AMF: the service-based interface, NGAP, registration with the network, every UE it
@@ -48,7 +51,7 @@ func InitConfigFactory(f string) error {
 	if err != nil {
 		return err
 	}
-	liBlockErr = strictLiBlock(content)
+	AmfConfig.Configuration.Li, liBlockErr = strictLiBlock(content)
 	if AmfConfig.Configuration.AmfId == "" {
 		AmfConfig.Configuration.AmfId = defaultAmfID
 		logger.CfgLog.Infof("amfId not set in configuration file. Using %s", AmfConfig.Configuration.AmfId)
