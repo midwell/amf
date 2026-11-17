@@ -515,7 +515,7 @@ func pinnedUtilVersion(t *testing.T) string {
 
 	for _, line := range strings.Split(string(mod), "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "omec-project/util") && !strings.Contains(line, "midwell/util") {
+		if !strings.Contains(line, "omec-project/util") {
 			continue
 		}
 

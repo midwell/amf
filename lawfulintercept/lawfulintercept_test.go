@@ -520,10 +520,10 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 // The configured endpoint stays as the fallback. An ADMF that provisions no destinations
 // depends on it, and taking this path away would turn that deployment into an outage.
 //
-// Two ways to reach it, and the second is not obvious: a task that named nothing, and a
-// task that named a destination the element holds but which serves the *other* interface.
-// Both resolve no X2 endpoint, so both fall back — an assertion about the first alone would
-// leave the second to be discovered in a deployment.
+// The fallback keys on the task's DIDs, not on its resolved deliveries (see x2Destinations),
+// so two shapes reach it: a task with no destinations at all, and one that names no DID and
+// carries only a content delivery. Both resolve no X2 endpoint and name no destination, so
+// both fall back.
 func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
 	for _, c := range []struct {
 		name       string

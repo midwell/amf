@@ -154,8 +154,8 @@ type subsystem struct {
 	// the interrogation cannot disagree.
 	unreachableAt func(addr string) bool
 	// mdf2 is the configured X2 endpoint. It serves a task that names no destination, and
-	// nothing else — an element that preferred it to the destinations a task named is the
-	// gap this exists behind rather than in front of.
+	// nothing else: a task whose named destinations yield no X2 endpoint gets no xIRI rather
+	// than this endpoint's (see x2Destinations).
 	mdf2 string
 	neID string
 	// ids supplies the conditional attributes that belong to this element rather than
@@ -1373,8 +1373,8 @@ func amfRegistration(id amfctx.UeIdentity) iri.AMFRegistration {
 
 // amfLocationUpdate maps a UE identity snapshot to a TS 33.128 AMFLocationUpdate record,
 // emitted when a mobility registration update tells the AMF the UE has moved.
-// The Location subtree is kept minimal (see li/iri.Location); the detailed
-// cell/TAI encoding is a later increment.
+// The Location subtree is minimal (see li/iri.Location): it says the location is current and
+// carries no cell or tracking area. The registration area is in FiveGSTAIList.
 func amfLocationUpdate(id amfctx.UeIdentity) iri.AMFLocationUpdate {
 	return iri.AMFLocationUpdate{
 		SUCI:     suciOf(id),
@@ -1522,8 +1522,8 @@ func amfIdentifierAssociation(id amfctx.UeIdentity) iri.AMFIdentifierAssociation
 		GUTI:          fiveGGUTI(id),
 		SUCI:          suciOf(id),
 		FiveGSTAIList: taiListOf(id),
-		// Mandatory in this record, so it is populated even though the
-		// detailed subtree is still deferred — same minimal form as AMFLocationUpdate.
+		// Mandatory in this record: the same minimal form as AMFLocationUpdate, with no cell
+		// or tracking area.
 		Location: iri.Location{LocationInfo: iri.LocationInfo{CurrentLocation: true}},
 	}
 }
