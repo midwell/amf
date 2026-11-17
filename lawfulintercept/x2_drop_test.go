@@ -4,6 +4,7 @@
 package lawfulintercept
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -57,7 +58,7 @@ func nonReadingMDF2(t *testing.T, pair tls.Certificate) (addr string, handshaken
 			}
 			go func() {
 				defer conn.Close() //nolint:errcheck // test
-				if err := conn.(*tls.Conn).Handshake(); err == nil {
+				if err := conn.(*tls.Conn).HandshakeContext(context.Background()); err == nil {
 					once.Do(func() { close(done) })
 				}
 				<-held
