@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/omec-project/amf/context"
@@ -764,7 +765,9 @@ func carriesNewAssociation(ue *context.AmfUe) bool {
 	}
 	_, presentedGuti := nasconv.GutiToString(presented)
 
-	return presentedGuti != guti
+	// Case-insensitive: GutiToString writes the AMF identifier in lower-case hex, and the
+	// held 5G-GUTI takes it as configured, which AMFID_PATTERN lets be upper case.
+	return !strings.EqualFold(presentedGuti, guti)
 }
 
 func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType,

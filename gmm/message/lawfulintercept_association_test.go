@@ -4,6 +4,7 @@
 package message
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/omec-project/amf/context"
@@ -64,6 +65,8 @@ func TestTheIdentifierAssociationIsReportedOnEveryAccessPath(t *testing.T) {
 		want      int
 	}{
 		{"presenting the GUTI it keeps", gutiOctets(heldGUTI), 0},
+		// The configuration may write the AMF identifier in upper case; NAS decodes it in lower.
+		{"presenting the GUTI it keeps, held with an upper-case AMF identifier", gutiOctets(heldGUTI), 0},
 		{"presenting a GUTI other than the one held", gutiOctets("20893cafe0000000002"), 1},
 		{"presenting a SUCI", []uint8{nasMessage.MobileIdentity5GSTypeSuci, 0x02, 0xf8, 0x39}, 1},
 	} {
@@ -71,6 +74,9 @@ func TestTheIdentifierAssociationIsReportedOnEveryAccessPath(t *testing.T) {
 			reported = 0
 			ue := registeringUE(t)
 			ue.Guti = heldGUTI
+			if strings.Contains(c.name, "upper-case") {
+				ue.Guti = strings.ToUpper(heldGUTI)
+			}
 			ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
 			ue.RegistrationRequest = &nasMessage.RegistrationRequest{}
 			ue.RegistrationRequest.MobileIdentity5GS.SetLen(uint16(len(c.presented)))
