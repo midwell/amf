@@ -95,7 +95,7 @@ func TestAMFRegistrationMapping(t *testing.T) {
 		Pei:  "imei-353425000000015",
 		Gpsi: testGPSI,
 	}
-	reg := amfRegistration(id)
+	reg := amfRegistration(id, iri.RegResult3GPPAccess)
 	if reg.RegistrationResult != iri.RegResult3GPPAccess {
 		t.Errorf("registrationResult = %d", reg.RegistrationResult)
 	}
@@ -161,8 +161,8 @@ func TestRegistrationEventDispatch(t *testing.T) {
 	id := targetIdentity()
 
 	id.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
-	if _, ok := registrationEvent(id).(iri.AMFLocationUpdate); !ok {
-		t.Errorf("mobility update → %T, want AMFLocationUpdate", registrationEvent(id))
+	if _, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFLocationUpdate); !ok {
+		t.Errorf("mobility update → %T, want AMFLocationUpdate", registrationEvent(id, iri.RegResult3GPPAccess))
 	}
 
 	for _, rt := range []uint8{
@@ -170,9 +170,9 @@ func TestRegistrationEventDispatch(t *testing.T) {
 		nasMessage.RegistrationType5GSPeriodicRegistrationUpdating,
 	} {
 		id.RegistrationType5GS = rt
-		reg, ok := registrationEvent(id).(iri.AMFRegistration)
+		reg, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFRegistration)
 		if !ok {
-			t.Errorf("registration type %d → %T, want AMFRegistration", rt, registrationEvent(id))
+			t.Errorf("registration type %d → %T, want AMFRegistration", rt, registrationEvent(id, iri.RegResult3GPPAccess))
 			continue
 		}
 		if rt == nasMessage.RegistrationType5GSPeriodicRegistrationUpdating && reg.RegistrationType != iri.RegTypePeriodic {
@@ -330,7 +330,7 @@ func TestDeliveryIsolation(t *testing.T) {
 		Gpsi: testGPSI,
 		Guti: testGUTI,
 		Tmsi: 42,
-	})
+	}, models.ACCESSTYPE__3_GPP_ACCESS)
 
 	if len(capture.pdus) != 2 {
 		t.Fatalf("delivered %d xIRI PDUs, want 2 (the two IRI agencies; CC-only excluded)", len(capture.pdus))
@@ -354,11 +354,11 @@ func TestDeliveryIsolation(t *testing.T) {
 func TestEncodeAllEvents(t *testing.T) {
 	id := targetIdentity()
 	events := map[string]any{
-		"registration":            amfRegistration(id),
+		"registration":            amfRegistration(id, iri.RegResult3GPPAccess),
 		"locationUpdate":          amfLocationUpdate(id),
 		"deregistration":          amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP),
 		"unsuccessful":            amfUnsuccessfulRegistration(id, nasMessage.Cause5GMM5GSServicesNotAllowed),
-		"startOfInterception":     amfStartOfInterception(id),
+		"startOfInterception":     amfStartOfInterception(id, iri.RegResult3GPPAccess),
 		"identifierAssociation":   amfIdentifierAssociation(id),
 		"identifierDeassociation": amfIdentifierDeassociation(id),
 	}
@@ -421,16 +421,16 @@ func TestMobilityUpdateIsReportedOnce(t *testing.T) {
 		Supi:                testSUPI,
 		RegistrationType5GS: nasMessage.RegistrationType5GSMobilityRegistrationUpdating,
 	}
-	if _, ok := registrationEvent(id).(iri.AMFLocationUpdate); !ok {
-		t.Fatalf("mobility update produced %T, want iri.AMFLocationUpdate", registrationEvent(id))
+	if _, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFLocationUpdate); !ok {
+		t.Fatalf("mobility update produced %T, want iri.AMFLocationUpdate", registrationEvent(id, iri.RegResult3GPPAccess))
 	}
 
 	// Which is why HandleRegistrationComplete must not also report it: the two call
 	// sites would emit the same record twice for one procedure. An initial
 	// registration is the case that call site exists for.
 	id.RegistrationType5GS = nasMessage.RegistrationType5GSInitialRegistration
-	if _, ok := registrationEvent(id).(iri.AMFRegistration); !ok {
-		t.Errorf("initial registration produced %T, want iri.AMFRegistration", registrationEvent(id))
+	if _, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFRegistration); !ok {
+		t.Errorf("initial registration produced %T, want iri.AMFRegistration", registrationEvent(id, iri.RegResult3GPPAccess))
 	}
 }
 
@@ -499,7 +499,7 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 	})
 	t.Cleanup(func() { active.Store(nil) })
 
-	ReportRegistration(&amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42})
+	ReportRegistration(&amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42}, models.ACCESSTYPE__3_GPP_ACCESS)
 
 	for _, c := range []struct{ addr, xid string }{{agencyA, xidA}, {agencyB, xidB}} {
 		got := capture.sent[c.addr]
@@ -551,7 +551,7 @@ func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
 			})
 			t.Cleanup(func() { active.Store(nil) })
 
-			ReportRegistration(&amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42})
+			ReportRegistration(&amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42}, models.ACCESSTYPE__3_GPP_ACCESS)
 
 			if n := len(capture.sent[testAgency2Addr]); n != 1 {
 				t.Errorf("the configured endpoint received %d records, want 1", n)
@@ -595,7 +595,7 @@ func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
 			t.Cleanup(func() { active.Store(nil) })
 
 			ue := &amfctx.AmfUe{Supi: testSUPI, Guti: testGUTI, Tmsi: 42}
-			ReportRegistration(ue) // a general record
+			ReportRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS) // a general record
 			if got := len(capture.pdus); got != c.wantGeneral {
 				t.Errorf("registration delivered %d records, want %d", got, c.wantGeneral)
 			}

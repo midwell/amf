@@ -11,6 +11,8 @@ import (
 	"time"
 
 	amfctx "github.com/omec-project/amf/context"
+	"github.com/omec-project/openapi/v2/models"
+	"github.com/omec-project/util/li/iri"
 	"github.com/omec-project/util/li/store"
 	"github.com/omec-project/util/li/types"
 	"github.com/omec-project/util/li/x2x3"
@@ -72,7 +74,7 @@ func TestXIRICarriesTheSixRequiredAttributes(t *testing.T) {
 	snd := &captureSender{}
 	activateIRIWithTargets(t, snd, []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}})
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 1 {
 		t.Fatalf("delivered %d records, want 1", len(snd.pdus))
 	}
@@ -127,7 +129,7 @@ func TestEveryMatchedIdentityIsReported(t *testing.T) {
 		{Type: types.TargetGPSI, Value: "4915123456789"},
 	})
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 1 {
 		t.Fatalf("delivered %d records, want 1", len(snd.pdus))
 	}
@@ -152,8 +154,8 @@ func TestOnlyTheSubjectsIdentitiesAreReported(t *testing.T) {
 
 	// A second, untasked subscriber known to this AMF at the same time.
 	other := &amfctx.AmfUe{Supi: "imsi-262010000000999", Pei: "imeisv-3534250000000999", Gpsi: "msisdn-4915100000999"}
-	ReportRegistration(other)
-	ReportRegistration(targetUE())
+	ReportRegistration(other, models.ACCESSTYPE__3_GPP_ACCESS)
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 
 	if len(snd.pdus) != 1 {
 		t.Fatalf("delivered %d records, want 1 — only the tasked subject", len(snd.pdus))
@@ -180,7 +182,7 @@ func TestSequenceNumbersAreOnePerRecordNotPerDestination(t *testing.T) {
 		[]types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}},
 		testAgencyAddr, "10.0.60.123:42069")
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 2 {
 		t.Fatalf("delivered %d copies, want one per destination", len(snd.pdus))
 	}
@@ -190,7 +192,7 @@ func TestSequenceNumbersAreOnePerRecordNotPerDestination(t *testing.T) {
 
 	// The next record in the same context is the next number, once — not once per
 	// destination.
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if got := seqOf(t, snd.pdus[2]); got != 1 {
 		t.Errorf("second record numbered %d, want 1: the numbering counted destinations", got)
 	}
@@ -224,7 +226,7 @@ func TestDroppedProductLeavesAGap(t *testing.T) {
 	activateIRIWithTargets(t, snd, []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}})
 
 	for range 3 {
-		ReportRegistration(targetUE())
+		ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	}
 
 	if len(snd.kept) != 2 {
@@ -276,7 +278,7 @@ func TestDeactivationForgetsTheNumbering(t *testing.T) {
 	active.Store(sub)
 	t.Cleanup(func() { active.Store(nil) })
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 1 || sub.ids.Contexts() != 1 {
 		t.Fatalf("delivered %d records over %d contexts, want 1 and 1", len(snd.pdus), sub.ids.Contexts())
 	}
@@ -307,8 +309,8 @@ func TestTheTimestampIsTheEventsNotThePDUs(t *testing.T) {
 
 	happened := time.Date(2026, 8, 14, 6, 28, 15, 322_190_000, time.UTC)
 	id := targetUE().IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id))
-	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id))
+	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id, iri.RegResult3GPPAccess))
+	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id, iri.RegResult3GPPAccess))
 
 	if len(snd.pdus) != 2 {
 		t.Fatalf("delivered %d records, want 2", len(snd.pdus))
@@ -412,7 +414,7 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 	active.Store(sub)
 	t.Cleanup(func() { active.Store(nil) })
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 1 || seqOf(t, snd.pdus[0]) != 0 {
 		t.Fatalf("setup delivered %d records, first numbered %d", len(snd.pdus), seqOf(t, snd.pdus[0]))
 	}
@@ -430,7 +432,7 @@ func TestModificationKeepsTheNumberingItsOwnRecordsUsed(t *testing.T) {
 		t.Fatalf("the modification left %d numbering contexts, want the 1 still in use", n)
 	}
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 2 {
 		t.Fatalf("delivered %d records, want 2", len(snd.pdus))
 	}
@@ -451,7 +453,7 @@ func TestAnIMEIWarrantMatchesAUEThatPresentedItsIMEISV(t *testing.T) {
 		{Type: types.TargetPEI, Value: "35342500000001"},
 	})
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 1 {
 		t.Fatalf("delivered %d records for an IMEI warrant naming a UE that presented its IMEISV, want 1",
 			len(snd.pdus))
@@ -479,14 +481,14 @@ func TestAWarrantNamingTwoIdentitiesMatchesOnlyTheSubjectPresentingBoth(t *testi
 		{Type: types.TargetGPSI, Value: "4915123456789"},
 	})
 
-	ReportRegistration(targetUE())
+	ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 1 {
 		t.Fatalf("the subject presenting both identities produced %d records, want 1", len(snd.pdus))
 	}
 
 	other := targetUE()
 	other.Gpsi = "msisdn-4915100000000"
-	ReportRegistration(other)
+	ReportRegistration(other, models.ACCESSTYPE__3_GPP_ACCESS)
 	if len(snd.pdus) != 1 {
 		t.Errorf("a UE presenting only the warrant's SUPI produced %d more records, want none",
 			len(snd.pdus)-1)

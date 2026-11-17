@@ -675,8 +675,8 @@ type UeIdentity struct {
 	// rather than as the formatted Suci string. TS 33.128's sUCI is a SEQUENCE of six
 	// members, and recovering them from the string is lossy — the routing indicator's
 	// leading zeros are gone and the scheme output has been through a nibble swap.
-	// Empty whenever the UE registered by 5G-GUTI, which is the common case and
-	// correctly reports the field as unavailable.
+	// Cleared when the UE registers by another identity, a 5G-GUTI in the common case,
+	// so the records of that registration report the SUCI as unavailable.
 	SuciRaw []byte
 
 	// TaiList is the 3GPP-access registration area, which is what TS 33.128 means by

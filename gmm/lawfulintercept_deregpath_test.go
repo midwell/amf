@@ -121,3 +121,19 @@ func TestANetworkInitiatedDeregistrationIsReportedWhereItCompletes(t *testing.T)
 			"deregistered in place without an accept ever arriving")
 	}
 }
+
+// A message other than DEREGISTRATION ACCEPT while the network-initiated deregistration waits
+// for one moves the access to Deregistered through the same event, which records nothing
+// itself. So the branch that sends it reports the deregistration, and the binding when it goes.
+func TestAnotherMessageInPlaceOfTheAcceptIsReported(t *testing.T) {
+	calls := calledIn(t, "sm.go", "DeregisteredInitiated")
+
+	for _, want := range []string{
+		"lawfulintercept.ReportDeregistration",
+		"lawfulintercept.ReportIdentifierDeassociation",
+	} {
+		if indexOf(calls, want) < 0 {
+			t.Errorf("DeregisteredInitiated does not call %s on the state-mismatch branch", want)
+		}
+	}
+}

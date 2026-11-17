@@ -495,7 +495,7 @@ func SendHandoverRequest(sourceUe *context.RanUe, targetRan *context.AmfRan, cau
 	}
 
 	// Lawful Interception: the two values the HANDOVER REQUEST ACKNOWLEDGE's xIRI needs are
-	// committed **here**, past every guard above, rather than by the caller before the call.
+	// committed here, past every guard above.
 	//
 	// TS 33.128 puts the AMFRANHandoverRequest record on the acknowledgement, and these two
 	// values exist only on the way in — so they have to be stashed. Five guards above return

@@ -534,41 +534,6 @@ func BuildRegistrationAccept(
 	reactivationResult *[16]bool,
 	errPduSessionId, errCause []uint8,
 ) ([]byte, error) {
-	// Lawful Interception IRI-POI: an initial Registration Accept carries the 5G-GUTI
-	// the AMF has bound to this target's SUPI, so emit an AMFIdentifierAssociation
-	// xIRI. Mobility and periodic accepts carry the same GUTI (no reassignment), so
-	// reporting association there would be redundant noise — hence the gate. Silent
-	// no-op unless LI is configured and the UE is a target.
-	//
-	// **Here rather than on SendRegistrationAccept, because that is not the only path
-	// that sends one.** HandleInitialRegistration branches on access type: 3GPP calls
-	// the sender, and non-3GPP calls SendInitialContextSetupRequest and then this
-	// builder directly, stashing the result in ue.RegistrationAcceptForNon3GPPAccess
-	// for the N3IWF's answer. A hook on the sender would bind a non-3GPP target's SUPI
-	// to a 5G-GUTI and report it nowhere, while ReportRegistration, which fires from
-	// the access-agnostic HandleRegistrationComplete, made the gap look like coverage.
-	// Both paths cross this builder, this is where the 5G-GUTI IE is placed, and the
-	// record reports precisely that binding — so the seam and the fact coincide.
-	//
-	// The other callers are all in HandleMobilityAndPeriodicRegistrationUpdating, where
-	// RegistrationType5GS is never InitialRegistration, so the gate excludes them.
-	//
-	// **A known gap rather than a silent one.** The gate rests on "mobility and periodic
-	// accepts carry the same GUTI", which is true of this implementation as it stands and is
-	// not required by TS 24.501: the AMF may reassign the 5G-GUTI on a mobility or periodic
-	// registration update, and clause 5.4.1.3 makes that a legitimate thing to do. On the day
-	// this element starts doing it, the reassignment is a new SUPI-to-GUTI binding carried to
-	// the UE — exactly what AMFIdentifierAssociation reports — and this gate would suppress
-	// the record for it, silently.
-	//
-	// The condition to write then is "this accept carries a GUTI the UE did not already
-	// have", not the registration type. It is not written now because nothing here reassigns,
-	// and a check for a change that never happens is untestable; it is written down here so
-	// that whoever adds reassignment finds the consequence beside the code that causes it.
-	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSInitialRegistration {
-		liReportIdentifierAssociation(ue)
-	}
-
 	m := nas.NewMessage()
 	m.GmmMessage = nas.NewGmmMessage()
 	m.GmmHeader.SetMessageType(nas.MsgTypeRegistrationAccept)
@@ -751,7 +716,52 @@ func BuildRegistrationAccept(
 
 	m.RegistrationAccept = registrationAccept
 
-	return nas_security.Encode(ue, m, anType)
+	payload, err := nas_security.Encode(ue, m, anType)
+	if err != nil {
+		return nil, err
+	}
+
+	// Lawful Interception IRI-POI: an accept carrying a 5G-GUTI the UE did not register with
+	// binds the target's SUPI to a new 5G-GUTI, which AMFIdentifierAssociation reports
+	// (TS 33.128 clause 6.2.2.2.7). Silent no-op unless LI is configured and the UE is a
+	// target.
+	//
+	// **Here rather than on SendRegistrationAccept, because that is not the only path that
+	// sends one.** HandleInitialRegistration's non-3GPP branch calls this builder directly and
+	// stores the result in ue.RegistrationAcceptForNon3GPPAccess for the N3IWF's answer. Every
+	// accept is built here, and this is where the 5G-GUTI IE is placed. The record is made once
+	// the accept has been built, not once it has been sent: an accept that is stored or that
+	// finds no RanUe leaves a record for a 5G-GUTI the UE did not receive.
+	if carriesNewAssociation(ue) {
+		liReportIdentifierAssociation(ue)
+	}
+
+	return payload, nil
+}
+
+// carriesNewAssociation reports whether a REGISTRATION ACCEPT for ue carries a 5G-GUTI the UE
+// did not register with. An initial registration always does: the AMF allocates one. A
+// mobility or periodic update does when the UE registered with another identity, or with a
+// 5G-GUTI other than the one ue now holds. HandleRegistrationRequest reallocates the 5G-GUTI
+// when the request failed its integrity check (ReAllocateGutiToUe).
+func carriesNewAssociation(ue *context.AmfUe) bool {
+	if ue.GetRegistrationType5GS() == nasMessage.RegistrationType5GSInitialRegistration {
+		return true
+	}
+	guti := ue.GetGuti()
+	if guti == "" || ue.RegistrationRequest == nil {
+		return false
+	}
+	presented := ue.RegistrationRequest.GetMobileIdentity5GSContents()
+	if len(presented) == 0 {
+		return false
+	}
+	if nasConvert.GetTypeOfIdentity(presented[0]) != nasMessage.MobileIdentity5GSType5gGuti {
+		return true
+	}
+	_, presentedGuti := nasconv.GutiToString(presented)
+
+	return presentedGuti != guti
 }
 
 func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType,

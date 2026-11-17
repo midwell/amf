@@ -3716,7 +3716,9 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 // reportHandover emits the two handover xIRIs TS 33.128 mandates, both of which
 // belong at this point: AMFRANHandoverRequest triggers on the AMF *receiving* the
 // HANDOVER REQUEST ACKNOWLEDGE (clause 6.2.2.2.9.3, despite the name), and
-// AMFRANHandoverCommand on the AMF having sent the HANDOVER COMMAND just above.
+// AMFRANHandoverCommand on the AMF sending the HANDOVER COMMAND (clause 6.2.2.2.9.2).
+// SendHandoverCommand returns no error, so a command it failed to build is reported
+// as sent.
 //
 // The identifiers are the source UE's, because that is the NG association the
 // command travelled over. It is a no-op for an untasked subscriber and cannot
@@ -4091,8 +4093,8 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 		return
 	} else {
 		// Handover in same AMF
-		// The handover type is passed to SendHandoverRequest rather than written here, so that
-		// it is committed with the cause and the container, past the same guards.
+		// SendHandoverRequest writes the handover type, with the cause and the container, past
+		// its own guards.
 		tai, err := ngapconv.TaiToModels(targetID.TargetRANNodeID.SelectedTAI)
 		if err != nil {
 			sourceUe.Log.Errorf("decode selected TAI failed: %+v", err)
@@ -4145,7 +4147,6 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 				},
 			}
 			ngap_message.SendHandoverPreparationFailure(sourceUe, *cause, nil)
-			sourceUe.ClearHandoverState()
 			return
 		}
 		// Update NH

@@ -8,6 +8,7 @@ import (
 
 	"github.com/omec-project/amf/context"
 	"github.com/omec-project/amf/factory"
+	"github.com/omec-project/nas/v2/nasConvert"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/fsm"
@@ -53,22 +54,46 @@ func TestTheIdentifierAssociationIsReportedOnEveryAccessPath(t *testing.T) {
 		})
 	}
 
-	// The gate is what keeps this from becoming noise, and what lets the builder carry
-	// the hook safely: the other callers are all mobility and periodic updates, which
-	// re-send the same GUTI without reassigning it.
-	t.Run("mobility update reports nothing", func(t *testing.T) {
-		reported = 0
-		ue := registeringUE(t)
-		ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
+	// A mobility or periodic update reports an association only when its accept carries a
+	// 5G-GUTI the UE did not register with: an update that presents the GUTI the UE keeps
+	// binds nothing new, and one that presents another identity, or a GUTI the AMF has since
+	// reallocated, does.
+	for _, c := range []struct {
+		name      string
+		presented []uint8
+		want      int
+	}{
+		{"presenting the GUTI it keeps", gutiOctets(heldGUTI), 0},
+		{"presenting a GUTI the AMF reallocated", gutiOctets("20893cafe0000000002"), 1},
+		{"presenting a SUCI", []uint8{nasMessage.MobileIdentity5GSTypeSuci, 0x02, 0xf8, 0x39}, 1},
+	} {
+		t.Run("mobility update "+c.name, func(t *testing.T) {
+			reported = 0
+			ue := registeringUE(t)
+			ue.Guti = heldGUTI
+			ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
+			ue.RegistrationRequest = &nasMessage.RegistrationRequest{}
+			ue.RegistrationRequest.MobileIdentity5GS.SetLen(uint16(len(c.presented)))
+			ue.RegistrationRequest.MobileIdentity5GS.SetMobileIdentity5GSContents(c.presented)
 
-		//nolint:errcheck // as above
-		_, _ = BuildRegistrationAccept(ue, models.ACCESSTYPE__3_GPP_ACCESS, nil, nil, nil, nil)
+			if _, err := BuildRegistrationAccept(ue, models.ACCESSTYPE__3_GPP_ACCESS, nil, nil, nil, nil); err != nil {
+				t.Fatalf("BuildRegistrationAccept: %v", err)
+			}
 
-		if reported != 0 {
-			t.Errorf("a mobility registration update reported an identifier association %d times, want 0",
-				reported)
-		}
-	})
+			if reported != c.want {
+				t.Errorf("reported the identifier association %d times, want %d", reported, c.want)
+			}
+		})
+	}
+}
+
+// heldGUTI is a 5G-GUTI in the form AllocateGutiToUe composes: PLMN, AMF identifier, and an
+// eight-digit 5G-TMSI.
+const heldGUTI = "20893cafe0000000001"
+
+func gutiOctets(guti string) []uint8 {
+	nas := nasConvert.GutiToNas(guti)
+	return nas.Octet[:]
 }
 
 // registeringUE is the minimum a Registration Accept can be built for: a GUTI, a PLMN,

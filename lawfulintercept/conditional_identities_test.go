@@ -41,11 +41,11 @@ func TestEachAMFRecordCarriesTheSUCIItHolds(t *testing.T) {
 		record string
 		suci   iri.SUCI
 	}{
-		{"AMFRegistration", amfRegistration(id).SUCI},
+		{"AMFRegistration", amfRegistration(id, iri.RegResult3GPPAccess).SUCI},
 		{"AMFDeregistration", amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP).SUCI},
 		{"AMFLocationUpdate", amfLocationUpdate(id).SUCI},
 		{"AMFUnsuccessfulProcedure", amfUnsuccessfulRegistration(id, 0x0B).SUCI},
-		{"AMFStartOfInterceptionWithRegisteredUE", amfStartOfInterception(id).SUCI},
+		{"AMFStartOfInterceptionWithRegisteredUE", amfStartOfInterception(id, iri.RegResult3GPPAccess).SUCI},
 		{"AMFIdentifierAssociation", amfIdentifierAssociation(id).SUCI},
 		{"AMFIdentifierDeassociation", amfIdentifierDeassociation(id).SUCI},
 		{"AMFUEPolicyTransfer", amfUEPolicyTransfer(id, make([]byte, 16)).SUCI},
@@ -89,9 +89,9 @@ func TestTheThreeRecordsThatCarryATAIList(t *testing.T) {
 		record string
 		list   iri.TAIList
 	}{
-		{"AMFRegistration", amfRegistration(id).FiveGSTAIList},
+		{"AMFRegistration", amfRegistration(id, iri.RegResult3GPPAccess).FiveGSTAIList},
 		{"AMFIdentifierAssociation", amfIdentifierAssociation(id).FiveGSTAIList},
-		{"AMFStartOfInterceptionWithRegisteredUE", amfStartOfInterception(id).FiveGSTAIList},
+		{"AMFStartOfInterceptionWithRegisteredUE", amfStartOfInterception(id, iri.RegResult3GPPAccess).FiveGSTAIList},
 	} {
 		t.Run(tc.record, func(t *testing.T) {
 			if len(tc.list) != 1 {
@@ -109,7 +109,7 @@ func TestTheThreeRecordsThatCarryATAIList(t *testing.T) {
 }
 
 func TestAMFRegistrationCarriesItsRATType(t *testing.T) {
-	if got := amfRegistration(fullIdentity()).RATType; got != iri.RATNR {
+	if got := amfRegistration(fullIdentity(), iri.RegResult3GPPAccess).RATType; got != iri.RATNR {
 		t.Errorf("rATType = %d, want %d (nR)", got, iri.RATNR)
 	}
 }
@@ -138,7 +138,7 @@ func TestSatelliteRATTypesAreMapped(t *testing.T) {
 func TestUnheldConditionalIdentitiesAreAbsentNotEmpty(t *testing.T) {
 	bare := targetIdentity() // no SuciRaw, no TaiList, no RatType
 
-	reg := amfRegistration(bare)
+	reg := amfRegistration(bare, iri.RegResult3GPPAccess)
 	if reg.SUCI.MCC != "" || reg.SUCI.RoutingIndicator != 0 || len(reg.SUCI.SchemeOutput) != 0 {
 		t.Errorf("sUCI is present for a UE that never sent one: %+v", reg.SUCI)
 	}

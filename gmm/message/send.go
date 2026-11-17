@@ -175,7 +175,7 @@ func SendServiceAccept(ue *context.RanUe, anType models.AccessType, pDUSessionSt
 	ngap_message.SendDownlinkNasTransport(ue, nasMsg, nil)
 	// Reported here rather than in the caller because this function returns no
 	// error: a build failure above logs and returns, and a caller that reported
-	// afterwards would claim an accept the target never received.
+	// afterwards would claim an accept that was never built.
 	lawfulintercept.ReportServiceAccept(amfUe)
 }
 
@@ -267,18 +267,18 @@ func SendRegistrationReject(ue *context.RanUe, cause5GMM uint8, eapMessage strin
 	}
 	amfUe.GmmLog.Infoln("send Registration Reject")
 
-	// Lawful Interception IRI-POI: this is the single choke point for every
-	// registration rejection, so emit an AMFUnsuccessfulProcedure xIRI here for a
-	// tasked target. Silent no-op unless LI is configured (and unless the UE is
-	// identified enough to match a task). Sent before the reject NAS is built so
-	// interception timing is independent of downlink transport.
-	lawfulintercept.ReportRegistrationReject(amfUe, cause5GMM)
-
 	nasMsg, err := BuildRegistrationReject(amfUe, cause5GMM, eapMessage)
 	if err != nil {
 		amfUe.GmmLog.Errorln(err.Error())
 		return
 	}
+
+	// Lawful Interception IRI-POI: every registration reject is sent from here, so this is
+	// where an AMFUnsuccessfulProcedure xIRI is emitted for a tasked target. After the build,
+	// so a reject that could not be built is not reported. Silent no-op unless LI is
+	// configured (and unless the UE is identified enough to match a task).
+	lawfulintercept.ReportRegistrationReject(amfUe, cause5GMM)
+
 	ngap_message.SendDownlinkNasTransport(ue, nasMsg, nil)
 }
 
@@ -359,6 +359,10 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 		}, func() {
 			amfUe.GmmLog.Warnf("T3522 Expires %d times, abort deregistration procedure", cfg.MaxRetryTimes)
 			amfUe.T3522 = nil // clear the timer
+			// Lawful Interception IRI-POI: each branch below that goes ahead deregisters the UE
+			// and removes its context, so it reports an AMFDeregistration before writing the
+			// state and an AMFIdentifierDeassociation after: Remove ends the binding on every
+			// access.
 			// Remove() deletes the whole UE; publish the Del first or a resolved-SUPI subscriber is
 			// left stale in Kafka (the Add published on SUPI resolution never gets a matching Del).
 			// Serialized with the EventChannel so this can't race an in-flight NAS message for the
@@ -375,7 +379,9 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 							amfUe.State[models.ACCESSTYPE__3_GPP_ACCESS].Current())
 						return
 					}
+					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(accessType))
 					amfUe.State[models.ACCESSTYPE__3_GPP_ACCESS].Set(context.Deregistered)
+					lawfulintercept.ReportIdentifierDeassociation(amfUe)
 					amfUe.PublishUeCtxtInfoOnRemoval(models.ACCESSTYPE__3_GPP_ACCESS)
 					amfUe.Remove()
 				})
@@ -387,7 +393,9 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 							amfUe.State[models.ACCESSTYPE_NON_3_GPP_ACCESS].Current())
 						return
 					}
+					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(accessType))
 					amfUe.State[models.ACCESSTYPE_NON_3_GPP_ACCESS].Set(context.Deregistered)
+					lawfulintercept.ReportIdentifierDeassociation(amfUe)
 					amfUe.PublishUeCtxtInfoOnRemoval(models.ACCESSTYPE_NON_3_GPP_ACCESS)
 					amfUe.Remove()
 				})
@@ -401,8 +409,10 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 						amfUe.GmmLog.Infoln("T3522 abort for both access types is stale; skipping removal")
 						return
 					}
+					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(nasMessage.AccessTypeBoth))
 					amfUe.State[models.ACCESSTYPE__3_GPP_ACCESS].Set(context.Deregistered)
 					amfUe.State[models.ACCESSTYPE_NON_3_GPP_ACCESS].Set(context.Deregistered)
+					lawfulintercept.ReportIdentifierDeassociation(amfUe)
 					amfUe.PublishUeCtxtInfoOnRemoval(models.ACCESSTYPE__3_GPP_ACCESS)
 					amfUe.Remove()
 				})

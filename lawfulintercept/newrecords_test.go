@@ -11,6 +11,7 @@ import (
 
 	amfctx "github.com/omec-project/amf/context"
 	"github.com/omec-project/nas/v2/nasMessage"
+	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/li/iri"
 	"github.com/omec-project/util/li/store"
 	"github.com/omec-project/util/li/types"
@@ -311,7 +312,7 @@ func TestPeriodicRegistrationIsReportedOnceAsPeriodic(t *testing.T) {
 
 			ue := targetUE()
 			ue.RegistrationType5GS = tc.regType
-			ReportRegistration(ue)
+			ReportRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS)
 
 			if len(snd.pdus) != 1 {
 				t.Fatalf("delivered %d records for one registration, want exactly 1", len(snd.pdus))

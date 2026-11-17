@@ -28,7 +28,7 @@ func TestAnIMEIIsReportedWithoutItsCheckDigit(t *testing.T) {
 	if got := peiChoice(id); got != iri.IMEI(testIMEI14) {
 		t.Errorf("PEI = %#v, want the fourteen-digit IMEI %q", got, testIMEI14)
 	}
-	if _, err := iri.EncodeXIRI(amfRegistration(id)); err != nil {
+	if _, err := iri.EncodeXIRI(amfRegistration(id, iri.RegResult3GPPAccess)); err != nil {
 		t.Errorf("a registration for an IMEI-identified UE is not encodable: %v", err)
 	}
 

@@ -479,7 +479,6 @@ func Init(cfg Config) error {
 			// serving a task that named no DID is watched too.
 			return sub.x2Health(func(addr string) bool { return pool.UnreachableAt(addr) })
 		}, reporter, 0)
-		go watcher.Watch(nil)
 	}
 	x1srv := newX1Server(st, cfg, sub)
 	// Bind the X1 listener synchronously so a bind/permission failure is reported
@@ -495,6 +494,10 @@ func Init(cfg Config) error {
 			sub.reporter.NotifyAsync(x1.NEIssueX1ListenFailed, "X1 listener bind failed")
 		}
 		return fmt.Errorf("lawful interception: X1 listen on %s: %w", cfg.X1Listen, err)
+	}
+	// Started once the bind has succeeded, so a failed Init leaves no goroutine behind.
+	if watcher != nil {
+		go watcher.Watch(nil)
 	}
 	// NewListener supplies the properties every X1 endpoint needs and none of the
 	// three network functions should be trusted to remember separately: a discarded
@@ -592,23 +595,50 @@ func droppedXIRIs(n int) string {
 // AMFLocationUpdate; every other registration type is an AMFRegistration. It is
 // a no-op when LI is inactive or ue is not a target, and never logs anything
 // that would reveal interception.
-func ReportRegistration(ue *amfctx.AmfUe) {
+//
+// access is the access the registration completes on. It is part of the record's
+// registrationResult, alongside any other access the UE is already registered over.
+func ReportRegistration(ue *amfctx.AmfUe, access models.AccessType) {
 	sub := active.Load()
 	if sub == nil || ue == nil {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, registrationEvent(id))
+	sub.reportEvent(id, registrationEvent(id, registrationResultOf(ue, &access)))
 }
 
 // registrationEvent picks the xIRI for a completed registration: a mobility
 // registration update is an AMFLocationUpdate (the UE reporting movement while
-// staying registered); any other type is an AMFRegistration.
-func registrationEvent(id amfctx.UeIdentity) any {
+// staying registered); any other type is an AMFRegistration with result as its
+// registrationResult.
+func registrationEvent(id amfctx.UeIdentity, result iri.AMFRegistrationResult) any {
 	if id.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
 		return amfLocationUpdate(id)
 	}
-	return amfRegistration(id)
+	return amfRegistration(id, result)
+}
+
+// registrationResultOf is the 5GS registration result of TS 24.501 clause 9.11.3.6: the
+// accesses ue is registered over. completedOn, when set, is the access a registration is
+// completing on, which is not yet in the Registered state when the record is made. The
+// result is built as BuildRegistrationAccept builds the IE, and the NAS access bits are the
+// record's AMFRegistrationResult values (1, 2, and 3 for both).
+func registrationResultOf(ue *amfctx.AmfUe, completedOn *models.AccessType) iri.AMFRegistrationResult {
+	var result iri.AMFRegistrationResult
+	for access, bit := range map[models.AccessType]iri.AMFRegistrationResult{
+		models.ACCESSTYPE__3_GPP_ACCESS:    iri.RegResult3GPPAccess,
+		models.ACCESSTYPE_NON_3_GPP_ACCESS: iri.RegResultNon3GPPAccess,
+	} {
+		if completedOn != nil && *completedOn == access {
+			result |= bit
+			continue
+		}
+		if st := ue.State[access]; st != nil && st.Is(amfctx.Registered) {
+			result |= bit
+		}
+	}
+
+	return result
 }
 
 // ReportServiceAccept emits an AMFUEServiceAccept xIRI when the AMF has sent a
@@ -836,6 +866,13 @@ func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
 	if sub == nil || ue == nil {
 		return
 	}
+	// TS 33.128 clause 6.2.2.2.6: an unsuccessful registration is reported only if the UE
+	// has been successfully authenticated. A UE holding a valid NAS security context has
+	// been: by this procedure's authentication and security mode, or by an earlier one
+	// whose context protected this request.
+	if !ue.SecurityContextIsValid() {
+		return
+	}
 	id := ue.IdentitySnapshot()
 	sub.reportEvent(id, amfUnsuccessfulRegistration(id, cause))
 }
@@ -1040,7 +1077,7 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 		id := ue.IdentitySnapshot()
 		if registered(ue) && taskTargets(task, id) && !covered(already, id) {
 			events = append(events, startRecord{
-				event: amfStartOfInterception(id), ids: targetsOf(id), id: id,
+				event: amfStartOfInterception(id, registrationResultOf(ue, nil)), ids: targetsOf(id), id: id,
 			})
 		}
 		return true
@@ -1355,12 +1392,12 @@ func targetsOf(id amfctx.UeIdentity) []types.TargetIdentifier {
 }
 
 // amfRegistration maps a UE identity snapshot to a TS 33.128 AMFRegistration record. The
-// registration type is taken from the NAS 5GS registration request; the result
-// defaults to 3GPP-access.
-func amfRegistration(id amfctx.UeIdentity) iri.AMFRegistration {
+// registration type is taken from the NAS 5GS registration request, and the result is
+// the caller's (see registrationResultOf).
+func amfRegistration(id amfctx.UeIdentity, result iri.AMFRegistrationResult) iri.AMFRegistration {
 	return iri.AMFRegistration{
 		RegistrationType:   registrationType(id),
-		RegistrationResult: iri.RegResult3GPPAccess,
+		RegistrationResult: result,
 		SUPI:               supiChoice(id),
 		PEI:                peiChoice(id),
 		GPSI:               gpsiChoice(id),
@@ -1414,11 +1451,12 @@ func amfUnsuccessfulRegistration(id amfctx.UeIdentity, cause uint8) iri.AMFUnsuc
 }
 
 // amfStartOfInterception maps an already-registered UE identity snapshot to a TS 33.128
-// AMFStartOfInterceptionWithRegisteredUE record.
-func amfStartOfInterception(id amfctx.UeIdentity) iri.AMFStartOfInterceptionWithRegisteredUE {
+// AMFStartOfInterceptionWithRegisteredUE record, with the accesses the UE is registered
+// over as its registration result.
+func amfStartOfInterception(id amfctx.UeIdentity, result iri.AMFRegistrationResult) iri.AMFStartOfInterceptionWithRegisteredUE {
 	return iri.AMFStartOfInterceptionWithRegisteredUE{
 		SUCI:               suciOf(id),
-		RegistrationResult: iri.RegResult3GPPAccess,
+		RegistrationResult: result,
 		RegistrationType:   registrationType(id),
 		SUPI:               supiChoice(id),
 		PEI:                peiChoice(id),

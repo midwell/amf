@@ -684,6 +684,10 @@ func HandleRegistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType model
 		return fmt.Errorf("empty MobileIdentity5GS contents in Registration Request")
 	}
 	ue.IdentityTypeUsedForRegistration = nasConvert.GetTypeOfIdentity(mobileIdentity5GSContents[0])
+	// A registration by another identity used no SUCI, so the LI records it produces carry none.
+	if ue.IdentityTypeUsedForRegistration != nasMessage.MobileIdentity5GSTypeSuci {
+		ue.SetSuciRaw(nil)
+	}
 	switch ue.IdentityTypeUsedForRegistration { // get type of identity
 	case nasMessage.MobileIdentity5GSTypeNoIdentity:
 		ue.GmmLog.Debugf("No Identity")
@@ -1394,7 +1398,7 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 	// indistinguishable to an agency from a subject who did nothing. Silent no-op
 	// unless LI is configured.
 	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
-		lawfulintercept.ReportRegistration(ue)
+		lawfulintercept.ReportRegistration(ue, anType)
 	}
 
 	// TODO: GUTI reassignment if need (based on operator poilcy)
@@ -2784,7 +2788,7 @@ func HandleRegistrationComplete(ctx ctxt.Context, ue *context.AmfUe, accessType 
 	// Complete. Reporting it in both places would give the agency two location
 	// records for one movement.
 	if ue.RegistrationType5GS != nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
-		lawfulintercept.ReportRegistration(ue)
+		lawfulintercept.ReportRegistration(ue, accessType)
 	}
 
 	if ue.T3550 != nil {
@@ -3051,13 +3055,11 @@ func HandleDeregistrationAccept(ctx ctxt.Context, ue *context.AmfUe, anType mode
 		}
 	}
 
-	// Lawful Interception IRI-POI: this is where a network-initiated deregistration
-	// completes. The UE has accepted, the event below sets the state to Deregistered, and
-	// NetworkInitiatedDeregistrationProcedure has already released every SM context.
-	//
-	// Reported here rather than beside the request, because the request has two outcomes and
-	// only one of them is a deregistration: T3522 expiring aborts the procedure and leaves the
-	// UE registered, which is correctly reported as nothing.
+	// Lawful Interception IRI-POI: a network-initiated deregistration completes here when the
+	// UE accepts. The event below sets the state to Deregistered, and
+	// NetworkInitiatedDeregistrationProcedure has already released every SM context. Its other
+	// two endings report where they happen: T3522 running out (SendDeregistrationRequest's
+	// abort) and another message from the UE in its place (DeregisteredInitiated in sm.go).
 	//
 	// Reported before the event, so deregisteringEveryAccess reads the state the record
 	// describes rather than the state the event is about to write — the same ordering the
