@@ -1035,8 +1035,8 @@ var scanSlots = make(chan struct{}, 4)
 var scanWalked func()
 
 // scanRegisteredUEs emits the start-of-interception records, one per registered access, for
-// every already-registered UE a newly activated task targets. It runs off the X1 request goroutine; see the
-// caller.
+// every already-registered UE a newly activated task targets. It runs off the X1 request
+// goroutine; see the caller.
 func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.InterceptTask, activated time.Time) {
 	// nil in production. It exists because the *walk* is what the predicate and the bound are
 	// about, and the walk is not observable from its records: a modification that cannot

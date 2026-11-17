@@ -732,7 +732,8 @@ func BuildRegistrationAccept(
 	// stores the result in ue.RegistrationAcceptForNon3GPPAccess for the N3IWF's answer. Every
 	// accept is built here, and this is where the 5G-GUTI IE is placed. The record is made once
 	// the accept has been built, not once it has been sent: an accept that is stored or that
-	// finds no RanUe leaves a record for a 5G-GUTI the UE did not receive.
+	// finds no RanUe leaves a record for a 5G-GUTI the UE did not receive. That is deliberate:
+	// the clause generates the record regardless of whether the procedure completes.
 	if ue.GetGuti() != "" {
 		liReportIdentifierAssociation(ue)
 	}
