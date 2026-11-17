@@ -292,7 +292,7 @@ func TestLiBulkSwitchesAreTriState(t *testing.T) {
 }
 
 // Misspellings of the two LI keys whose defaults fail unsafely, shared by the tests that
-// check a typo in either stops the network function from starting.
+// check a typo in either is refused without stopping the network function.
 const (
 	typoKeepaliveTimeout = "keepaliveTimeut"
 	typoAdmfURL          = "admf_url"
@@ -336,7 +336,7 @@ configuration:
 			t.Fatalf("a conformant li block was refused: %v", err)
 		}
 		if AmfConfig.Configuration.Li.KeepaliveTimeout != "30s" {
-			t.Errorf("keepaliveTimeout = %q, want 30s — the strict pass must not disturb the decode",
+			t.Errorf("keepaliveTimeout = %q, want 30s — the li decode must not lose a value it can read",
 				AmfConfig.Configuration.Li.KeepaliveTimeout)
 		}
 	})

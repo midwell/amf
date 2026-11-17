@@ -32,7 +32,7 @@ func LiBlockError() error { return liBlockErr }
 // than an error from the whole configuration load, which stops the AMF.
 //
 // **A refused block is still returned, never nil.** The decode fills what it can read and
-// reports the rest, so the fields that did decode — admfUrl among them — let the LI subsystem
+// reports the rest, so when admfUrl is among the fields that did decode, the LI subsystem can
 // report the refusal to the ADMF. A block that is not a mapping at all decodes nothing and is
 // refused all the same: returning nil for it would read as "interception is off" and the refusal
 // would never be acted on.
@@ -76,7 +76,7 @@ func strictLiBlock(content []byte) (*Li, error) {
 
 	li := &Li{}
 
-	// Round-tripped so the strict pass sees the block and only the block. One small mapping, once,
+	// Round-tripped so the decode sees the block and only the block. One small mapping, once,
 	// at startup.
 	raw, err := yaml.Marshal(block)
 	if err != nil {

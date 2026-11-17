@@ -35,8 +35,8 @@ import (
 // Config configures the AMF LI IRI-POI. Init is only called when LI is enabled.
 type Config struct {
 	// BlockError, when non-nil, is why the element's `li` configuration block was refused
-	// before it reached here — an unrecognised key, most likely a misspelling of one this
-	// element does model.
+	// before it reached here — an unrecognised key (most likely a misspelling of one this
+	// element does model) or a value of the wrong type.
 	//
 	// It is carried rather than acted on by the loader because refusing a configuration is not
 	// the same as refusing to run: the network function has work of its own, and stopping it
@@ -372,7 +372,7 @@ func Init(cfg Config) error {
 	if cfg.BlockError != nil {
 		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
 			"this element's interception configuration carries a setting it does not "+
-				"recognise, so the values it would fall back on cannot be trusted; "+
+				"recognise or cannot read, so the values it would fall back on cannot be trusted; "+
 				"interception has not been started")
 
 		return cfg.BlockError
