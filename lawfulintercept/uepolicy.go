@@ -72,10 +72,16 @@ func (p *pendingPolicies) clock() time.Time {
 	return time.Now()
 }
 
-// expireLocked drops every COMMAND whose hold has run out. At most maxPendingUEs ×
-// maxPendingPerUE entries, on a path taken once per downlink policy container to a target.
+// expireLocked drops every COMMAND whose hold has run out, and every entry whose UE context
+// has been collected, so neither counts toward maxPendingUEs and pushes a live UE's COMMAND
+// out. At most maxPendingUEs × maxPendingPerUE entries, on a path taken once per downlink
+// policy container to a target.
 func (p *pendingPolicies) expireLocked(now time.Time) {
 	for ue, held := range p.byUE {
+		if ue.Value() == nil {
+			delete(p.byUE, ue)
+			continue
+		}
 		kept := held[:0]
 		for _, c := range held {
 			if now.Sub(c.at) < uePolicyHoldFor {

@@ -404,3 +404,39 @@ func rememberForUnreferencedUE(p *pendingPolicies) weak.Pointer[amfctx.AmfUe] {
 	p.remember(ue, 1, uePolicyCommandOf(1, 16))
 	return weak.Make(ue)
 }
+
+// TestACollectedUEDoesNotPushALiveOneOut: the entry of a UE context that has been collected
+// can confirm nothing, so at the bound it gives up its slot before a live UE's COMMAND is
+// evicted. Here the collected UE holds the newest COMMAND, so the eviction policy alone would
+// pick the oldest live one.
+func TestACollectedUEDoesNotPushALiveOneOut(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	p := pendingPolicies{now: func() time.Time { return now }}
+
+	live := make([]*amfctx.AmfUe, maxPendingUEs-1)
+	for i := range live {
+		live[i] = &amfctx.AmfUe{}
+		p.remember(live[i], 1, uePolicyCommandOf(1, 16))
+		now = now.Add(time.Millisecond)
+	}
+
+	collected := func() weak.Pointer[amfctx.AmfUe] {
+		ue := &amfctx.AmfUe{}
+		p.remember(ue, 1, uePolicyCommandOf(1, 16))
+		return weak.Make(ue)
+	}()
+	now = now.Add(time.Millisecond)
+	for i := 0; i < 20 && collected.Value() != nil; i++ {
+		runtime.GC()
+	}
+	if collected.Value() != nil {
+		t.Skip("the UE context was not collected, so this test cannot reach the state it is about")
+	}
+
+	p.remember(&amfctx.AmfUe{}, 1, uePolicyCommandOf(1, 16))
+
+	if p.lookup(live[0], 1) == nil {
+		t.Error("a live UE's COMMAND was evicted while a collected UE's entry held a slot")
+	}
+	runtime.KeepAlive(live)
+}
