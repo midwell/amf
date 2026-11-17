@@ -43,8 +43,8 @@ func relayingUe(t *testing.T) *context.RanUe {
 // relay paths. The record is produced on the UE's COMPLETE, so a COMMAND this hook misses is a
 // record the COMPLETE cannot produce.
 //
-// The hook is on the send rather than beside the two call sites, which is the third time this
-// shape has cost a record: a hook placed beside one caller is not inherited by the next.
+// The hook is on the path both relays share rather than beside the two call sites: a hook
+// placed beside one caller is not inherited by the next.
 func TestADownlinkUEPolicyContainerIsNoted(t *testing.T) {
 	var got []byte
 	reported := 0
@@ -98,11 +98,11 @@ func TestADownlinkContainerOfAnotherKindIsNotNoted(t *testing.T) {
 
 // TestTheBuilderIsWhereTheUEPolicyHookLives pins the seam, not the caller.
 //
-// The hook sat on SendDLNASTransport, which looked like the seam every downlink UE-policy
-// container crosses and was not: producer/n1n2message.go builds the message with this builder and
-// hands it to NGAP itself, never calling that function. It is also the only caller of this builder
-// that passes a *variable* container type — every other one hard-codes N1SMInfo — so it is
-// precisely the caller that can carry a policy, and precisely the one the hook did not cover.
+// SendDLNASTransport is not the seam every downlink UE-policy container crosses:
+// producer/n1n2message.go builds the message with this builder and hands it to NGAP itself,
+// never calling that function. It is also the only caller of this builder that passes a
+// *variable* container type — every other one hard-codes N1SMInfo — so it is precisely the
+// caller that can carry a policy.
 //
 // So the assertion is about the builder. A relay path that builds a DL NAS Transport carrying a
 // policy container is noted whether or not it goes on to use SendDLNASTransport, which is what

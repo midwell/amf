@@ -262,8 +262,8 @@ func TestHeldUEPolicyCommandsAreBounded(t *testing.T) {
 
 // TestVanishedUEsDoNotBlockAFreshTarget is the exhaustion case: as many targets as the bound
 // are each sent a COMMAND and never answer, and their contexts are never removed. A target
-// after them still has its exchange recorded. With a refusing bound, it was not, silently,
-// until the AMF restarted.
+// after them still has its exchange recorded. A bound that refused new entries would lose it,
+// silently, until the AMF restarted.
 func TestVanishedUEsDoNotBlockAFreshTarget(t *testing.T) {
 	snd := &captureSender{}
 	activateIRI(t, snd, testTargetSUPI)
@@ -317,7 +317,7 @@ func TestAnExpiredUEPolicyCommandIsNotReported(t *testing.T) {
 
 // TestRemovingTheUEContextForgetsItsUEPolicyCommands: a context removed on any path —
 // purge, transfer to another AMF, a registration torn down — completes no procedure through
-// it. Only the deregistration handlers forgot, so every other path left its COMMANDs held.
+// it. Forgetting only in the deregistration handlers would leave every other path's COMMANDs held.
 func TestRemovingTheUEContextForgetsItsUEPolicyCommands(t *testing.T) {
 	activateIRI(t, &captureSender{}, testTargetSUPI)
 	ue := targetUE()
@@ -338,7 +338,7 @@ func TestRemovingTheUEContextForgetsItsUEPolicyCommands(t *testing.T) {
 // definition. TS 33.128 makes uEPolicy mandatory and defines `UEPolicy ::= OCTET STRING
 // (SIZE(16..65540))`, which fits a COMMAND carrying the optional UE policy network classmark.
 // A COMMAND with neither optional IE and a management list of 11–13 octets is 13–15 octets: the
-// prose mandates the record and the schema forbids it. This project follows the schema and
+// prose mandates the record and the schema forbids it. This element follows the schema and
 // declares the contradiction (li/iri CONFORMANCE).
 //
 // What must not happen is that the gap is invisible. Relaxing the bound would not deliver the
@@ -383,7 +383,7 @@ func TestOnlyACommandIsHeld(t *testing.T) {
 
 // TestAHeldCommandDoesNotKeepTheUEContextAlive: an entry is keyed by a weak pointer, so a UE
 // context nothing else references is collected even while a COMMAND is held for it. Keyed by
-// the pointer itself, every entry the bounds had not yet reached pinned a whole context.
+// the pointer itself, every entry the bounds had not yet reached would pin a whole context.
 func TestAHeldCommandDoesNotKeepTheUEContextAlive(t *testing.T) {
 	var p pendingPolicies
 	w := rememberForUnreferencedUE(&p)

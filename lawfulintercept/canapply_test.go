@@ -84,9 +84,8 @@ const (
 )
 
 // TestX1ServerRefusesTaskingItCannotAct drives the X1 server this element
-// actually runs, which is the point: the defect was not a wrong decision but a
-// decision never wired in, and a test that calls canApply directly passes with
-// the option unregistered.
+// actually runs, which is the point: a decision never wired in refuses nothing,
+// and a test that calls canApply directly passes with the option unregistered.
 //
 // This element matches subjects by subscriber identity alone, and every criterion of a
 // task must match (TS 103 221-1 table 6.2.1.2-1). A warrant naming a UE address — alone
@@ -108,7 +107,7 @@ func TestX1ServerRefusesTaskingItCannotAct(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st := store.New()
 			// The destination the fixture names is declared, because a task naming one
-			// this element cannot resolve is now refused — and what this test is about is
+			// this element cannot resolve is refused — and what this test is about is
 			// whether the element can act on the *targets*.
 			srv := newX1Server(st, Config{
 				NEID: testNEID, AdmfID: testADMFID,
@@ -157,12 +156,12 @@ func TestX1ServerRefusesTaskingItCannotAct(t *testing.T) {
 // TestATaskRequiringOnlyContentIsRefused is the product half of "any element refuses tasking
 // it cannot act on".
 //
-// This element is an IRI-POI: it produces xIRI and nothing else. `canApply` tested the
-// identifier kinds and not the products, so an `X3Only` warrant naming a valid SUPI was
-// acknowledged, stored, reported as active in an interrogation, and then skipped by every
-// delivery path for not requesting IRI. The provisioning function was told an interception is
-// running at an element that can never produce anything for it — indistinguishable, from the
-// agency's side, from a tasked subject who did nothing.
+// This element is an IRI-POI: it produces xIRI and nothing else. Were `canApply` to test only
+// the identifier kinds, an `X3Only` warrant naming a valid SUPI would be acknowledged, stored,
+// reported as active in an interrogation, and then skipped by every delivery path for not
+// requesting IRI. The provisioning function would be told an interception is running at an
+// element that can never produce anything for it — indistinguishable, from the agency's side,
+// from a tasked subject who did nothing.
 //
 // `X2andX3` is accepted, and the distinction is the point: a warrant provisioned to several
 // elements legitimately names products only some of them produce, so refusing that would
@@ -256,7 +255,7 @@ func TestATaskWhoseDestinationsCarryNoIRIIsRefused(t *testing.T) {
 
 	t.Run("no destinations named at all", func(t *testing.T) {
 		// The gap the configured MDF2 fills, which is a different fact and must stay accepted —
-		// it is the case every deployment predating the ListOfDIDs requirement is in.
+		// it is the case of an ADMF that provisions no destinations.
 		if err := canApply(base(nil, nil)); err != nil {
 			t.Errorf("a task naming no destinations was refused: %v. That is a gap the "+
 				"provisioning function left, not an instruction this element cannot honour", err)

@@ -97,20 +97,13 @@ func isRegistrationTypeComparison(cmp *ast.BinaryExpr) bool {
 }
 
 // TestTheTwoRegistrationTapsPartitionTheTypes reads the production guards instead of restating
-// them.
+// them. A test that declared its own copies of the two comparisons and asserted they differ
+// would pass whatever the handlers compare: both guards could be changed to the same comparison
+// while every mobility registration is reported twice and the agency receives two location
+// records for one movement.
 //
-// The version this replaces declared its own copies —
-//
-//	mobilityTap := regType == …MobilityRegistrationUpdating
-//	completeTap := regType != …MobilityRegistrationUpdating
-//
-// — and asserted they differ, which is true of any value and of any code. It read nothing from
-// either handler, so both guards could have been changed to the same comparison and it would still
-// have passed, while every mobility registration was reported twice and the agency received two
-// location records for one movement.
-//
-// The property is real and worth pinning: `A periodic registration update is reported, exactly
-// once` requires that the two taps partition the registration types between them. So this asserts
+// The property is real and worth pinning: a periodic registration update is reported exactly
+// once only if the two taps partition the registration types between them. So this asserts
 // what the handlers actually compare — one `==`, the other `!=`, on the same two operands — which
 // is the only shape that partitions.
 func TestTheTwoRegistrationTapsPartitionTheTypes(t *testing.T) {

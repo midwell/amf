@@ -1391,11 +1391,8 @@ func HandleMobilityAndPeriodicRegistrationUpdating(ctx ctxt.Context, ue *context
 	// for the same reason in reverse. Between them each registration type is
 	// reported exactly once — which is what TS 33.128 asks for, since a periodic
 	// update is a registration procedure the AMF performs and an unreported one is
-	// indistinguishable to an agency from a subject who did nothing.
-	//
-	// This comment previously said periodic updates were not reported at all, on
-	// the premise that this path is the only one they reach. They reach both; the
-	// guards are what separate them. Silent no-op unless LI is configured.
+	// indistinguishable to an agency from a subject who did nothing. Silent no-op
+	// unless LI is configured.
 	if ue.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
 		lawfulintercept.ReportRegistration(ue)
 	}
@@ -2023,15 +2020,11 @@ func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe
 	if ue.CmConnect(accessType) && ue.State[accessType].Is(context.Registered) {
 		// setting reregistration required flag to true
 		//
-		// **Nothing is reported here, and that is because the procedure is not over.** An
-		// earlier version of this claimed the UE "stays attached", so this was not a
-		// deregistration for LI purposes. It is one: the UE answers with a DEREGISTRATION
-		// ACCEPT, HandleDeregistrationAccept runs, and the state becomes Deregistered — and
-		// every SM context is released below, on this branch as much as the other. Reporting
-		// from the branch that *starts* a procedure is what left this one silent, because the
-		// branch not taken is the one that completes it by another route.
-		//
-		// So the record is emitted where the procedure completes: HandleDeregistrationAccept.
+		// **Nothing is reported here, because the procedure is not over.** It is still a
+		// deregistration: the UE answers with a DEREGISTRATION ACCEPT,
+		// HandleDeregistrationAccept runs, and the state becomes Deregistered — and every SM
+		// context is released below, on this branch as much as the other. So the record is
+		// emitted where the procedure completes: HandleDeregistrationAccept.
 		gmm_message.SendDeregistrationRequest(ue.GetRanUe(accessType), anType, true, 0)
 	} else {
 		// Lawful Interception IRI-POI: this branch actually deregisters the UE, so
@@ -2788,7 +2781,7 @@ func HandleRegistrationComplete(ctx ctxt.Context, ue *context.AmfUe, accessType 
 	// It reaches here too: BuildRegistrationAccept carries the 5G-GUTI IE whenever
 	// the UE has a GUTI — which it does after its initial registration — and
 	// TS 24.501 clause 5.5.1.3.4 then requires the UE to send Registration
-	// Complete. Reporting it in both places delivered the agency two location
+	// Complete. Reporting it in both places would give the agency two location
 	// records for one movement.
 	if ue.RegistrationType5GS != nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
 		lawfulintercept.ReportRegistration(ue)
@@ -2912,8 +2905,8 @@ func HandleDeregistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType mod
 	// **The record names the access the element acts on, not the one the message
 	// arrived over.** They differ: the requested type below may be AccessTypeBoth, and
 	// this function then releases the SM contexts of *both* accesses. Reporting anType
-	// there gave the mediation function a record contradicting what the same function
-	// went on to do — a populated field asserting something false, which nothing
+	// there would give the mediation function a record contradicting what the same
+	// function goes on to do — a populated field asserting something false, which nothing
 	// downstream can distinguish from a true one. TS 33.128 table 6.2.2.2.3-1 makes
 	// accessType mandatory with cardinality 1 and its type carries
 	// threeGPPandNonThreeGPPAccess(3), so "both" is a value of the one field rather
@@ -3096,7 +3089,7 @@ func HandleDeregistrationAccept(ctx ctxt.Context, ue *context.AmfUe, anType mode
 
 	// The binding goes only once the UE is left registered nowhere, and after the state says
 	// so: announcing the release while this element is still producing records under the
-	// association is what the UE-originated path was corrected for.
+	// association tells the mediation function something it will then contradict.
 	if releasesBinding {
 		lawfulintercept.ReportIdentifierDeassociation(ue)
 	}
@@ -3128,10 +3121,10 @@ func HandleAuthenticationError(ue *context.AmfUe, anType models.AccessType) erro
 //
 // It exists for the Lawful Interception deassociation record. That record says the
 // SUPI↔5G-GUTI binding is gone, and the AMF holds one binding across every access a UE
-// is registered on — so a dual-registered UE deregistering one access keeps it. Emitting
-// the record per deregistration told the mediation function the binding was released
-// while the element went on producing records under it, which is a statement the element
-// itself immediately contradicts.
+// is registered on — so a dual-registered UE deregistering one access keeps it. Emitted
+// per deregistration, the record would tell the mediation function the binding was
+// released while the element goes on producing records under it.
+//
 // bothAccesses says the deregistration covers every access outright; otherwise it covers
 // arrivedOn and the binding survives if the UE is registered anywhere else.
 //

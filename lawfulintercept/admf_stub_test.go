@@ -27,7 +27,7 @@ import (
 )
 
 // testTrust is the LI trust anchor every test in this package shares. It is also the
-// element's own certificate, as liPKI has always written it: a self-signed CA standing for
+// element's own certificate, as liPKI writes it: a self-signed CA standing for
 // both, with an IP SAN so a peer on the loopback presenting it is verified rather than merely
 // trusted, and binding testNEID in the NE role by the TS 103 221-1 annex G URN, as a real
 // element's certificate does for the ADMF that checks it. Sharing one is what lets the ADMF stub present a certificate the element verifies

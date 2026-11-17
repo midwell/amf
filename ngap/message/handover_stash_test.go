@@ -17,12 +17,12 @@ import (
 //
 // TS 33.128 puts that record on the HANDOVER REQUEST ACKNOWLEDGE, and the two values it
 // needs — the cause and the source-to-target container — exist only on the way in, so they
-// have to be stashed. Stashed by the *caller*, they were stashed before this function had
-// decided whether to send: five guards return without sending, and one of them is "Handover
-// Required Duplicated". So a duplicate HANDOVER REQUIRED overwrote the live handover's stash
-// and sent nothing, and the first handover's acknowledgement was then reported with the
-// rejected request's cause and container — a record describing a handover that never
-// happened, attributed to one that did, with nothing in either stream to show it.
+// have to be stashed. SendHandoverRequest has five guards that return without sending, and
+// one of them is "Handover Required Duplicated". Stashed before them, a duplicate HANDOVER
+// REQUIRED overwrites the live handover's stash and sends nothing, and the first handover's
+// acknowledgement is then reported with the rejected request's cause and container — a
+// record describing a handover that never happened, attributed to one that did, with nothing
+// in either stream to show it.
 //
 // Committed inside SendHandoverRequest, past the guards, the stash and the request carry the
 // same values by construction: a request that is not sent replaces nothing.
@@ -80,11 +80,10 @@ func TestADuplicateHandoverRequiredLeavesTheLiveHandoversStashIntact(t *testing.
 			sourceUe.HandOverSourceToTarget, liveContainer)
 	}
 
-	// **The third value, which this test used to leave out — and which was therefore the one
-	// still written by the caller, before any guard had run.** Both handover records carry the
-	// type, so a duplicate that overwrote it made them state a handover the subject did not
-	// perform: intra-5GS reported as 5GS-to-EPS. A mandatory field, populated, plausible and
-	// false, which nothing downstream distinguishes from a true one.
+	// **The third value.** Both handover records carry the type, so a duplicate that overwrote
+	// it would make them state a handover the subject did not perform: intra-5GS reported as
+	// 5GS-to-EPS. A mandatory field, populated, plausible and false, which nothing downstream
+	// distinguishes from a true one.
 	if sourceUe.HandOverType.Value != liveType.Value {
 		t.Errorf("the stashed handover type is %d, want the live handover's %d: the duplicate's "+
 			"type replaced it, so both records for the handover that did happen name one that "+

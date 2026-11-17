@@ -141,11 +141,7 @@ func TestSuciThreeDigitMNC(t *testing.T) {
 	}
 }
 
-// schemeOutput is where the first version of this file was wrong, and no unit test
-// caught it — the cluster run did, by decoding a delivered record against 3GPP's own
-// module and reading a subscriber that does not exist.
-//
-// Table 8.3.5-1 defines the field as "the characters resulting as the output of the
+// Table 8.3.5-1 defines schemeOutput as "the characters resulting as the output of the
 // permanent identifier with the protection scheme applied". Under the null scheme
 // those characters are the MSIN's digits; NAS carries them nibble-swapped, so shipping
 // the raw octets transposes every pair.

@@ -172,7 +172,7 @@ type TLS struct {
 }
 
 // Li configures the Lawful Interception IRI-POI. It is opt-in: when absent, LI
-// is disabled and the AMF behaves exactly as before.
+// is disabled and none of its hooks act.
 type Li struct {
 	X1Listen string `yaml:"x1Listen"` // address for the X1 provisioning listener
 	MDF2     string `yaml:"mdf2"`     // X2 delivery destination (host:port)
@@ -216,8 +216,7 @@ type Li struct {
 	//
 	// Setting it false is for a deployment whose mediation function does not
 	// implement the MDF half of clause 6.2.4 — it will never acknowledge, and this
-	// element would disconnect it every TIME_P2 and lose whatever was in flight. The
-	// reference implementation this project interoperates with is such a peer.
+	// element would disconnect it every TIME_P2 and lose whatever was in flight.
 	X2X3KeepaliveEnabled *bool  `yaml:"x2x3KeepaliveEnabled,omitempty"`
 	X2X3KeepaliveTimeP1  string `yaml:"x2x3KeepaliveTimeP1,omitempty"` // duration; default 60s
 	X2X3KeepaliveTimeP2  string `yaml:"x2x3KeepaliveTimeP2,omitempty"` // duration; default 180s

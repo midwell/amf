@@ -15,18 +15,17 @@ import (
 
 // TestLIBlockCannotReturnFromStart is a source-level assertion, and it is deliberate.
 //
-// The defect it guards was control flow, not a value: the Lawful Interception block in
-// Start() answered an unreadable configuration value with `return`, which returns from
-// *Start* rather than from LI initialisation. Everything after it never ran — PFCP, the
-// service-based interface, registration with the network — and because Start has no
-// error to return, the process then exited 0. A mistyped duration in an optional block
-// became a restart loop carrying a success exit code, diagnosed by a log line that is
-// required to say nothing about which subsystem declined.
+// The property it guards is control flow, not a value: a `return` in the Lawful Interception
+// block in Start() returns from *Start* rather than from LI initialisation. Everything after
+// it never runs — NGAP, the service-based interface, registration with the network — and
+// because Start has no error to return, the process then exits 0. A mistyped duration in an
+// optional block becomes a restart loop carrying a success exit code, diagnosed by a log line
+// that is required to say nothing about which subsystem declined.
 //
-// It survived a unit test of the parse helper, which asserted the value and never
-// reached the control flow that was wrong. Start itself cannot be called from a test: it
-// binds ports, registers with an NRF and does not return. So the property is asserted
-// where it actually lives — in the shape of the function — rather than not at all.
+// A unit test of the parse helper asserts the value and never reaches that control flow, and
+// Start itself cannot be called from a test: it binds ports, registers with an NRF and does
+// not return. So the property is asserted where it actually lives — in the shape of the
+// function — rather than not at all.
 //
 // The rule is narrow on purpose: no `return` inside the LI block. A refusal there must
 // stop interception and nothing else, which means falling through to the code below it.
@@ -134,7 +133,7 @@ func exprString(e ast.Expr) string {
 //     every operator and every log shipper that this element is LI-provisioned. The
 //     error is not lost: from inside Init the ADMF is told over X1, which is the channel
 //     that is permitted to know.
-//   - Terminating. A `Fatalln` or a `panic` here refuses the same way the `return` did,
+//   - Terminating. A `Fatalln` or a `panic` here refuses the same way a `return` does,
 //     and discloses more loudly than any log line could — a network function that does
 //     not serve is visible to every peer and every monitoring system.
 //

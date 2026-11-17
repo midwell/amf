@@ -63,15 +63,13 @@ func slowMDF2(t *testing.T, pair tls.Certificate) string {
 	return ln.Addr().String()
 }
 
-// TestProductDroppedByAFullQueueIsReported is the combination that made this silent,
-// and it is driven through Init rather than through a pool a test builds itself,
-// because what was wrong was the wiring: the hook was passed nil, with a comment
-// asserting the worker's unreachability report covered these drops. It does not.
-// AsyncSender.Unreachable excludes queue saturation deliberately — a full queue at one
-// instant is a burst the buffer exists to absorb — and says in the same paragraph that
-// the drops themselves are reported as they happen. At the UPF they were. Here nothing
-// reported them, so a reachable-but-slow MDF2 lost xIRI while every channel that could
-// have said so reported normality.
+// TestProductDroppedByAFullQueueIsReported is driven through Init rather than through a pool a
+// test builds itself, because what it guards is the wiring: the drop hook Init hands the pool.
+// The worker's unreachability report does not cover these drops. AsyncSender.Unreachable
+// excludes queue saturation deliberately — a full queue at one instant is a burst the buffer
+// exists to absorb — and says in the same paragraph that the drops themselves are reported as
+// they happen. Without the hook, a reachable-but-slow MDF2 loses xIRI while every channel that
+// could have said so reports normality.
 func TestProductDroppedByAFullQueueIsReported(t *testing.T) {
 	cert, key, ca, pair := loopbackPKI(t)
 	admf := newADMFStub(t)
@@ -96,7 +94,7 @@ func TestProductDroppedByAFullQueueIsReported(t *testing.T) {
 
 	// Comfortably past the queue's 1024, offered faster than a peer that never reads
 	// can take them. The PDU has the shape production builds, so it frames: the queue
-	// overflows before framing, so the drop report held with an unframeable PDU too, but
+	// overflows before framing, so the drop report would hold with an unframeable PDU too, but
 	// only a framed one ever reaches the peer and makes the slow destination's state real.
 	pdu := &x2x3.PDU{
 		Type:          x2x3.PDUTypeX2,
@@ -115,8 +113,8 @@ func TestProductDroppedByAFullQueueIsReported(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if strings.Contains(strings.Join(admf.received(), "\n"), "x2DeliveryLost") {
-			// The other half, and the reason this was invisible: the destination is
-			// still described as healthy, because by every measure it is.
+			// The other half, and the reason the loss is invisible without the report: the
+			// destination is still described as healthy, because by every measure it is.
 			if r, ok := s.(x2x3.Reachability); ok && r.Unreachable() {
 				t.Error("the destination reports unreachable; this test no longer reproduces " +
 					"the reachable-but-slow case it exists for")
@@ -131,8 +129,8 @@ func TestProductDroppedByAFullQueueIsReported(t *testing.T) {
 		strings.Join(admf.received(), "\n"))
 }
 
-// TestADroppedUnitIsReportedAsALossAndNotAsUnreachability is the consumer half of the
-// finding, asserted where the decision is made.
+// TestADroppedUnitIsReportedAsALossAndNotAsUnreachability is the consumer half, asserted
+// where the decision is made.
 //
 // A partial write costs one product unit only where the library's own resend of that unit
 // does not land either — it resends it whole on the fresh connection, which recovers the
@@ -141,9 +139,9 @@ func TestProductDroppedByAFullQueueIsReported(t *testing.T) {
 // unreachability: a healthy mediation function reported unreachable would have the watcher
 // raise a fault about a working peer and retract it on the next send.
 //
-// This element then discarded the error and nudged the watcher, which sampled a destination
-// it correctly considered reachable. So the loss the library correctly stopped mis-reporting
-// as unreachability was reported nowhere at all — product missing from an agency's record
+// Were this element to discard the error and only nudge the watcher, the watcher would sample
+// a destination it correctly considers reachable, and the loss the library declines to report
+// as unreachability would be reported nowhere at all — product missing from an agency's record
 // with every channel that could have said so reporting normality.
 //
 // The transport that produces the error is tested where it lives (li/x2x3's partial-write
@@ -189,8 +187,8 @@ func TestADroppedUnitIsReportedAsALossAndNotAsUnreachability(t *testing.T) {
 		"nothing:\n%s", strings.Join(admf.received(), "\n"))
 }
 
-// And the other direction, which is what keeps the fix from turning every delivery failure
-// into a product-loss report: an ordinary transport failure says the destination is not
+// And the other direction, which keeps every delivery failure from becoming a product-loss
+// report: an ordinary transport failure says the destination is not
 // working, which is the watcher's to report at the scope that names it, not a loss of
 // product this element can name.
 func TestAnOrdinaryDeliveryFailureIsNotReportedAsALoss(t *testing.T) {

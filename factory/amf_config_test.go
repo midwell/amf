@@ -226,8 +226,8 @@ func TestValidateAmfId(t *testing.T) {
 // The third case is the one worth having: a value that is not a boolean must be refused,
 // not read as unset. Unset is the permissive answer for bulk deactivation, so silently
 // defaulting a typo would leave the element performing exactly the operation the operator
-// wrote the key to withhold. It is the rule the UPF's config already applies to its
-// keepalive window.
+// wrote the key to withhold. It is the rule the UPF's config applies to its keepalive
+// window.
 func TestLiBulkSwitchesAreTriState(t *testing.T) {
 	li := func(extra string) string {
 		return `configuration:
@@ -338,13 +338,12 @@ configuration:
 			if tt.typo == typoKeepaliveTimeout {
 				body = strings.Replace(good, "keepaliveTimeout", tt.typo, 1)
 			}
-			// **Both halves, and the second is the one a previous round lost.** The key must be
-			// refused, *and* the network function must still come up: a configuration load that
-			// fails takes the service-based interface, NGAP, registration and every UE this AMF
+			// **Both halves.** The key must be refused, *and* the network function must still
+			// come up: a configuration load that fails takes the service-based interface, NGAP, registration and every UE this AMF
 			// serves with it, over a typo in an optional subsystem — and a network function that
 			// will not start announces to every operator and peer that it is LI-provisioned,
 			// which is the disclosure undetectability exists to prevent. Asserting only the
-			// refusal is what let that regression through. See LiBlockError.
+			// refusal would pass on an AMF that does not start. See LiBlockError.
 			t.Cleanup(func() { liBlockErr = nil })
 
 			if err := InitConfigFactory(write(t, body)); err != nil {
@@ -367,9 +366,9 @@ configuration:
 		orig := AmfConfig
 		t.Cleanup(func() { AmfConfig = orig })
 
-		// The scope of the check, asserted rather than assumed. This fork tracks an upstream
-		// that adds configuration keys; if strictness leaked past the li block, the next
-		// upstream field would stop every deployment carrying it from starting.
+		// The scope of the check, asserted rather than assumed. Upstream adds configuration
+		// keys; if strictness leaked past the li block, a configuration carrying a key this
+		// version does not model would stop the AMF from starting.
 		body := strings.Replace(good, "configuration:\n", "configuration:\n  aKeyThisForkDoesNotModel: 1\n", 1)
 		if err := InitConfigFactory(write(t, body)); err != nil {
 			t.Fatalf("an unmodelled key outside the li block was refused, which would stop this "+

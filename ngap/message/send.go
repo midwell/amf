@@ -498,28 +498,22 @@ func SendHandoverRequest(sourceUe *context.RanUe, targetRan *context.AmfRan, cau
 	// committed **here**, past every guard above, rather than by the caller before the call.
 	//
 	// TS 33.128 puts the AMFRANHandoverRequest record on the acknowledgement, and these two
-	// values exist only on the way in — so they have to be stashed. Stashed by the caller,
-	// they were stashed before this function had decided whether to send: five guards return
-	// without sending, and one of them is "Handover Required Duplicated". A duplicate
-	// therefore overwrote the *live* handover's stash and sent nothing, and the first
-	// handover's acknowledgement was then reported with the rejected request's cause and
+	// values exist only on the way in — so they have to be stashed. Five guards above return
+	// without sending, and one of them is "Handover Required Duplicated". Stashed before them,
+	// a duplicate would overwrite the *live* handover's stash and send nothing, and that
+	// handover's acknowledgement would be reported with the rejected request's cause and
 	// container — a record describing a handover that never happened, attributed to one that
-	// did.
-	//
-	// Committed here, the stash and the request carry the same values by construction: a
+	// did. Committed here, the stash and the request carry the same values by construction: a
 	// request that is not sent replaces nothing.
 	sourceUe.HandOverCause = &cause
 	sourceUe.HandOverSourceToTarget = append([]byte(nil), sourceToTargetTransparentContainer.Value...)
-	// **All three, together, past the guards.** The handover type used to be written by the
-	// caller before this function was even entered, so the guards above protected two of the
-	// three values the handover records carry and not the third. A second HANDOVER REQUIRED for
-	// the same UE — a source-gNB retransmission, or a second attempt — is refused by the
-	// duplicate guard, correctly leaving the cause and the container of the handover in flight
-	// alone, and used to overwrite its type anyway. Both records for that handover then named a
-	// type the subject did not perform: a mandatory field, populated, plausible and false, which
-	// nothing downstream distinguishes from a true one.
-	//
-	// ClearHandoverState does not clear it either, so the wrong value outlived the procedure.
+	// **All three, together, past the guards.** The handover type is the third value the
+	// handover records carry. A second HANDOVER REQUIRED for the same UE — a source-gNB
+	// retransmission, or a second attempt — is refused by the duplicate guard and must leave the
+	// type of the handover in flight alone, as it does the cause and the container. Overwritten,
+	// both records for that handover would name a type the subject did not perform: a mandatory
+	// field, populated, plausible and false, which nothing downstream distinguishes from a true
+	// one. ClearHandoverState does not clear it, so a wrong value would outlive the procedure.
 	sourceUe.HandOverType = handoverType
 
 	var targetUe *context.RanUe

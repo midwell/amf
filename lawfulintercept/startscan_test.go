@@ -17,7 +17,7 @@ import (
 )
 
 // blockingSender holds each delivery until it is released, and is safe to read from
-// another goroutine — which captureSender is not, and which matters now that the
+// another goroutine — which captureSender is not, and which matters because the
 // start-of-interception scan runs on one.
 type blockingSender struct {
 	release chan struct{}
@@ -57,16 +57,16 @@ func registeredUE(t *testing.T, supi string) {
 
 // TestStartOfInterceptionScanIsOffTheX1Goroutine.
 //
-// Activating a warrant made the element walk every UE it holds, on the X1 request
-// goroutine, before answering. So the time to acknowledge a tasking request grew with
+// Activating a warrant makes the element walk every UE it holds. Done on the X1 request
+// goroutine before answering, the time to acknowledge a tasking request would grow with
 // the registered-UE population: an element that answers more slowly the busier it is,
 // which is observable to whoever is asking, and is the provisioning-latency form of
-// the same rule that keeps delivery off the signalling path. The SMF's equivalent has
-// always run its scan on a goroutine.
+// the same rule that keeps delivery off the signalling path. The SMF's equivalent runs
+// its scan on a goroutine too.
 //
-// Asserted by blocking delivery. If the scan and its delivery were still on the
-// caller's goroutine, the call could not return until the sender was released — and
-// the X1 response would have waited with it.
+// Asserted by blocking delivery. If the scan and its delivery were on the caller's
+// goroutine, the call could not return until the sender was released — and the X1
+// response would wait with it.
 func TestStartOfInterceptionScanIsOffTheX1Goroutine(t *testing.T) {
 	const supi = "262019876543210"
 
@@ -123,7 +123,7 @@ func TestStartOfInterceptionScanIsOffTheX1Goroutine(t *testing.T) {
 }
 
 // TestStartOfInterceptionTimestampIsTheActivation keeps the instant where it belongs
-// now that the scan is handed off. The records report the *activation*, not when the
+// although the scan is handed off. The records report the *activation*, not when the
 // scan happened to reach each UE, so the clock is read before the goroutine starts —
 // a reading taken inside it would drift by however long the scan waited to be
 // scheduled, and a mediation function cannot tell the two apart.
@@ -286,13 +286,13 @@ func TestAWithdrawalDuringAScanStopsTheRemainingRecords(t *testing.T) {
 }
 
 // TestARetargetDuringAScanStopsRecordsForThePreviousSubject is the subject half of the same
-// rule, and the half the per-record re-read did not establish.
+// rule.
 //
 // The re-read answers that the warrant still exists, and — since the record is delivered
 // under what the store now holds — which products it wants and where its product goes. It
-// did not answer whether the warrant still names *this* subject. So a ModifyTask that
-// retargets a warrant mid-scan left the remaining UEs producing records about the previous
-// subject, delivered under the warrant's own identifier to the new subject's agency:
+// must also answer whether the warrant still names *this* subject: otherwise a ModifyTask
+// that retargets a warrant mid-scan leaves the remaining UEs producing records about the
+// previous subject, delivered under the warrant's own identifier to the new subject's agency:
 // well-formed, correctly attributed, and about somebody the warrant no longer covers.
 func TestARetargetDuringAScanStopsRecordsForThePreviousSubject(t *testing.T) {
 	const (

@@ -17,9 +17,9 @@ import (
 //
 // Start-up reports are dispatched asynchronously: Notify is a synchronous mTLS round trip bounded
 // only by its own 10s timeout, and Init runs inline in the network function's Start — before NGAP,
-// before the SBI, before NRF registration. An unreachable ADMF delayed every start-up of an
-// LI-provisioned AMF, which is distinguishable from one that is not LI-provisioned by anyone who
-// can see when it starts serving.
+// before the SBI, before NRF registration. Sent synchronously, a report to an unreachable ADMF
+// would delay every start-up of an LI-provisioned AMF, which is distinguishable from one that is
+// not LI-provisioned by anyone who can see when it starts serving.
 func (a *admfStub) awaitReport(t *testing.T, want string) string {
 	t.Helper()
 
@@ -38,16 +38,13 @@ func (a *admfStub) awaitReport(t *testing.T, want string) string {
 	}
 }
 
-// TestUnreadableKeepaliveWindowStopsInterceptionAndTellsTheADMF is the property that
-// makes this refusal better than the one it replaces.
-//
-// The window used to be read *before* Init, where there was no fault channel to report
-// on — so the refusal had to be made by returning from the network function's own
-// start-up, and nothing could tell the provisioning function why. Read inside Init, the
-// refusal costs interception and nothing else, and the one party who needs to know that
-// this element is not intercepting is told: no interrogation reveals it, since an
-// element holding no tasking answers every query successfully and looks exactly like one
-// nobody has tasked.
+// TestUnreadableKeepaliveWindowStopsInterceptionAndTellsTheADMF: the window is read inside
+// Init, where the fault channel exists. Read before Init, the refusal would have to be made by
+// returning from the network function's own start-up, and nothing could tell the provisioning
+// function why. Read inside Init, the refusal costs interception and nothing else, and the one
+// party who needs to know that this element is not intercepting is told: no interrogation
+// reveals it, since an element holding no tasking answers every query successfully and looks
+// exactly like one nobody has tasked.
 func TestUnreadableKeepaliveWindowStopsInterceptionAndTellsTheADMF(t *testing.T) {
 	cert, key, ca := liPKI(t)
 	admf := newADMFStub(t)
@@ -166,20 +163,19 @@ func initWithKeepalive(t *testing.T, cfg Config) *subsystem {
 	return sub
 }
 
-// TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess is the second of
-// the two paths on which an LI configuration mistake still cost the network function.
+// TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess covers a configuration
+// mistake that would otherwise cost the network function.
 //
 // "1ns" is a well-formed Go duration, so it passes the chart's regex — ns is a unit —
-// and it is positive, so it passed this element's own test. The fail-safe window is
-// then halved to produce the watchdog's tick interval, and integer division reaches
-// zero: time.NewTicker panics, on a goroutine, and the AMF goes down. An element that
-// terminates under an LI misconfiguration when one without interception configured does
-// not is distinguishable to anybody who can see whether it is running — which is the
-// class of leak this whole capability exists to prevent, arrived at from the
-// configuration file.
+// and it is positive. The fail-safe window is then halved to produce the watchdog's tick
+// interval, and integer division reaches zero: time.NewTicker panics, on a goroutine, and
+// the AMF goes down. An element that terminates under an LI misconfiguration when one
+// without interception configured does not is distinguishable to anybody who can see
+// whether it is running — which is the class of leak this whole capability exists to
+// prevent, arrived at from the configuration file.
 //
-// The policy is the one already applied to an unreadable window: interception does not
-// start, the ADMF is told, and the network function serves.
+// The policy is the one applied to an unreadable window: interception does not start, the
+// ADMF is told, and the network function serves.
 func TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess(t *testing.T) {
 	cert, key, ca := liPKI(t)
 	admf := newADMFStub(t)
@@ -208,12 +204,12 @@ func TestASubFloorKeepaliveWindowStopsInterceptionRatherThanTheProcess(t *testin
 }
 
 // TestTheWatchdogRefusesAWindowItCannotMeasure is the same guard one layer down, where
-// the panic actually was.
+// the tick interval is computed.
 //
 // The callers check their configured value and report it, which is where an operator's
-// mistake should be caught. But WatchKeepalive's stated precondition was "timeout must
-// be > 0", which 1ns satisfies — so the library handed every future caller a panic. It
-// returns instead: no watchdog, rather than a process.
+// mistake should be caught. But 1ns satisfies "timeout must be > 0" and still halves to a
+// zero tick, so the library must not panic on it either. It returns instead: no watchdog,
+// rather than a process.
 func TestTheWatchdogRefusesAWindowItCannotMeasure(t *testing.T) {
 	srv := x1.NewServer(store.New(), testNEID)
 
@@ -236,13 +232,13 @@ func TestTheWatchdogRefusesAWindowItCannotMeasure(t *testing.T) {
 }
 
 // TestNoX1ListenAddressStopsInterceptionAndTellsTheADMF covers the configuration mistake that
-// produced a *working* element nobody could provision.
+// would produce a *working* element nobody can provision.
 //
 // `Listen(ctx, "tcp", "")` does not fail. It binds every interface at an OS-selected ephemeral
 // port, so with `x1Listen` absent — misspelled, or templated from a value that rendered
-// empty — interception started, `active` was set, and the element waited for tasking on a port
-// the ADMF has no way to learn. Every X1 request it should have received went to a closed port
-// on the configured one instead, and from outside, an element holding no tasking is
+// empty — interception would start, `active` would be set, and the element would wait for
+// tasking on a port the ADMF has no way to learn. Every X1 request it should receive goes to a
+// closed port on the configured one instead, and from outside, an element holding no tasking is
 // indistinguishable from one nobody has tasked: it answers interrogation successfully and reports
 // nothing wrong. The mistake only surfaces when a warrant that was supposed to be running turns
 // out never to have arrived.

@@ -3740,7 +3740,7 @@ func handoverOf(sourceUe *context.RanUe, targetToSource []byte,
 	handoverList ngapType.PDUSessionResourceHandoverList,
 ) lawfulintercept.Handover {
 	// The record's vocabulary, not NGAP's — the two number these four values differently, and
-	// casting across produced `handoverType: 0` for an intra-5GS handover, which the arm's
+	// casting across would produce `handoverType: 0` for an intra-5GS handover, which the arm's
 	// enumeration does not define. See liHandoverType.
 	handoverType, typeSubstituted := liHandoverType(int64(sourceUe.HandOverType.Value))
 	h := lawfulintercept.Handover{
@@ -3770,11 +3770,10 @@ func handoverOf(sourceUe *context.RanUe, targetToSource []byte,
 // ngapCauseToLI splits an NGAP Cause into the group and value the TS 33.128
 // HandoverCause CHOICE wants.
 //
-// Both are CHOICEs over the same five groups, and this function used to say that the value
-// therefore "passes through". It does not: the two number the same causes differently, so
-// every cause emitted that way was one below the value TS 33.128 defines for it, and NGAP's
-// `unspecified(0)` was emitted as a zero the record's own enumeration does not include. See
-// liCauseValue, which does the mapping this function's name has always promised.
+// Both are CHOICEs over the same five groups, but the value does not pass through: the two
+// number the same causes differently, so a cast would emit every cause one below the value
+// TS 33.128 defines for it, and NGAP's `unspecified(0)` as a zero the record's own enumeration
+// does not include. liCauseValue does the mapping.
 func ngapCauseToLI(c *ngapType.Cause) (group lawfulintercept.HandoverCauseGroup, value int64, substituted, ok bool) {
 	var raw int64
 	switch c.Present {
@@ -4093,8 +4092,7 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 	} else {
 		// Handover in same AMF
 		// The handover type is passed to SendHandoverRequest rather than written here, so that
-		// it is committed with the cause and the container, past the same guards. Written here
-		// it was committed before any of them ran.
+		// it is committed with the cause and the container, past the same guards.
 		tai, err := ngapconv.TaiToModels(targetID.TargetRANNodeID.SelectedTAI)
 		if err != nil {
 			sourceUe.Log.Errorf("decode selected TAI failed: %+v", err)
@@ -4163,11 +4161,9 @@ func HandleHandoverRequired(ctx ctxt.Context, ran *context.AmfRan, message *ngap
 			}
 		}
 		// Lawful Interception: what the HANDOVER REQUEST ACKNOWLEDGE's xIRI needs is
-		// stashed by SendHandoverRequest, past its own guards. Stashed here it was
-		// stashed before that function had decided whether to send — and a duplicate
-		// HANDOVER REQUIRED returns on the "Handover Required Duplicated" guard, so it
-		// overwrote the live handover's stash and the first handover's acknowledgement
-		// was reported with the rejected request's values.
+		// stashed by SendHandoverRequest, past its own guards, so a duplicate HANDOVER
+		// REQUIRED — refused there as "Handover Required Duplicated" — cannot overwrite
+		// the live handover's stash.
 		ngap_message.SendHandoverRequest(sourceUe, targetRan, *cause, *handoverType, pduSessionReqList,
 			*sourceToTargetTransparentContainer, false)
 	}

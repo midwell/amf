@@ -22,15 +22,13 @@ func dualRegisteredUE(nonThreeGPP fsm.StateType) *context.AmfUe {
 	}}
 }
 
-// TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased pins the second half of the
-// deregistration defect.
-//
-// ReportIdentifierDeassociation fired unconditionally on both deregistration paths. The
-// AMF holds one SUPI↔5G-GUTI binding across every access a UE is registered on, so a
-// dual-registered UE deregistering one access keeps it — and the record told the
-// mediation function the binding was gone while the element went on producing records
-// under that same association. A statement the element itself immediately contradicts is
-// worse than no statement: nothing downstream distinguishes it from a true one.
+// TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased: the AMF holds one SUPI↔5G-GUTI
+// binding across every access a UE is registered on, so a dual-registered UE deregistering one
+// access keeps it. A ReportIdentifierDeassociation fired unconditionally on either
+// deregistration path would tell the mediation function the binding was gone while the element
+// went on producing records under that same association. A statement the element itself
+// immediately contradicts is worse than no statement: nothing downstream distinguishes it from
+// a true one.
 func TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

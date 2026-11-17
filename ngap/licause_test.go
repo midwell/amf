@@ -34,8 +34,7 @@ import (
 // The builder is what lets the assertion below start where the element does — at a decoded NGAP
 // message — rather than at the mapping function. Group selection and value mapping are then one
 // assertion, which matters because they fail independently: a radio-network cause reported under
-// the misc arm is as wrong as one reported with the wrong number, and no test reached the arm
-// selection at all before this one.
+// the misc arm is as wrong as one reported with the wrong number.
 var causeGroups = []struct {
 	group    lawfulintercept.HandoverCauseGroup
 	asn1Type string
@@ -84,9 +83,9 @@ func ts33128Module(t *testing.T) string {
 
 	// **Fatal, not skipped.** These are the assertions that keep the cause mapping honest —
 	// every handover and NGAP cause an agency receives depends on them — and a skip is a green
-	// run that checked nothing. A hermetic build with no module cache would have turned the
-	// strongest tests in this package into no-ops without anybody noticing, which is the same
-	// shape as a test that asserts against a stub.
+	// run that checked nothing. A hermetic build with no module cache would turn the strongest
+	// tests in this package into no-ops without anybody noticing, which is the same shape as a
+	// test that asserts against a stub.
 	//
 	// If this cannot find the module, the environment cannot check the mapping, and saying so
 	// loudly is the only useful answer.
@@ -238,7 +237,7 @@ func ngapValues(t *testing.T, dir, asn1Type string) map[string]int64 {
 	return out
 }
 
-// TestTheCauseMappingIsTotalOverNGAP is the assertion the previous defect needed.
+// TestTheCauseMappingIsTotalOverNGAP asserts the mapping over every NGAP cause.
 //
 // For every value of every NGAP cause group: either TS 33.128 defines a cause of the same name,
 // in which case liCauseValue must produce *that* value and not substitute, or it does not, in
@@ -337,9 +336,8 @@ func TestASubstitutedCauseIsTheGroupsUnspecified(t *testing.T) {
 	}
 }
 
-// TestTheMappingIsNotAnOffsetAlone is what the previous implementation would fail.
-//
-// It emitted the NGAP value unchanged, so every cause was one below the value TS 33.128 defines.
+// TestTheMappingIsNotAnOffsetAlone fails a mapping that emits the NGAP value unchanged, which
+// puts every cause one below the value TS 33.128 defines.
 // Asserted on the two causes that make the difference unmistakable: `unspecified`, which NGAP
 // numbers 0 and TS 33.128 numbers 1 — a zero the record's own enumeration does not include —
 // and a NAS cause NGAP has and TS 33.128 does not.
@@ -404,10 +402,8 @@ func TestACauseWithNoArmSetProducesNoCause(t *testing.T) {
 
 // TestTheHandoverTypeMappingIsTotalOverNGAP is the cause test's twin, for the field beside it.
 //
-// It exists because the cause defect was fixed by reading the specification and the type defect
-// was not — the two sit in the same record, they fail the same way, and only one of them was
-// looked at. A delivered record found the other. So the assertion is the same shape: every value
-// NGAP defines, matched by name against the TS 33.128 module, with no arithmetic restated.
+// The two sit in the same record and fail the same way, so the assertion is the same shape: every
+// value NGAP defines, matched by name against the TS 33.128 module, with no arithmetic restated.
 func TestTheHandoverTypeMappingIsTotalOverNGAP(t *testing.T) {
 	modulePath := ts33128Module(t)
 	li := ts33128Values(t, modulePath, "HandoverType")
@@ -420,10 +416,10 @@ func TestTheHandoverTypeMappingIsTotalOverNGAP(t *testing.T) {
 	}
 
 	// The bound the mapping claims, against the definition it is claimed over. The count check
-	// above would also catch NGAP gaining a value, but this is the assertion the requirement
-	// actually asks for — that the domain is bounded *and asserted against the source* — and it
-	// is the same shape as the cause groups'. A constant that agrees with the module by
-	// coincidence is not the same as one that is checked.
+	// above would also catch NGAP gaining a value, but this asserts what the mapping relies on —
+	// that the domain is bounded *and asserted against the source* — and it is the same shape as
+	// the cause groups'. A constant that agrees with the module by coincidence is not the same as
+	// one that is checked.
 	var highest int64
 	for _, v := range ngap {
 		if v > highest {
@@ -443,9 +439,8 @@ func TestTheHandoverTypeMappingIsTotalOverNGAP(t *testing.T) {
 	aliases := map[string]string{
 		// NGAP says UTRAN, the module says UTRA. Both mean the UMTS terrestrial radio access
 		// network, they sit at corresponding positions in the two enumerations, and one of the
-		// two documents is dropping a letter. A fuzzy match would have joined these *and*
-		// joined things that are not the same, which is the failure this mapping exists to
-		// prevent.
+		// two documents is dropping a letter. A fuzzy match would join these *and* join things
+		// that are not the same, which is the failure this mapping exists to prevent.
 		"fivegstoutran": "fivegstoutra",
 	}
 
@@ -471,12 +466,12 @@ func TestTheHandoverTypeMappingIsTotalOverNGAP(t *testing.T) {
 	}
 }
 
-// TestAnIntra5GSHandoverIsNotEmittedAsZero is the specific value a delivered record was refused
-// for, pinned on its own.
+// TestAnIntra5GSHandoverIsNotEmittedAsZero pins, on its own, the value a conformant receiver
+// refuses.
 //
 // NGAP numbers intra-5GS zero and TS 33.128 numbers it one. Zero is the ordinary case — most
-// handovers are intra-5GS — so this was not an edge: it was the majority of handover records,
-// and every one of them was discarded by the receiver.
+// handovers are intra-5GS — so emitted as zero it is not an edge: it is the majority of
+// handover records, and the receiver discards every one of them.
 func TestAnIntra5GSHandoverIsNotEmittedAsZero(t *testing.T) {
 	got, substituted := liHandoverType(int64(ngapType.HandoverTypePresentIntra5gs))
 	if substituted {
@@ -493,8 +488,7 @@ func TestAnIntra5GSHandoverIsNotEmittedAsZero(t *testing.T) {
 }
 
 // TestAHandoverTypeBeyondNGAPIsSubstituted: NGAP's enumeration is extensible, so a value from a
-// later release would otherwise be shifted into a number TS 33.128 does not define — the same
-// defect in a new dress.
+// later release would otherwise be shifted into a number TS 33.128 does not define.
 func TestAHandoverTypeBeyondNGAPIsSubstituted(t *testing.T) {
 	if got, substituted := liHandoverType(4); !substituted || got != int64(iri.HandoverIntra5GS) {
 		t.Errorf("a handover type beyond what NGAP defines mapped to (%d, %v), want (%d, true)",
@@ -506,11 +500,9 @@ func TestAHandoverTypeBeyondNGAPIsSubstituted(t *testing.T) {
 // against, or "" if it cannot be read. It is used to say which module these assertions ran
 // against rather than leaving it assumed.
 //
-// **The replace directive governs, not the require.** go.mod names util twice — a `require` at
-// whatever version the dependency graph settled on, and a `replace` pointing at the fork this
-// project ships. The replacement is what is compiled, and the require line is only a floor, so
-// reading the first matching line answers with a version nothing builds against. That is not
-// hypothetical: it is how this helper was first written, and this test caught it.
+// **A replace directive governs, not the require.** When go.mod carries a `replace` for util,
+// the replacement is what is compiled and the require line is only a floor, so reading the
+// first matching line would answer with a version nothing builds against.
 func pinnedUtilVersion(t *testing.T) string {
 	t.Helper()
 

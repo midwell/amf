@@ -13,15 +13,14 @@ import (
 // destination outcomes are one of, asserted where it is made.
 //
 // A task that names **no** destination is a gap the provisioning function left, and the
-// configured endpoint fills it: that is the case every deployment predating TS 33.128's
-// destination requirement is in, and it stays served.
+// configured endpoint fills it: that is the case of an ADMF that provisions no destinations,
+// and it stays served.
 //
 // A task that names destinations and yields no X2 endpoint is an assertion this element
 // cannot honour, and the live shape of it is a warrant naming an X3-only destination —
 // the CC half of a warrant whose IRI half this element produces. Substituting the
 // configured MDF2 there sends an agency's signalling to an endpoint the warrant never
-// named. The two used to be one test, an empty resolved list, and they are different
-// facts.
+// named. Both resolve to an empty list, and they are different facts.
 func TestTheConfiguredEndpointServesAnUnnamedDestinationOnly(t *testing.T) {
 	sub := &subsystem{mdf2: testAgencyAddr}
 
@@ -85,7 +84,7 @@ func TestAnUnresolvableWarrantDeliversToNoAgency(t *testing.T) {
 	sub := &subsystem{mdf2: agencyA}
 
 	// Agency B's warrant, as it would look if x1 had stored it: it named a destination
-	// and this element resolved none of it. x1 now refuses such a task outright, so this
+	// and this element resolved none of it. x1 refuses such a task outright, so this
 	// is the belt to that braces — the delivery path must not substitute either.
 	agencyBWarrant := types.InterceptTask{
 		XID:      "66666666-6666-4666-8666-666666666666",

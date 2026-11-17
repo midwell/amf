@@ -682,8 +682,8 @@ type UeIdentity struct {
 	// TaiList is the 3GPP-access registration area, which is what TS 33.128 means by
 	// fiveGSTAIList: "tracking areas associated with the registration area within
 	// which the UE is current registered". Not the serving TAI, which the AMF also
-	// holds. Non-3GPP access is out of scope for this deployment, so only the one
-	// access type is snapshotted.
+	// holds. Only the 3GPP-access area is snapshotted, so a UE registered over
+	// non-3GPP access reports none.
 	TaiList []models.Tai
 
 	// RatType backs the AMF's own rATType. The SMF reports its own from SMContext.

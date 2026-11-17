@@ -11,13 +11,12 @@ import (
 	"github.com/omec-project/util/li/iri"
 )
 
-// The conditional identity members of TS 33.128 that the AMF holds and did not
-// report — CONFORMANCE.md finding 3.
+// The conditional identity members of TS 33.128 that the AMF holds, and so must
+// report.
 //
 // One assertion per record-field site, deliberately. A single test asking whether
-// "some identity is present" passes with all but one of them still missing, and that
-// is how finding 3's own prose came to disagree with the audited list in six places.
-// A record that omits a conditional field is well formed, so nothing downstream can
+// "some identity is present" passes with all but one of them still missing. A
+// record that omits a conditional field is well formed, so nothing downstream can
 // notice any of these.
 
 // fullIdentity is a snapshot holding every value the records below can report.
@@ -68,8 +67,8 @@ func TestEachAMFRecordCarriesTheSUCIItHolds(t *testing.T) {
 }
 
 // The deassociation record's whole purpose is to report that an identifier is no
-// longer associated with a subject, and it named fewer identifiers for that subject
-// than every other record the AMF emits.
+// longer associated with a subject, so it names as many identifiers for that subject
+// as every other record the AMF emits.
 func TestDeassociationNamesTheIdentifiersItConcerns(t *testing.T) {
 	got := amfIdentifierDeassociation(fullIdentity())
 	if got.PEI == nil {
@@ -115,8 +114,8 @@ func TestAMFRegistrationCarriesItsRATType(t *testing.T) {
 	}
 }
 
-// Non-terrestrial access is served by this deployment, so an unmapped satellite RAT
-// would report nothing at all for those sessions.
+// An unmapped satellite RAT would report nothing at all for non-terrestrial
+// sessions.
 func TestSatelliteRATTypesAreMapped(t *testing.T) {
 	for _, tc := range []struct {
 		in   models.RatType

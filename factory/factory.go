@@ -34,9 +34,8 @@ func InitConfigFactory(f string) error {
 	//
 	// **Recorded, not returned.** Returning it would fail the whole configuration load, which
 	// stops the AMF: the service-based interface, NGAP, registration with the network, every UE it
-	// serves — over a typo in an optional subsystem. That is the outage the `service/init.go` LI
-	// comment describes and refuses to cause for an unreadable keepalive window, arrived at one
-	// frame earlier and in another package. It is also the louder half of undetectability: a
+	// serves — over a typo in an optional subsystem; `service/init.go` declines the same outage
+	// for the keepalive settings. It is also the louder half of undetectability: a
 	// network function that will not start is visible to every operator and peer, where a log
 	// line is visible only to whoever reads logs.
 	//

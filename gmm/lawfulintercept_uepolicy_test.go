@@ -16,8 +16,8 @@ import (
 
 // TestAnUplinkUEPolicyContainerReachesTheHook drives the transport handler, not the hook: the
 // UE's MANAGE UE POLICY COMPLETE arrives in an UL NAS TRANSPORT, and that is the only place
-// the record can be triggered. Nothing else exercised this call, so removing it left every
-// test green while no UE policy record could ever be produced.
+// the record can be triggered. Without this test, removing the call leaves every test green
+// while no UE policy record can ever be produced.
 func TestAnUplinkUEPolicyContainerReachesTheHook(t *testing.T) {
 	var got [][]byte
 	restore := reportUEPolicyComplete

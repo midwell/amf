@@ -13,14 +13,13 @@ import (
 )
 
 // TestARelabelReleasesTheSupersededLabelsNumbering is the IRI-POI half of the numbering
-// lifetime, and the half a relabel exposed.
+// lifetime.
 //
 // The numbering is keyed by the *delivery* XID — the provisioned ProductID where a task
-// carries one — so a ModifyTask that moves the label moves the key. Every record from
-// that point carries the new label, so the contexts under the old one are stranded: one
-// entry per subject this warrant had records for, held for the life of the process. The
-// declaration said a modification never changes the delivery XID, which was true of the
-// task XID and not of the thing the numbering is actually keyed by.
+// carries one — so a ModifyTask that moves the label moves the key, though it never changes
+// the task XID. Every record from that point carries the new label, so the contexts under
+// the old one are stranded: one entry per subject this warrant had records for, held for the
+// life of the process.
 //
 // The other half is why the release cannot simply be unconditional: a modification that
 // leaves the labelling alone must release nothing, because those contexts are the ones

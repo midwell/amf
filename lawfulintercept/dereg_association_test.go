@@ -11,10 +11,10 @@ import (
 	"github.com/omec-project/util/li/iri"
 )
 
-// TestADeregistrationRecordNamesTheScopeTheElementActedOn is the mapping half of the
-// defect: the AMF read the access a UE-originating deregistration *asked for*, acted on
-// it — AccessTypeBoth releases the SM contexts of both accesses — and then reported the
-// access the NAS message happened to arrive on.
+// TestADeregistrationRecordNamesTheScopeTheElementActedOn is the mapping half: the AMF
+// acts on the access a UE-originating deregistration *asked for* — AccessTypeBoth
+// releases the SM contexts of both accesses — so the record names that, not the access
+// the NAS message happened to arrive on.
 //
 // TS 33.128 table 6.2.2.2.3-1 makes accessType mandatory with cardinality 1, and the
 // type carries three values: AccessType ::= ENUMERATED { threeGPPAccess(1),

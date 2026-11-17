@@ -70,22 +70,22 @@ func indexOf(names []string, want string) int {
 }
 
 // TestANetworkInitiatedDeregistrationIsReportedWhereItCompletes guards the placement of an
-// interception obligation, which is what was wrong.
+// interception obligation.
 //
 // NetworkInitiatedDeregistrationProcedure branches on whether the UE is connected and registered.
-// The report sat on the `else` arm — the one *not* taken in the ordinary case — under a comment
-// asserting that the taken arm left the UE attached and so was not a deregistration. It is one:
-// the UE answers with a DEREGISTRATION ACCEPT, HandleDeregistrationAccept runs, the state becomes
-// Deregistered, and every SM context is released below the branch on both arms. So a target the
-// network forcibly deregistered produced no AMFDeregistration and no AMFIdentifierDeassociation,
-// and was indistinguishable to the agency from one that simply went quiet.
+// The arm taken in the ordinary case only sends a DEREGISTRATION REQUEST, but it is a
+// deregistration all the same: the UE answers with a DEREGISTRATION ACCEPT,
+// HandleDeregistrationAccept runs, the state becomes Deregistered, and every SM context is
+// released below the branch on both arms. Reported from the `else` arm alone, a target the
+// network forcibly deregistered produces no AMFDeregistration and no AMFIdentifierDeassociation,
+// and is indistinguishable to the agency from one that simply went quiet.
 //
 // The rule this encodes: the obligation belongs where the procedure *completes*, not where it is
 // started. A branch chosen at the beginning of a procedure may complete it by another route.
 //
 // A behavioural assertion would need a production seam in this package to observe the call —
 // lawfulintercept.ReportDeregistration is called directly rather than through a package variable.
-// This is the cheaper half of that trade and is the half that would have caught the defect.
+// This is the cheaper half of that trade, and it fails if the report moves off the accept.
 func TestANetworkInitiatedDeregistrationIsReportedWhereItCompletes(t *testing.T) {
 	const file = "handler.go"
 
@@ -113,8 +113,7 @@ func TestANetworkInitiatedDeregistrationIsReportedWhereItCompletes(t *testing.T)
 	}
 
 	// And the other arm still reports, because it completes the procedure itself rather than
-	// waiting for an accept. Losing that while fixing this one would move the silence rather
-	// than remove it.
+	// waiting for an accept. Losing that would move the silence rather than remove it.
 	initiating := calledIn(t, file, "NetworkInitiatedDeregistrationProcedure")
 	if indexOf(initiating, "lawfulintercept.ReportDeregistration") < 0 {
 		t.Error("NetworkInitiatedDeregistrationProcedure no longer reports on the arm that " +

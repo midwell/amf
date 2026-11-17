@@ -66,8 +66,8 @@ func activateIRIWithTargets(t *testing.T, snd sender, targets []types.TargetIden
 }
 
 // TestXIRICarriesTheSixRequiredAttributes is TS 33.128 table 5.3.2-2 on the
-// signalling path. Every xIRI this element has ever delivered carried none of these:
-// the payload was conformant and the header it travelled in was not.
+// signalling path. Without them the payload is conformant and the header it
+// travels in is not.
 func TestXIRICarriesTheSixRequiredAttributes(t *testing.T) {
 	snd := &captureSender{}
 	activateIRIWithTargets(t, snd, []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}})
@@ -337,8 +337,8 @@ func TestTheTimestampIsTheEventsNotThePDUs(t *testing.T) {
 // header reports, so an identity it yields that cannot be rendered would cost the
 // record a conditional attribute TS 33.128 marks required — with nothing failing.
 //
-// It covers the identities this fixture carries, which is every one targetsOf reads
-// today; the general rule (a subscriber identity type must have an element name)
+// It covers the identities this fixture carries, which is every one targetsOf reads;
+// the general rule (a subscriber identity type must have an element name)
 // belongs to li/types, next to where such a type would be added.
 func TestEveryIdentityThisPOIProducesRenders(t *testing.T) {
 	ids := targetsOf(targetUE().IdentitySnapshot())

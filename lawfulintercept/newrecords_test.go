@@ -205,9 +205,8 @@ func TestAnEmptyTargetToSourceContainerIsReportedAsTheRANSentIt(t *testing.T) {
 //
 // Each group is exercised at its own last permitted value, which is both the sharpest boundary
 // to encode and the only way the case is expressible at all: the groups have four different
-// upper bounds, and the single value this test used to share across all five — 3 — is outside
-// `CauseTransport`, whose enumeration has two values. It encoded anyway until the bound was
-// checked, which is what the bound is for.
+// upper bounds, and a single value shared across all five — 3, say — is outside
+// `CauseTransport`, whose enumeration has two values, and the bound refuses it.
 func TestHandoverCauseGroupsAreDistinguished(t *testing.T) {
 	groups := []struct {
 		group HandoverCauseGroup
@@ -240,7 +239,7 @@ func TestHandoverCauseGroupsAreDistinguished(t *testing.T) {
 }
 
 // TestNewRecordsSilentForUntaskedSubscriber is the undetectability assertion for
-// every hook this change adds to the AMF: a subscriber under no warrant must
+// every LI hook in the AMF: a subscriber under no warrant must
 // produce nothing on any of these paths. A record that appeared only for tasked
 // subscribers would be a perfect detector, which is the one outcome the rules
 // forbid absolutely.
@@ -289,13 +288,9 @@ func TestNewRecordsSurviveMissingContext(t *testing.T) {
 	})
 }
 
-// TestPeriodicRegistrationIsReportedOnceAsPeriodic pins behaviour that was
-// correct and undefended, which is how the comment describing it came to say the
-// opposite.
-//
-// A periodic registration update is a registration procedure the AMF performs, so
-// TS 33.128 wants a record for it, and `AMF IRI-POI events` forbids the silent
-// omission that suppressing it would create — an agency cannot tell an event that
+// TestPeriodicRegistrationIsReportedOnceAsPeriodic: a periodic registration update is a
+// registration procedure the AMF performs, so TS 33.128 wants a record for it, and
+// suppressing it would be a silent omission — an agency cannot tell an event that
 // was not reported from a subject who did nothing. It is reported by the
 // registration-complete tap rather than by the mobility tap, because the
 // registration accept carries a 5G-GUTI whenever the UE has one and the UE

@@ -313,8 +313,8 @@ func TestDeliveryIsolation(t *testing.T) {
 
 	capture := &captureSender{}
 	// No task here names a destination, so all three fall back to the configured MDF2 —
-	// which is the path every deployment predating the ListOfDIDs requirement is on, and
-	// which this test therefore also pins.
+	// the path of an ADMF that provisions no destinations, which this test therefore also
+	// pins.
 	active.Store(&subsystem{
 		ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 		store: st, senderFor: func(string) sender { return capture },
@@ -371,7 +371,7 @@ func TestEncodeAllEvents(t *testing.T) {
 
 // TestFiveGGUTIPrefersTheUEsOwnGUTI: an AMF may serve several GUAMIs, and the UE's
 // GUTI was not necessarily cut from the first of them. Reporting the served list's
-// head told the agency a 5G-GUTI the UE is not known by; the UE's own GUTI string
+// head would tell the agency a 5G-GUTI the UE is not known by; the UE's own GUTI string
 // is the identifier the network actually assigned it.
 func TestFiveGGUTIPrefersTheUEsOwnGUTI(t *testing.T) {
 	// Two served GUAMIs; the UE's GUTI comes from the second.
@@ -413,7 +413,7 @@ func TestFiveGGUTIPrefersTheUEsOwnGUTI(t *testing.T) {
 // an AMFLocationUpdate from the mobility handler. It also reaches
 // HandleRegistrationComplete — BuildRegistrationAccept carries the 5G-GUTI IE
 // whenever the UE has one, and TS 24.501 clause 5.5.1.3.4 then requires the UE to
-// send Registration Complete — so reporting from both delivered the agency two
+// send Registration Complete — so reporting from both would give the agency two
 // location records for one movement. This pins the dispatch that makes the
 // duplicate visible if the guard in HandleRegistrationComplete is ever removed.
 func TestMobilityUpdateIsReportedOnce(t *testing.T) {
@@ -435,7 +435,7 @@ func TestMobilityUpdateIsReportedOnce(t *testing.T) {
 }
 
 // addressCapture records what was delivered and, crucially, where. The subject of these
-// tests is the destination, and a capture that forgets the address cannot see the defect:
+// tests is the destination, and a capture that forgets the address cannot see a misdelivery:
 // with one configured endpoint, delivering to the task's destination and delivering to
 // configuration look identical.
 type addressCapture struct {
@@ -465,13 +465,12 @@ func x2To(addr string) []types.DeliveryEndpoint {
 	return []types.DeliveryEndpoint{{Type: types.DeliveryX2, Address: addr}}
 }
 
-// TestXIRIGoesToTheDestinationsTheTaskNamed is the AMF half of the conformance fix. Two
-// warrants, two agencies, and neither agency sees the other's subscriber.
+// TestXIRIGoesToTheDestinationsTheTaskNamed: two warrants, two agencies, and neither agency
+// sees the other's subscriber.
 //
-// This is the assertion the previous behaviour fails: both tasks resolved their
-// destinations, and both were delivered to the AMF's own configured MDF2 — so an ADMF
-// that provisioned two endpoints got everything at one of them, which is a disclosure to
-// an agency with no warrant for it.
+// Delivering both tasks to the AMF's own configured MDF2, though both resolved their
+// destinations, fails this: an ADMF that provisioned two endpoints would get everything at
+// one of them, which is a disclosure to an agency with no warrant for it.
 func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 	const (
 		xidA    = "aaaaaaaa-0000-0000-0000-000000000001"
@@ -494,8 +493,8 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 	active.Store(&subsystem{
 		ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
 		store: st, senderFor: capture.senderFor,
-		// Configured, and deliberately neither agency's address: if the fix were absent
-		// this is where both records would arrive, and the assertion below would say so.
+		// Configured, and deliberately neither agency's address: if the task's destinations
+		// were ignored, this is where both records would arrive, and the assertion below would say so.
 		mdf2: testAgency2Addr,
 	})
 	t.Cleanup(func() { active.Store(nil) })
@@ -518,9 +517,8 @@ func TestXIRIGoesToTheDestinationsTheTaskNamed(t *testing.T) {
 	}
 }
 
-// The configured endpoint is not being removed, only demoted. Every deployment that
-// predates the ListOfDIDs requirement has ADMFs naming DIDs these elements were never
-// given, and taking this path away turns a conformance fix into an outage.
+// The configured endpoint stays as the fallback. An ADMF that provisions no destinations
+// depends on it, and taking this path away would turn that deployment into an outage.
 //
 // Two ways to reach it, and the second is not obvious: a task that named nothing, and a
 // task that named a destination the element holds but which serves the *other* interface.
@@ -568,9 +566,8 @@ func TestATaskNamingNoDestinationFallsBackToConfiguration(t *testing.T) {
 }
 
 // TS 33.128 clause 6.2.2.2.1 scopes an AMF task's records to what its
-// IdentifierAssociationExtensions asked for. Before this, the identifier-association pair
-// went to every task — records the specification says "shall not be generated" absent the
-// extension, delivered to an agency that never asked for them.
+// IdentifierAssociationExtensions asked for: the identifier-association pair "shall not be
+// generated" absent the extension, so it goes to no task that did not ask for it.
 func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
 	for _, c := range []struct {
 		name                         string
@@ -618,8 +615,8 @@ func TestRecordScopeDecidesWhichRecordsATaskReceives(t *testing.T) {
 // A probe stuck *off* leaves an element that has been failing to deliver for hours
 // answering that nothing is wrong — invisible, and the reason an ADMF can ask at all. A
 // probe stuck *on* makes every healthy element report itself faulty, which is noticed
-// immediately and discredits the whole field; that is how this package's predecessor probe
-// failed. So two of the three assertions below are about the probe staying quiet.
+// immediately and discredits the whole field. So two of the three assertions below are
+// about the probe staying quiet.
 func TestDeliveryFaultIsReportedOnBothEdges(t *testing.T) {
 	unreachable := 0
 	sub := &subsystem{unreachable: func() (int, int) { return unreachable, 2 }}
@@ -736,8 +733,7 @@ func TestDestinationsInUseFollowsTheTasking(t *testing.T) {
 // subsystem.scans. A test that returns without waiting leaves it running into the next test,
 // where it reads `scanWalked` while that test writes it. `go test -race` reports the write and
 // the read from two different tests, and names the *second* test, which has nothing wrong with
-// it: the failure moves with scheduling, which is why it showed up about half the time on Linux
-// and not at all on this author's machine.
+// it: the failure moves with scheduling.
 //
 // Registered as cleanup rather than called inline, so it changes no assertion: the tests that
 // need the scan's *output* already poll for it, and this only holds the test open until the

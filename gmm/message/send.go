@@ -46,8 +46,8 @@ func SendDLNASTransport(ue *context.RanUe, anType models.AccessType, payloadCont
 }
 
 // noteUEPolicyCommand is the Lawful Interception hook, reached through a package variable
-// so a test can observe which of this package's paths raise it — which is the whole of what
-// was wrong. Production behaviour is the same function.
+// so a test can observe which of this package's paths raise it. In production it is the
+// same function.
 var noteUEPolicyCommand = lawfulintercept.NoteUEPolicyCommand
 
 func SendNotification(ue *context.RanUe, nasMsg []byte) {
@@ -440,10 +440,6 @@ func SendRegistrationAccept(
 	pduSessionResourceSetupList *ngapType.PDUSessionResourceSetupListCxtReq,
 ) {
 	ue.GmmLog.Infoln("send Registration Accept")
-
-	// The Lawful Interception identifier-association hook used to be here. It is in
-	// BuildRegistrationAccept now — see there — because this is not the only path that
-	// sends a Registration Accept.
 
 	nasMsg, err := BuildRegistrationAccept(ue, anType, pDUSessionStatus, reactivationResult, errPduSessionId, errCause)
 	if err != nil {

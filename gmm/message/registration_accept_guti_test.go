@@ -23,9 +23,9 @@ import (
 // the UE answer with Registration Complete only then.
 //
 // So if this ever becomes conditional, periodic updates stop reaching the second
-// tap and are reported by neither: the silent omission that `AMF IRI-POI events`
-// forbids, indistinguishable to an agency from a subject who did nothing. Nothing
-// in the LI code would fail; the reporting would simply move.
+// tap and are reported by neither: a silent omission, indistinguishable to an
+// agency from a subject who did nothing. Nothing in the LI code would fail; the
+// reporting would simply move.
 func TestRegistrationAcceptCarriesGUTIWheneverTheUEHasOne(t *testing.T) {
 	ue := &context.AmfUe{Guti: "20893cafe0000001"}
 	ue.PlmnId = models.PlmnId{Mcc: "208", Mnc: "93"}
@@ -51,10 +51,10 @@ func TestRegistrationAcceptCarriesGUTIWheneverTheUEHasOne(t *testing.T) {
 		t.Fatal("BuildRegistrationAccept produced no PDU")
 	}
 
-	// **Decoded, not scanned.** This used to search the whole encoded PDU for the IEI byte
-	// (0x77) and pass if it occurred anywhere — including inside the value of some other
-	// information element, or inside the GUTI's own digits. A test that can pass on a PDU
-	// carrying no 5G-GUTI IE at all is one that would have watched this mechanism break.
+	// **Decoded, not scanned.** A search of the whole encoded PDU for the IEI byte (0x77)
+	// passes if it occurs anywhere — including inside the value of some other information
+	// element, or inside the GUTI's own digits — so it can pass on a PDU carrying no 5G-GUTI
+	// IE at all.
 	m := nas.NewMessage()
 	if err := m.PlainNasDecode(&nasPdu); err != nil {
 		t.Fatalf("decoding the registration accept: %v", err)

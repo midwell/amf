@@ -13,14 +13,12 @@ import (
 	"testing"
 )
 
-// TestStrictLiBlockDoesNotFailTheConfigurationLoad is a source-level assertion, and it exists
-// because the property it guards was already established once and then lost.
+// TestStrictLiBlockDoesNotFailTheConfigurationLoad is a source-level assertion.
 //
 // `service/li_block_containment_test.go` asserts that the Lawful Interception block cannot return
-// from Start. Its guards passed while this network function was, in fact, refusing to start over a
-// single mistyped LI key — because the refusal had moved one call frame earlier and into this
-// package, where they could not see it. A guard scoped to where a defect was last found does not
-// follow the defect, and it reads as coverage while the property is violated somewhere else.
+// from Start. Its guards cannot see this package: a refusal returned from InitConfigFactory stops
+// this network function over a single mistyped LI key one call frame earlier, and they still pass.
+// A guard scoped to one call site reads as coverage while the property is violated at another.
 //
 // So the rule here is the other half: `strictLiBlock`'s verdict is *recorded*, never returned.
 // Returning it fails InitConfigFactory, which fails Initialize, which reaches a Fatalf — taking
@@ -29,8 +27,8 @@ import (
 // network function that will not start is visible to every operator, every peer and every
 // monitoring system, where a log line is visible only to whoever reads logs.
 //
-// The refusal still happens, and interception still does not start on it. What changed is who acts
-// on it: the LI subsystem, at a point where the ADMF can be told. See LiBlockError.
+// The refusal still happens, and interception still does not start on it. The LI subsystem acts
+// on it, at a point where the ADMF can be told. See LiBlockError.
 func TestStrictLiBlockDoesNotFailTheConfigurationLoad(t *testing.T) {
 	const file = "factory.go"
 
@@ -60,8 +58,8 @@ func TestStrictLiBlockDoesNotFailTheConfigurationLoad(t *testing.T) {
 	}
 
 	// The call must be the right-hand side of an assignment to liBlockErr, and nothing else. An
-	// `if err := strictLiBlock(...); err != nil { return err }` is the exact shape that caused the
-	// regression, and it is an assignment too — so the guard checks the target, not merely that an
+	// `if err := strictLiBlock(...); err != nil { return err }` is the shape that fails the load,
+	// and it is an assignment too — so the guard checks the target, not merely that an
 	// assignment happened.
 	ast.Inspect(parsed, func(n ast.Node) bool {
 		assign, isAssign := n.(*ast.AssignStmt)
@@ -96,8 +94,8 @@ func TestStrictLiBlockDoesNotFailTheConfigurationLoad(t *testing.T) {
 	}
 }
 
-// TestAMisspelledLiKeyDoesNotStopTheAMF asserts both halves, and the second is the one a previous
-// round lost: the key must be refused, *and* the network function must still come up.
+// TestAMisspelledLiKeyDoesNotStopTheAMF asserts both halves: the key must be refused, *and* the
+// network function must still come up.
 func TestAMisspelledLiKeyDoesNotStopTheAMF(t *testing.T) {
 	const good = `info:
   version: 1.0.0
@@ -162,9 +160,9 @@ configuration:
 	}
 }
 
-// TestTheStrictLiDecodeIsStillStrict guards the other direction. The fix above is a narrow one —
-// who acts on the refusal — and it must not be read, or implemented, as backing out the strictness
-// that produced it.
+// TestTheStrictLiDecodeIsStillStrict guards the other direction. Recording rather than returning
+// the refusal changes only who acts on it, and must not be read, or implemented, as backing out
+// the strictness that produces it.
 func TestTheStrictLiDecodeIsStillStrict(t *testing.T) {
 	const body = `info:
   version: 1.0.0

@@ -53,16 +53,15 @@ func countingScanFixture(t *testing.T, task types.InterceptTask) (*subsystem, *w
 
 // TestAModificationThatCannotProduceARecordStartsNoScan is the cost half of the scan.
 //
-// Every activation and modification launched a goroutine that walks the whole registered-UE
-// pool. For a modification that changed only the destinations, the record scope or the
-// delivery labelling, `covered()` then suppressed every record the walk produced — because a
-// UE the previous task already covered is not one whose interception begins here, and for
-// those modifications that is every UE. So the walk was pure cost, and bulk provisioning ran
-// one per warrant concurrently, on an element whose ordinary job is answering NAS procedures
-// for those same UEs.
+// Each scan launches a goroutine that walks the whole registered-UE pool. For a modification
+// that changed only the destinations, the record scope or the delivery labelling, `covered()`
+// suppresses every record the walk produces — because a UE the previous task already covered
+// is not one whose interception begins here, and for those modifications that is every UE. So
+// the walk is pure cost, and bulk provisioning runs one per warrant concurrently, on an
+// element whose ordinary job is answering NAS procedures for those same UEs.
 //
 // The predicate is deliberately three equalities rather than an attempt to be clever: getting
-// it too narrow re-creates a missing record, and getting it too wide only costs a walk.
+// it too narrow loses a record that is due, and getting it too wide only costs a walk.
 func TestAModificationThatCannotProduceARecordStartsNoScan(t *testing.T) {
 	const supi = "262019876543210"
 
@@ -109,7 +108,7 @@ func TestAModificationThatCannotProduceARecordStartsNoScan(t *testing.T) {
 			registeredTargets(t, supi, 3, "predicate-"+tc.name)
 
 			// The walk is what is being counted, not the records: a modification that cannot
-			// produce a record still walked the pool, and `covered()` then threw everything
+			// produce a record could still walk the pool and have `covered()` throw everything
 			// away.
 			var walks int
 			var mu sync.Mutex

@@ -5,7 +5,7 @@
 // interception tasks over X1 (mutual TLS), matches AMF events against tasked
 // targets, and delivers the resulting xIRI to an MDF2 over X2. It is opt-in:
 // inactive — and silent — unless the AMF is started with LI credentials, so an
-// AMF that is not intercepting behaves and looks exactly as before.
+// AMF that is not intercepting behaves and looks exactly like one without it.
 package lawfulintercept
 
 import (
@@ -151,8 +151,7 @@ type subsystem struct {
 	// unreachableAt answers the same question about one address, which is the shape a
 	// destination-scoped answer needs: an element's own status says how much is wrong, a
 	// destination's says whether that one is working. Same source, so the pushed report and
-	// the interrogation cannot disagree — which they did, one hard-coding activeAndWorking
-	// while the other reported the endpoint unreachable.
+	// the interrogation cannot disagree.
 	unreachableAt func(addr string) bool
 	// mdf2 is the configured X2 endpoint. It serves a task that names no destination, and
 	// nothing else — an element that preferred it to the destinations a task named is the
@@ -327,14 +326,12 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 			// X1 channel — and makes the element's response time depend on whether the
 			// ADMF is up, which is observable to whoever is probing it.
 			//
-			// The dispatch is bounded in effect rather than in count, and it is
-			// NotifyAsync that makes that true rather than the `go` this used to be.
-			// The throttle is consulted on this goroutine before anything is spawned,
-			// so under a flood of refusals each of these costs a mutex; spawning first
-			// would have been a goroutine per refusal, which is the shape that made the
-			// same fix wrong at the UPF, where the equivalent sites are driven by packet
-			// rate rather than by request rate. One form, so the three elements cannot
-			// reason about this hazard three times and reach three answers.
+			// The dispatch is bounded in effect rather than in count, by NotifyAsync:
+			// the throttle is consulted on this goroutine before anything is spawned,
+			// so under a flood of refusals each of these costs a mutex. Spawning first
+			// would cost a goroutine per refusal, which at the UPF, where the
+			// equivalent sites are driven by packet rate, is unbounded. One form, so
+			// the three elements cannot reach three answers to this hazard.
 			sub.reporter.NotifyAsync(x1.NEIssueX1AuthFailed,
 				fmt.Sprintf("X1 provisioning refused: peer failed authentication (error %d)", code))
 		}),
@@ -368,17 +365,6 @@ func Init(cfg Config) error {
 	if cfg.AdmfURL != "" {
 		reporter = x1.NewReporter(cfg.AdmfURL, cfg.AdmfID, cfg.NEID, mat.ClientTLS())
 	}
-	// The keepalive timers, now that there is somewhere to report a value this element
-	// cannot read (they are read below, once the block itself is trusted). Interception
-	// does not start on one — the element would otherwise run a procedure other than the
-	// one agreed with the agency, and look healthy while it did — but the network function
-	// does, because an element that refuses to run over its LI configuration is
-	// distinguishable from one that has none by anybody who can see whether it is running.
-	// The listener's address, before anything binds it. An empty address is a bind that
-	// succeeds on an unpredictable port rather than one that fails, so nothing downstream
-	// will ever report it — see errNoX1Listen. Reported to the ADMF, because an element that
-	// cannot be provisioned is precisely what the ADMF needs to hear about, and refused,
-	// because starting is what makes it look healthy.
 	// The refused `li` block, now that there is somewhere to report it. Checked before any
 	// value out of that block is used, because the block is exactly what could not be read:
 	// the keys that did decode are not trustworthy as a set, and one of the ones that did not
@@ -391,6 +377,11 @@ func Init(cfg Config) error {
 
 		return cfg.BlockError
 	}
+	// The listener's address, before anything binds it. An empty address is a bind that
+	// succeeds on an unpredictable port rather than one that fails, so nothing downstream
+	// will ever report it — see errNoX1Listen. Reported to the ADMF, because an element that
+	// cannot be provisioned is precisely what the ADMF needs to hear about, and refused,
+	// because starting is what makes it look healthy.
 	if cfg.X1Listen == "" {
 		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
 			"no X1 listen address is configured, so this element would accept tasking on an "+
@@ -398,6 +389,12 @@ func Init(cfg Config) error {
 
 		return errNoX1Listen
 	}
+	// The keepalive timers, read once the block itself is trusted. Interception does not
+	// start on one this element cannot read — the element would otherwise run a procedure
+	// other than the one agreed with the agency, and look healthy while it did — but the
+	// network function does, because an element that refuses to run over its LI
+	// configuration is distinguishable from one that has none by anybody who can see
+	// whether it is running.
 	keepalive, err := keepaliveProcedure(cfg)
 	if err != nil {
 		reporter.NotifyAsync(x1.NEIssueInvalidConfig,
@@ -416,13 +413,14 @@ func Init(cfg Config) error {
 	// One client per destination address, created on first use: a task carries the
 	// endpoints its product goes to, and TS 33.128 marks them mandatory, so this
 	// element cannot know them at startup.
-	// The delivery-failure hook no longer reports. An unreachable mediation function
-	// is a condition this element can re-observe — the pool's own accounting answers
-	// it — so it has an ending, and TS 103 221-1 clause 5.3 requires an ending to be
-	// reported too. A site that announces with nothing that retracts eventually
-	// announces something nobody retracts, so both edges belong to whoever can see
-	// the transition. The hook nudges that watcher, which keeps the report as prompt
-	// as it was while moving the decision to one place.
+	// The delivery-failure hook does not report reachability itself. An unreachable
+	// mediation function is a condition this element can re-observe — the pool's own
+	// accounting answers it — so it has an ending, and TS 103 221-1 clause 5.3 requires
+	// an ending to be reported too. A site that announces with nothing that retracts
+	// eventually announces something nobody retracts, so both edges belong to whoever
+	// can see the transition. The hook nudges that watcher, which keeps the report
+	// prompt and the decision in one place.
+	//
 	// Both declared before the pool because its callbacks close over them, and both are
 	// only *called* once delivery is under way — by which time each is assigned.
 	var (
@@ -431,37 +429,16 @@ func Init(cfg Config) error {
 	)
 	pool, err := x2x3.NewPool(mat.ClientTLS(),
 		keepaliveConfig(cfg, reporter),
-		// **The error is inspected, not discarded.** ErrUnitDropped says delivery to
-		// this destination is working and one product unit of it was lost: a partial
-		// write on a stream framer cannot be resumed without corrupting the framing, so
-		// the unit is dropped whole and the connection is remade. The library
-		// deliberately stops calling that unreachability — a healthy MDF must not be
-		// reported as unreachable over one truncated write — and this hook discarded the
-		// error, so the loss was then reported by nothing at all while the watcher
-		// sampled a destination it correctly considered reachable. Product missing from
-		// an agency's record with every channel that could have said so reporting
-		// normality, which is the failure direction this whole plane exists to prevent.
-		//
-		// Reported as the same delivery loss a full queue is: from the agency's side the
-		// two are one fact — an xIRI this element produced and did not deliver.
-		//
-		// The nudge stays for every error, this one included: what the sender concluded
-		// about reachability is its own business, and the watcher's job is to re-observe
-		// it promptly rather than one sampling interval later.
+		// The error is inspected, not discarded: see reportDeliveryError.
 		func(err error) { sub.reportDeliveryError(err, watcher) },
 		// Product dropped because the queue was full is reported as it happens, and
-		// this hook is the only place that can report it.
-		//
-		// It was nil, with a comment saying drops were covered by the worker's
-		// MDF-unreachable report — which AsyncSender.Unreachable's own documentation
-		// contradicts in terms. Queue saturation is deliberately excluded from
-		// reachability, because a full queue at one instant is a burst the buffer
-		// exists to absorb rather than a fault an ADMF can act on, and that doc says
-		// so and then says the drops themselves are reported as they happen. At the
-		// UPF they are (x3DeliveryLost). Here nothing reported them, so a reachable
-		// but slow MDF2 lost xIRI while the destination watcher went on
-		// reporting the destination healthy — product missing from an agency's
-		// record with every channel that could have said so reporting normality.
+		// this hook is the only place that can report it. Queue saturation is
+		// deliberately excluded from reachability (see AsyncSender.Unreachable): a full
+		// queue at one instant is a burst the buffer exists to absorb rather than a fault
+		// an ADMF can act on. Without this report a reachable but slow MDF2 loses xIRI
+		// while the destination watcher goes on reporting it healthy — product missing
+		// from an agency's record with every channel that could have said so reporting
+		// normality.
 		//
 		// Off the offering path, which is a signalling goroutine: this fires exactly
 		// when delivery is already behind, so blocking here would add the reporting
@@ -545,9 +522,9 @@ func Init(cfg Config) error {
 		// Asynchronously, like every other start-up report here. Notify is a synchronous mTLS
 		// round trip bounded only by its own 10s client timeout, and Init runs inline in the
 		// network function's Start — before NGAP, before the service-based interface, before
-		// registration with the network. `st.Len() == 0` is true on every start, so an
-		// unreachable ADMF delayed *every* start-up of an LI-provisioned AMF by up to ten
-		// seconds.
+		// registration with the network. `st.Len() == 0` is true on every start, so a
+		// synchronous report would delay *every* start-up of an LI-provisioned AMF by up to
+		// ten seconds while the ADMF is unreachable.
 		//
 		// That is an undetectability failure and not merely a slow start: a network function
 		// that comes up later when a third party is down is distinguishable from one that is
@@ -568,10 +545,10 @@ func Init(cfg Config) error {
 // inside, which the library resends whole on a fresh connection and reports as dropped only
 // where that resend did not land either. The library deliberately refuses to call that
 // unreachability, because a healthy mediation function must not be reported unreachable over
-// one truncated write; this hook discarded the error, so the loss was then reported by
-// nothing at all while the watcher sampled a destination it correctly considered reachable.
-// Product missing from an agency's record with every channel that could have said so
-// reporting normality, which is the failure direction this whole plane exists to prevent.
+// one truncated write. Discarded here, the loss would be reported by nothing at all while the
+// watcher samples a destination it correctly considers reachable: product missing from an
+// agency's record with every channel that could have said so reporting normality, which is
+// the failure direction this whole plane exists to prevent.
 //
 // Reported as the same delivery loss a full queue is: from the agency's side the two are one
 // fact — an xIRI this element produced and did not deliver.
@@ -824,12 +801,11 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.Ac
 // generated when a UE "has deregistered from the 5GS over at least one access type",
 // which is one record about a deregistration however many accesses it covered.
 //
-// This exists because the AMF used to report the access the NAS message *arrived on*
-// while acting on the access the message *asked for*: HandleDeregistrationRequest reads
-// the requested type and releases the SM contexts of both accesses when it is
-// AccessTypeBoth, and then reported one. A record contradicting what the same function
-// did is not the declarable case of a mandatory field the element cannot populate — it
-// is a populated field asserting something false, and nothing downstream distinguishes
+// It names the access the message *asked for*, not the one it *arrived on*:
+// HandleDeregistrationRequest releases the SM contexts of both accesses when the requested
+// type is AccessTypeBoth, and a record naming one would contradict what the same function
+// did. That is not the declarable case of a mandatory field the element cannot populate —
+// it is a populated field asserting something false, and nothing downstream distinguishes
 // the two.
 func DeregistrationScope(nasAccessType uint8) iri.AccessType {
 	switch nasAccessType {
@@ -904,9 +880,7 @@ func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
 // modification that leaves the labelling alone must release nothing, since those
 // contexts are the ones the modified task's own records are still using — the next
 // record in one of them would repeat a sequence number the mediation function has
-// already seen for that (XID, correlation) pair. Under the previous contract a retarget
-// arrived as an activation followed by a deactivation of the same XID, and the
-// deactivation's release ran after the activation's records.
+// already seen for that (XID, correlation) pair.
 //
 // The cost is that a retarget leaves the old target's contexts numbered until the
 // task is removed, since the sequencer is keyed by (XID, correlation) and cannot
@@ -939,12 +913,11 @@ func (s *subsystem) applyTaskChange(prev, next *types.InterceptTask) {
 // modificationCanProduceARecord reports whether a modification could yield a
 // start-of-interception record at all.
 //
-// **The scan is not free and it was unconditional.** Every activation and modification
-// launched a goroutine that walks the whole registered-UE pool, and for a modification that
-// changed only the destinations, the record scope or the delivery labelling, `covered()` then
-// suppressed every record the walk produced — because a UE the previous task already covered
-// is not one whose interception begins here, and for those modifications that is every UE.
-// Bulk provisioning runs one such walk per warrant, concurrently.
+// **The scan is not free.** Each one launches a goroutine that walks the whole registered-UE
+// pool, and for a modification that changed only the destinations, the record scope or the
+// delivery labelling, `covered()` suppresses every record the walk produces — because a UE the
+// previous task already covered is not one whose interception begins here, and for those
+// modifications that is every UE. Bulk provisioning runs one such walk per warrant, concurrently.
 //
 // So the predicate is "this modification cannot yield a record", not "no newly covered
 // targets". Three things decide it:
@@ -952,12 +925,11 @@ func (s *subsystem) applyTaskChange(prev, next *types.InterceptTask) {
 //   - the targets, because a UE the task did not cover before is one whose interception
 //     begins now;
 //   - the products, because adding IRI to a content-only task begins interception of a
-//     product for subjects the task already covered — the case the SMF's own modification
-//     path tests and this one did not test at all;
+//     product for subjects the task already covered;
 //   - the record scope, because widening it makes records due that were previously excluded.
 //
-// Getting the predicate too narrow re-creates the defect the per-record revalidation fixed;
-// getting it too wide only costs a walk. That asymmetry is why the test is written as three
+// Getting the predicate too narrow loses a start-of-interception record that is due; getting
+// it too wide only costs a walk. That asymmetry is why the test is written as three
 // equalities rather than as an attempt to be clever about what changed.
 func modificationCanProduceARecord(prev, next types.InterceptTask) bool {
 	if !slices.Equal(prev.Targets, next.Targets) {
@@ -988,16 +960,16 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already 
 	// completed earlier, so one instant taken here is the right timestamp for all of
 	// them. Sampling per record would time the scan.
 	//
-	// Taken before the scan is handed off, so moving the scan off this goroutine does
-	// not move the instant the records report.
+	// Taken before the scan is handed off, so running the scan on another goroutine
+	// does not move the instant the records report.
 	activated := time.Now()
 
-	// Off the X1 request goroutine. The scan walks every UE this AMF holds, so
-	// answering a provisioning function took time proportional to the registered-UE
-	// population — an element that answers a tasking request more slowly the busier it
-	// is, which is observable to whoever is asking and is the provisioning-latency form
-	// of the rule that keeps delivery off the signalling path. The SMF's equivalent,
-	// scanSessions, has always done this.
+	// Off the X1 request goroutine. The scan walks every UE this AMF holds, so on that
+	// goroutine answering a provisioning function would take time proportional to the
+	// registered-UE population — an element that answers a tasking request more slowly the
+	// busier it is, which is observable to whoever is asking and is the provisioning-latency
+	// form of the rule that keeps delivery off the signalling path. The SMF's equivalent,
+	// scanSessions, does the same.
 	//
 	// **Bounded, because bulk provisioning launches one of these per warrant at once.**
 	// TS 103 221-1's bulk operations and an ADMF restoring tasking after an element restart
@@ -1005,9 +977,8 @@ func (s *subsystem) reportStartOfInterception(task types.InterceptTask, already 
 	// pool: unbounded, N warrants cost N concurrent full walks, on an element whose ordinary
 	// job is answering NAS procedures for those same UEs. The bound turns that into a queue.
 	//
-	// The provisioning answer still does not wait on any of it, which is the property that
-	// put the scan off the request goroutine in the first place — the slot is taken *inside*
-	// the goroutine, not before it.
+	// The provisioning answer still does not wait on any of it, which is why the scan is off
+	// the request goroutine at all — the slot is taken *inside* the goroutine, not before it.
 	s.scans.Add(1)
 	go func() {
 		defer s.scans.Done()
@@ -1036,7 +1007,7 @@ var scanWalked func()
 func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.InterceptTask, activated time.Time) {
 	// nil in production. It exists because the *walk* is what the predicate and the bound are
 	// about, and the walk is not observable from its records: a modification that cannot
-	// produce one still walked the whole pool and had covered() throw everything away. See
+	// produce one could still walk the whole pool and have covered() throw everything away. See
 	// TestAModificationThatCannotProduceARecordStartsNoScan.
 	if scanWalked != nil {
 		scanWalked()
@@ -1059,7 +1030,7 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 			return true
 		}
 		// This scan runs concurrently with the UEs' own NAS procedures — on its own
-		// goroutine now, which if anything widens the window rather than closing it —
+		// goroutine, which if anything widens the window rather than closing it —
 		// so the identity fields must be read through IdentitySnapshot:
 		// it takes them together under the identity lock the NAS Set* accessors
 		// write under, which is what makes the read race-free. Reading
@@ -1093,10 +1064,10 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 	// Per record rather than per scan: a withdrawal that lands mid-scan has to stop the
 	// remainder, not merely the next one.
 	//
-	// **What the re-read establishes is a list, and the subject was missing from it.** It
-	// answers that the task still exists, and — because the record is built from `current`
-	// — which products it wants and where its product goes. It did not answer whether the
-	// task still names *this subject*: a ModifyTask that retargets a warrant mid-scan
+	// **What the re-read establishes is a list, and the subject is on it.** It answers that
+	// the task still exists, and — because the record is built from `current` — which
+	// products it wants and where its product goes. It must also answer whether the task
+	// still names *this subject*: otherwise a ModifyTask that retargets a warrant mid-scan
 	// leaves the remaining records describing the previous subject and delivers them under
 	// the warrant's own identifier, to the new subject's agency. Well-formed, correctly
 	// attributed, and about somebody the warrant no longer covers.
@@ -1177,11 +1148,10 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.T
 	payload, err := iri.EncodeXIRI(event)
 	if err != nil {
 		// **A record this element could not encode is product it produced and did not
-		// deliver, so it is reported.** It used to return silently, which was defensible
-		// while the only way to fail was an internal codec error — but the encoder now also
-		// refuses a record whose values violate the constraints its own definition carries,
-		// and the commonest way to reach that is a container the network handed this element
-		// that is shorter than the definition permits. A conformant mediation function would
+		// deliver, so it is reported.** The encoder fails on more than an internal codec
+		// error: it refuses a record whose values violate the constraints its own definition
+		// carries, and the commonest way to reach that is a container the network handed this
+		// element that is shorter than the definition permits. A conformant mediation function would
 		// discard such a record anyway; what must not happen is that neither side knows.
 		//
 		// NE-level and naming no target or warrant, on the channel this plane may use, and
@@ -1265,15 +1235,15 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.T
 // the CreateDestination message … prior to the task activation".
 //
 // **The configured MDF2 serves a task that named no destination, not one whose
-// destinations produced no X2 endpoint.** The two were the same test — an empty resolved
-// list — and they are different facts. A task that named nothing is a gap the
-// provisioning function left, and the configured endpoint fills it, which is the case
-// every deployment predating that requirement is in. A task that named destinations and
+// destinations produced no X2 endpoint.** Both resolve to an empty list, and they are
+// different facts. A task that named nothing is a gap the provisioning function left, and
+// the configured endpoint fills it, which is the case for an ADMF that provisions no
+// destinations. A task that named destinations and
 // yielded no X2 endpoint is an assertion this element cannot honour as stated: the live
 // shape is a warrant naming an X3-only destination, where substituting the configured
 // MDF2 sends an agency's signalling to an endpoint the warrant never named. On an element
 // serving several agencies it is worse than a gap — the product goes to whichever
-// endpoint local configuration happens to name, and li-security-isolation admits no
+// endpoint local configuration happens to name, and isolation between agencies admits no
 // exception for it.
 //
 // So the fallback keys on len(t.DIDs). Neither of the cases that would hit it reaches here
@@ -1331,9 +1301,8 @@ func recordClassOf(event any) recordClass {
 // "IdentifierAssociation" gets *only* that pair and AMFLocationUpdate, and
 // AMFLocationUpdate is generated under every scope.
 //
-// Before this, the pair was emitted for every task — records TS 33.128 says "shall not
-// be generated" absent the extension, delivered to an agency that had not asked for
-// them.
+// Emitted for every task, the pair would deliver records TS 33.128 says "shall not be
+// generated" absent the extension to an agency that had not asked for them.
 func produces(t types.InterceptTask, c recordClass) bool {
 	switch c {
 	case classIdentifierAssociation:
@@ -1527,7 +1496,7 @@ func ratTypeOf(rat models.RatType) iri.RATType {
 		return iri.RATTrustedN3GA
 	case models.RATTYPE_TRUSTED_WLAN:
 		return iri.RATTrustedWLAN
-	// Non-terrestrial access, which this deployment serves — see AmfUe.IsNtn.
+	// Non-terrestrial access — see AmfUe.IsNtn.
 	case models.RATTYPE_NR_LEO:
 		return iri.RATNRLEO
 	case models.RATTYPE_NR_MEO:
@@ -1914,12 +1883,12 @@ var resolvableTargets = []types.TargetIdentifierType{
 //
 // **Both halves of "cannot act on": the identifiers and the products.** This element is an
 // IRI-POI and produces xIRI, so a warrant requiring only content is one it can never make
-// anything for — and an `X3Only` task naming a valid SUPI was acknowledged, stored, reported
-// as active in an interrogation, and skipped by every delivery path for not requesting IRI.
-// The provisioning function was told an interception is running at an element that can
-// never produce anything for it, which is indistinguishable from the outside from a tasked
-// subject who did nothing. The requirement is written in terms of criteria and the CC-POI
-// already applies the product half; this is the same test on the other side.
+// anything for. Acknowledged, an `X3Only` task naming a valid SUPI would be stored, reported
+// as active in an interrogation, and skipped by every delivery path for not requesting IRI:
+// the provisioning function is told an interception is running at an element that can never
+// produce anything for it, which is indistinguishable from the outside from a tasked subject
+// who did nothing. The requirement is written in terms of criteria and the CC-POI applies the
+// product half; this is the same test on the other side.
 //
 // `X2andX3` is accepted, and that distinction matters: a warrant provisioned to several
 // elements legitimately names products only some of them produce, and refusing it here would

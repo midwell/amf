@@ -17,14 +17,13 @@ import (
 )
 
 // Every value this element puts into a TS 33.128 record arrives through a conversion into one
-// of `li/iri`'s types, and two of those conversions have already been defects.
+// of `li/iri`'s types, and a raw cast into a record enumeration is a correspondence nobody
+// checks.
 //
-// `handoverCause` cast NGAP's cause value straight into the record type — every handover record
-// delivered before 2026-08-20 carried the wrong cause. `handoverType` cast NGAP's handover type
-// the same way, and `intra5gs(0)` made every intra-5GS handover record undecodable on receipt.
-// Both were found by a delivered record being wrong, one of them weeks after the fact, and
-// `PDUSessionType` was found by reading. **None of those is a check**, so the next raw cast into
-// a record enumeration would arrive exactly the same way.
+// `handoverCause` and `handoverType` are the cases in point: NGAP numbers both differently from
+// TS 33.128, so a cast carries the wrong cause, and `intra5gs(0)` makes every intra-5GS handover
+// record undecodable on receipt. Defects of that kind surface only as a delivered record being
+// wrong. **That is not a check**, so the next raw cast into a record enumeration needs one.
 //
 // **This keys on the shape, not on a list of enumerations.** The tempting design is "for each
 // known `iri` enum type, require an assertion", and that list is the thing that goes stale: a
@@ -67,7 +66,7 @@ type iriConversion struct {
 	note string
 	// assertion, for mapped only: the name of the test that establishes the correspondence, so
 	// a reader does not have to re-derive whether the cast is safe. Asserted to exist — a note
-	// naming a test nobody wrote is the same claim-with-nothing-behind-it the cast was.
+	// naming a test nobody wrote is the same claim-with-nothing-behind-it a cast is.
 	assertion string
 }
 
@@ -82,9 +81,8 @@ var recordedConversions = map[string]iriConversion{
 	// The enumerated conversions, which are the reason this check exists. All seven are the
 	// handover path, and all seven are covered by one assertion pair in amf/ngap.
 	//
-	// `handoverType` and `handoverCause` are the two conversions that were already defects.
-	// They are recorded here as mapped and asserted there; the note is what stops the next
-	// reader re-deriving whether the cast is safe.
+	// `handoverType` and `handoverCause` are recorded here as mapped and asserted there; the
+	// note is what stops the next reader re-deriving whether the cast is safe.
 	"HandoverType": {
 		kind: mapped,
 		note: "NGAP numbers the handover types from 0 and TS 33.128 from 1, so the value is " +
@@ -125,8 +123,8 @@ var recordedConversions = map[string]iriConversion{
 
 	// SUCI members, decoded from the NAS message the UE sent. RoutingIndicator,
 	// ProtectionSchemeID and RoutingIndicatorLength are INTEGERs with ranges rather than
-	// enumerations — ProtectionSchemeID(0) is the null scheme and this deployment emits it on
-	// every SUCI, which is why it is carried and not guarded.
+	// enumerations — ProtectionSchemeID(0) is the null scheme, a value a UE legitimately
+	// sends, which is why it is carried and not guarded.
 	"RoutingIndicator":       {kind: carried, note: "INTEGER (0..9999); the routing indicator digits"},
 	"ProtectionSchemeID":     {kind: carried, note: "INTEGER (0..15); 0 is the null scheme, a value in range"},
 	"RoutingIndicatorLength": {kind: carried, note: "INTEGER (1..4); carried explicitly for leading zeros"},
@@ -307,7 +305,7 @@ func isQualifiedBy(e ast.Expr, alias string) bool {
 //
 // **The module, not this package.** The conversions are here and the assertions that cover them
 // need not be: the handover cause and type mappings are asserted in `amf/ngap`, beside the
-// mapping functions and the two definitions they read. A per-package scan would have forced
+// mapping functions and the two definitions they read. A per-package scan would force
 // either a duplicate assertion or a note naming nothing.
 func declaredTests(t *testing.T) map[string]bool {
 	t.Helper()
@@ -360,13 +358,12 @@ func declaredTests(t *testing.T) map[string]bool {
 	return out
 }
 
-// TestEveryIRIConversionIsRecorded is the check the two handover defects needed and the one that
-// reproduces this change's own finding.
+// TestEveryIRIConversionIsRecorded fails on any conversion into a record type that no entry
+// accounts for.
 //
-// The AMF's population is the larger of the two: seven enumerated conversions across the
-// handover path, all of them already asserted in `amf/ngap`, plus the carried identity and
-// container leaves. Nothing here is a new finding — which is the point. The check has to be
-// written where the conversions are, and being green on the day it lands is what makes the next
+// The AMF's population is seven enumerated conversions across the handover path, all of them
+// asserted in `amf/ngap`, plus the carried identity and container leaves. The check is written
+// where the conversions are, and being green with all of them recorded is what makes the next
 // one visible.
 func TestEveryIRIConversionIsRecorded(t *testing.T) {
 	sites := scanIRIConversions(t)

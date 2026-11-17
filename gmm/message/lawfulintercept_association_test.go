@@ -13,21 +13,20 @@ import (
 	"github.com/omec-project/util/fsm"
 )
 
-// TestTheIdentifierAssociationIsReportedOnEveryAccessPath is the record that was missing
-// over non-3GPP access, and it is asserted at the seam both access paths cross.
+// TestTheIdentifierAssociationIsReportedOnEveryAccessPath asserts the association record at
+// the seam both access paths cross.
 //
-// ReportIdentifierAssociation used to hang off SendRegistrationAccept. HandleInitialRegistration
-// branches on access type: 3GPP calls that sender, and non-3GPP calls
-// SendInitialContextSetupRequest and then BuildRegistrationAccept *directly*, stashing
-// the result in ue.RegistrationAcceptForNon3GPPAccess for the N3IWF's answer. So a target
-// registering over non-3GPP had its SUPI bound to a 5G-GUTI, carried to the UE, and
-// reported nowhere — while the registration itself *was* reported, because
-// ReportRegistration fires from the access-agnostic HandleRegistrationComplete. That is
-// exactly what made the gap look like coverage from outside, and it is why this test is
-// written against the association record specifically.
+// HandleInitialRegistration branches on access type: 3GPP calls SendRegistrationAccept, and
+// non-3GPP calls SendInitialContextSetupRequest and then BuildRegistrationAccept *directly*,
+// stashing the result in ue.RegistrationAcceptForNon3GPPAccess for the N3IWF's answer. A hook
+// on the sender leaves a target registering over non-3GPP with its SUPI bound to a 5G-GUTI,
+// carried to the UE, and reported nowhere — while the registration itself *is* reported,
+// because ReportRegistration fires from the access-agnostic HandleRegistrationComplete. That
+// makes the gap look like coverage from outside, and it is why this test is written against
+// the association record specifically.
 //
-// The hook now lives on the builder, which both paths cross and where the 5G-GUTI IE is
-// placed, so the seam and the fact the record reports coincide.
+// The hook is on the builder, which both paths cross and where the 5G-GUTI IE is placed, so
+// the seam and the fact the record reports coincide.
 func TestTheIdentifierAssociationIsReportedOnEveryAccessPath(t *testing.T) {
 	var reported int
 	original := liReportIdentifierAssociation

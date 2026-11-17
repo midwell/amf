@@ -19,8 +19,8 @@ const (
 )
 
 // TestAnIMEIIsReportedWithoutItsCheckDigit: TS 33.128 defines IMEI as NumericString (SIZE(14)),
-// the TAC and serial number. The AMF passed all fifteen digits, so every record for a UE
-// identified by IMEI was out of constraint — and is now refused by the encoder outright.
+// the TAC and serial number. All fifteen digits would put every record for a UE identified by
+// IMEI out of constraint, and the encoder refuses such a record outright.
 func TestAnIMEIIsReportedWithoutItsCheckDigit(t *testing.T) {
 	id := targetIdentity()
 	id.Pei = testPEIIMEI
@@ -40,8 +40,8 @@ func TestAnIMEIIsReportedWithoutItsCheckDigit(t *testing.T) {
 }
 
 // TestAFourteenDigitIMEITaskMatches: the X1 peiImei is the fourteen-digit IMEI (TS 103 280's
-// IMEI type), and the AMF compared it against the fifteen digits it holds, so a schema-valid
-// IMEI warrant never matched anyone.
+// IMEI type), while the AMF holds fifteen digits; compared against those, a schema-valid IMEI
+// warrant would never match anyone.
 func TestAFourteenDigitIMEITaskMatches(t *testing.T) {
 	id := amfctx.UeIdentity{Pei: testPEIIMEI}
 	task := types.InterceptTask{
@@ -55,9 +55,8 @@ func TestAFourteenDigitIMEITaskMatches(t *testing.T) {
 }
 
 // TestAnUnknownPLMNLeavesTheOptionalGUTIOut: with neither an assigned GUTI nor a served GUAMI
-// the AMF knows no PLMN for the GUTI. It used to build one with an empty MCC and MNC, which the
-// encoder now refuses — so a record where the GUTI is optional would be lost over a field it
-// could simply omit.
+// the AMF knows no PLMN for the GUTI. The encoder refuses a GUTI with an empty MCC and MNC, so
+// a record where the GUTI is optional would be lost over a field it can simply omit.
 func TestAnUnknownPLMNLeavesTheOptionalGUTIOut(t *testing.T) {
 	amfctx.AMF_Self().ServedGuamiList = nil
 

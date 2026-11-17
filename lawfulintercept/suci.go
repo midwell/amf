@@ -155,8 +155,7 @@ func bcdDigits(o1, o2 byte) string {
 // Under the null scheme (0) that output is the MSIN, carried in NAS as nibble-swapped
 // BCD, and the characters are its digits — so the nibbles are unswapped and rendered
 // as ASCII. Shipping the raw octets instead transposes every digit pair, which is a
-// well-formed record naming a different subscriber; that is what the first version of
-// this file did, and the cluster run is what caught it.
+// well-formed record naming a different subscriber.
 //
 // Under any other scheme the output is ciphertext with no characters to speak of, so
 // the octets are carried through unchanged.

@@ -60,12 +60,11 @@ func BuildDLNASTransport(ue *context.AmfUe, anType models.AccessType, payloadCon
 	// container this AMF relays downlink. So the COMMAND is noted here, and the record is
 	// produced when the COMPLETE arrives uplink.
 	//
-	// The hook lived on SendDLNASTransport, which looked like the seam and was not: a third
-	// relay path builds the message here and hands it to NGAP itself, without going through
-	// that function at all — and it is the *only* caller of this builder that passes a variable
-	// container type, so it is precisely the one that can carry a policy. Every other caller
-	// hard-codes N1SMInfo. Placed on the builder, which every path must call to have a message
-	// at all, a relay path added later is covered without anybody remembering to.
+	// Not on SendDLNASTransport, because one relay path builds the message here and hands it
+	// to NGAP itself without calling that function — and it is the *only* caller of this
+	// builder that passes a variable container type, so the only one that can carry a policy.
+	// Every other caller hard-codes N1SMInfo. On the builder, which every path must call to
+	// have a message at all, a relay path added later is covered without anybody remembering to.
 	//
 	// **The trade, stated rather than hidden:** this notes the COMMAND when the element commits
 	// to the transfer rather than after the bytes leave. A message built and then not
@@ -523,11 +522,9 @@ func BuildDeregistrationAccept() ([]byte, error) {
 // A test cannot do that by activating the subsystem: `active` is private to
 // lawfulintercept, and Init needs mTLS material and a TCP bind this package's tests have
 // no business standing up. Without a seam the hook is a silent no-op in every test, so a
-// path that never calls it looks exactly like a path that does — which is how the
-// non-3GPP registration path came to be missing it in the first place.
+// path that never calls it looks exactly like a path that does.
 //
-// Production behaviour is unchanged: it is the same function, still a silent no-op when
-// LI is not configured.
+// In production it is the same function, a silent no-op when LI is not configured.
 var liReportIdentifierAssociation = lawfulintercept.ReportIdentifierAssociation
 
 func BuildRegistrationAccept(
@@ -547,17 +544,11 @@ func BuildRegistrationAccept(
 	// that sends one.** HandleInitialRegistration branches on access type: 3GPP calls
 	// the sender, and non-3GPP calls SendInitialContextSetupRequest and then this
 	// builder directly, stashing the result in ue.RegistrationAcceptForNon3GPPAccess
-	// for the N3IWF's answer. So a target registering over non-3GPP had its SUPI bound
-	// to a 5G-GUTI, carried to the UE, and reported nowhere. The registration itself
-	// *was* reported — ReportRegistration fires from the access-agnostic
-	// HandleRegistrationComplete — which is exactly what made the gap look like
-	// coverage from outside.
-	//
-	// It is a hook-on-the-sender defect of the same shape as the two teardown paths
-	// that were missing reportAndUntask, and the remedy is the same: put it on the one
-	// seam every path crosses. Both paths cross this builder, this is where the 5G-GUTI
-	// IE is placed, and the record reports precisely that binding — so the seam and the
-	// fact coincide.
+	// for the N3IWF's answer. A hook on the sender would bind a non-3GPP target's SUPI
+	// to a 5G-GUTI and report it nowhere, while ReportRegistration, which fires from
+	// the access-agnostic HandleRegistrationComplete, made the gap look like coverage.
+	// Both paths cross this builder, this is where the 5G-GUTI IE is placed, and the
+	// record reports precisely that binding — so the seam and the fact coincide.
 	//
 	// The other callers are all in HandleMobilityAndPeriodicRegistrationUpdating, where
 	// RegistrationType5GS is never InitialRegistration, so the gate excludes them.
@@ -568,7 +559,7 @@ func BuildRegistrationAccept(
 	// registration update, and clause 5.4.1.3 makes that a legitimate thing to do. On the day
 	// this element starts doing it, the reassignment is a new SUPI-to-GUTI binding carried to
 	// the UE — exactly what AMFIdentifierAssociation reports — and this gate would suppress
-	// the record for it, silently, in the same shape as the non-3GPP path above.
+	// the record for it, silently.
 	//
 	// The condition to write then is "this accept carries a GUTI the UE did not already
 	// have", not the registration type. It is not written now because nothing here reassigns,
