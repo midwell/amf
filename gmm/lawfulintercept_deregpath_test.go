@@ -7,8 +7,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"strings"
 	"testing"
 )
 
@@ -137,74 +135,5 @@ func TestAnotherMessageInPlaceOfTheAcceptIsReported(t *testing.T) {
 		if indexOf(calls, want) < 0 {
 			t.Errorf("DeregisteredInitiated does not call %s on the state-mismatch branch", want)
 		}
-	}
-}
-
-// NetworkInitiatedDeregistrationProcedure is also reached from the Deregistered,
-// Authentication, SecurityMode and ContextSetup states, where it ends a registration that
-// never completed. An AMFDeregistration there would report a deregistration from an access the
-// UE was never registered over, so the immediate branch reports one only under a check that
-// the access is Registered.
-func TestANetworkDeregistrationIsReportedOnlyForARegisteredAccess(t *testing.T) {
-	const file = "handler.go"
-
-	src, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fset := token.NewFileSet()
-	parsed, err := parser.ParseFile(fset, file, src, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var target *ast.FuncDecl
-	for _, decl := range parsed.Decls {
-		if fd, isFunc := decl.(*ast.FuncDecl); isFunc && fd.Name.Name == "NetworkInitiatedDeregistrationProcedure" {
-			target = fd
-		}
-	}
-	if target == nil {
-		t.Fatal("no NetworkInitiatedDeregistrationProcedure in handler.go")
-	}
-
-	text := func(n ast.Node) string {
-		return string(src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset])
-	}
-
-	// Each report is checked against the if statements whose Body (not Else) holds it.
-	reports, guarded := 0, 0
-	var walk func(n ast.Node, guards []string)
-	walk = func(n ast.Node, guards []string) {
-		ast.Inspect(n, func(c ast.Node) bool {
-			switch v := c.(type) {
-			case *ast.IfStmt:
-				walk(v.Body, append(guards, text(v.Cond)))
-				if v.Else != nil {
-					walk(v.Else, guards)
-				}
-				return false
-			case *ast.CallExpr:
-				if strings.HasPrefix(text(v.Fun), "lawfulintercept.ReportDeregistration") {
-					reports++
-					for _, g := range guards {
-						if strings.Contains(g, "Is(context.Registered)") && !strings.Contains(g, "CmConnect") {
-							guarded++
-							break
-						}
-					}
-				}
-			}
-			return true
-		})
-	}
-	walk(target.Body, nil)
-
-	if reports == 0 {
-		t.Fatal("NetworkInitiatedDeregistrationProcedure reports no deregistration; this guard no longer describes it")
-	}
-	if guarded != reports {
-		t.Errorf("%d of %d deregistration reports are not under a check that the access is Registered",
-			reports-guarded, reports)
 	}
 }

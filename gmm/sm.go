@@ -621,7 +621,7 @@ func DeregisteredInitiated(ctx ctxt.Context, state *fsm.State, event fsm.EventTy
 			} else {
 				amfUe.GmmLog.Info("state reset to Deregistered")
 			}
-			if releasesBinding && err == nil {
+			if releasesBinding {
 				lawfulintercept.ReportIdentifierDeassociation(amfUe)
 			}
 		}

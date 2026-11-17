@@ -4,12 +4,10 @@
 package message
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/omec-project/amf/context"
 	"github.com/omec-project/amf/factory"
-	"github.com/omec-project/nas/v2/nasConvert"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/fsm"
@@ -55,51 +53,52 @@ func TestTheIdentifierAssociationIsReportedOnEveryAccessPath(t *testing.T) {
 		})
 	}
 
-	// A mobility or periodic update reports an association only when its accept carries a
-	// 5G-GUTI the UE did not register with: an update that presents the GUTI the UE keeps
-	// binds nothing new, and one that presents another identity, or a GUTI the AMF has since
-	// reallocated, does.
+	// TS 33.128 clause 6.2.2.2.7 generates the record whenever an accept carrying a 5G-GUTI is
+	// sent, so a mobility or periodic update's accept reports one too, whichever identity the
+	// UE presented.
+	t.Run("mobility update", func(t *testing.T) {
+		reported = 0
+		ue := registeringUE(t)
+		ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
+
+		if _, err := BuildRegistrationAccept(ue, models.ACCESSTYPE__3_GPP_ACCESS, nil, nil, nil, nil); err != nil {
+			t.Fatalf("BuildRegistrationAccept: %v", err)
+		}
+		if reported != 1 {
+			t.Errorf("reported the identifier association %d times, want 1", reported)
+		}
+	})
+}
+
+// The same clause names CONFIGURATION UPDATE (5G-GUTI) beside REGISTRATION ACCEPT: a command
+// carrying the 5G-GUTI reports the association, and one carrying none does not.
+func TestAConfigurationUpdateCarryingTheGUTIReportsTheAssociation(t *testing.T) {
+	var reported int
+	original := liReportIdentifierAssociation
+	liReportIdentifierAssociation = func(*context.AmfUe) { reported++ }
+	t.Cleanup(func() { liReportIdentifierAssociation = original })
+
 	for _, c := range []struct {
-		name      string
-		presented []uint8
-		want      int
+		name string
+		guti string
+		want int
 	}{
-		{"presenting the GUTI it keeps", gutiOctets(heldGUTI), 0},
-		// The configuration may write the AMF identifier in upper case; NAS decodes it in lower.
-		{"presenting the GUTI it keeps, held with an upper-case AMF identifier", gutiOctets(heldGUTI), 0},
-		{"presenting a GUTI other than the one held", gutiOctets("20893cafe0000000002"), 1},
-		{"presenting a SUCI", []uint8{nasMessage.MobileIdentity5GSTypeSuci, 0x02, 0xf8, 0x39}, 1},
+		{"carrying the 5G-GUTI", "20893cafe0000000001", 1},
+		{"carrying none", "", 0},
 	} {
-		t.Run("mobility update "+c.name, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			reported = 0
 			ue := registeringUE(t)
-			ue.Guti = heldGUTI
-			if strings.Contains(c.name, "upper-case") {
-				ue.Guti = strings.ToUpper(heldGUTI)
-			}
-			ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
-			ue.RegistrationRequest = &nasMessage.RegistrationRequest{}
-			ue.RegistrationRequest.MobileIdentity5GS.SetLen(uint16(len(c.presented)))
-			ue.RegistrationRequest.SetMobileIdentity5GSContents(c.presented)
+			ue.Guti = c.guti
 
-			if _, err := BuildRegistrationAccept(ue, models.ACCESSTYPE__3_GPP_ACCESS, nil, nil, nil, nil); err != nil {
-				t.Fatalf("BuildRegistrationAccept: %v", err)
+			if _, err := BuildConfigurationUpdateCommand(ue, models.ACCESSTYPE__3_GPP_ACCESS, nil); err != nil {
+				t.Fatalf("BuildConfigurationUpdateCommand: %v", err)
 			}
-
 			if reported != c.want {
 				t.Errorf("reported the identifier association %d times, want %d", reported, c.want)
 			}
 		})
 	}
-}
-
-// heldGUTI is a 5G-GUTI in the form AllocateGutiToUe composes: PLMN, AMF identifier, and an
-// eight-digit 5G-TMSI.
-const heldGUTI = "20893cafe0000000001"
-
-func gutiOctets(guti string) []uint8 {
-	nas := nasConvert.GutiToNas(guti)
-	return nas.Octet[:]
 }
 
 // registeringUE is the minimum a Registration Accept can be built for: a GUTI, a PLMN,

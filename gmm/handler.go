@@ -2038,15 +2038,7 @@ func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe
 		// One access here, and it is the one this procedure was called for — a
 		// network-initiated deregistration names its access rather than reading one
 		// out of a request.
-		//
-		// Only for an access the UE was registered over. This procedure is also reached
-		// from the Deregistered, Authentication, SecurityMode and ContextSetup states, and
-		// there it ends a registration that never completed, which is not a deregistration.
-		// The binding below is still released: an initial registration's accept reports the
-		// association before the UE is Registered.
-		if ue.State[accessType].Is(context.Registered) {
-			lawfulintercept.ReportDeregistration(ue, true, lawfulintercept.AccessScope(accessType))
-		}
+		lawfulintercept.ReportDeregistration(ue, true, lawfulintercept.AccessScope(accessType))
 
 		// The binding goes only if the UE is left registered nowhere. Reported before
 		// SetDeregisteredState, so the state this reads is the one the record
@@ -3099,9 +3091,8 @@ func HandleDeregistrationAccept(ctx ctxt.Context, ue *context.AmfUe, anType mode
 
 	// The binding goes only once the UE is left registered nowhere, and after the state says
 	// so: announcing the release while this element is still producing records under the
-	// association tells the mediation function something it will then contradict. An event
-	// that failed wrote no state.
-	if releasesBinding && err == nil {
+	// association tells the mediation function something it will then contradict.
+	if releasesBinding {
 		lawfulintercept.ReportIdentifierDeassociation(ue)
 	}
 

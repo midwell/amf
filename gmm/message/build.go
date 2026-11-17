@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/omec-project/amf/context"
@@ -722,10 +721,11 @@ func BuildRegistrationAccept(
 		return nil, err
 	}
 
-	// Lawful Interception IRI-POI: an accept carrying a 5G-GUTI the UE did not register with
-	// binds the target's SUPI to a new 5G-GUTI, which AMFIdentifierAssociation reports
-	// (TS 33.128 clause 6.2.2.2.7). Silent no-op unless LI is configured and the UE is a
-	// target.
+	// Lawful Interception IRI-POI: TS 33.128 clause 6.2.2.2.7 generates an
+	// AMFIdentifierAssociation whenever a REGISTRATION ACCEPT or a CONFIGURATION UPDATE
+	// (5G-GUTI) is sent to a target UE, "regardless of whether the ... procedure is
+	// subsequently successfully completed or not". So every accept carrying a 5G-GUTI reports
+	// one. Silent no-op unless LI is configured and the UE is a target.
 	//
 	// **Here rather than on SendRegistrationAccept, because that is not the only path that
 	// sends one.** HandleInitialRegistration's non-3GPP branch calls this builder directly and
@@ -733,41 +733,11 @@ func BuildRegistrationAccept(
 	// accept is built here, and this is where the 5G-GUTI IE is placed. The record is made once
 	// the accept has been built, not once it has been sent: an accept that is stored or that
 	// finds no RanUe leaves a record for a 5G-GUTI the UE did not receive.
-	if carriesNewAssociation(ue) {
+	if ue.GetGuti() != "" {
 		liReportIdentifierAssociation(ue)
 	}
 
 	return payload, nil
-}
-
-// carriesNewAssociation reports whether a REGISTRATION ACCEPT for ue reports a new
-// identifier association. An initial registration always does: it binds the SUPI to the
-// 5G-GUTI afresh, whichever one the UE presented, and a deregistration has released any
-// earlier binding. A mobility or periodic update does when the accept carries a 5G-GUTI the
-// UE did not register with: it presented another identity, or a 5G-GUTI other than the one
-// ue now holds. That happens when the request failed its integrity check and
-// HandleRegistrationRequest reallocated the 5G-GUTI (ReAllocateGutiToUe), unless the request
-// presented a 5G-GUTI of a served GUAMI, which then replaces the reallocated one.
-func carriesNewAssociation(ue *context.AmfUe) bool {
-	if ue.GetRegistrationType5GS() == nasMessage.RegistrationType5GSInitialRegistration {
-		return true
-	}
-	guti := ue.GetGuti()
-	if guti == "" || ue.RegistrationRequest == nil {
-		return false
-	}
-	presented := ue.RegistrationRequest.GetMobileIdentity5GSContents()
-	if len(presented) == 0 {
-		return false
-	}
-	if nasConvert.GetTypeOfIdentity(presented[0]) != nasMessage.MobileIdentity5GSType5gGuti {
-		return true
-	}
-	_, presentedGuti := nasconv.GutiToString(presented)
-
-	// Case-insensitive: GutiToString writes the AMF identifier in lower-case hex, and the
-	// held 5G-GUTI takes it as configured, which AMFID_PATTERN lets be upper case.
-	return !strings.EqualFold(presentedGuti, guti)
 }
 
 func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType,
@@ -887,5 +857,17 @@ func BuildConfigurationUpdateCommand(ue *context.AmfUe, anType models.AccessType
 
 	m.ConfigurationUpdateCommand = configurationUpdateCommand
 
-	return m.PlainNasEncode()
+	payload, err := m.PlainNasEncode()
+	if err != nil {
+		return nil, err
+	}
+
+	// Lawful Interception IRI-POI: a CONFIGURATION UPDATE COMMAND carrying the 5G-GUTI
+	// reports an AMFIdentifierAssociation, as a REGISTRATION ACCEPT does (see
+	// BuildRegistrationAccept and TS 33.128 clause 6.2.2.2.7).
+	if configurationUpdateCommand.GUTI5G != nil {
+		liReportIdentifierAssociation(ue)
+	}
+
+	return payload, nil
 }
