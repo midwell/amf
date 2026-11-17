@@ -61,15 +61,6 @@ func count(names []string, want string) int {
 	return n
 }
 
-func firstIndex(names []string, want string) int {
-	for i, name := range names {
-		if name == want {
-			return i
-		}
-	}
-	return -1
-}
-
 // HandleHandoverRequired never clears the handover state. This attempt's values are stored by
 // SendHandoverRequest, past its own guards, so anything HandleHandoverRequired could clear
 // belongs to a handover already in flight. A duplicate HANDOVER REQUIRED that ended on a

@@ -74,7 +74,7 @@ func TestTheIdentifierAssociationIsReportedOnEveryAccessPath(t *testing.T) {
 			ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
 			ue.RegistrationRequest = &nasMessage.RegistrationRequest{}
 			ue.RegistrationRequest.MobileIdentity5GS.SetLen(uint16(len(c.presented)))
-			ue.RegistrationRequest.MobileIdentity5GS.SetMobileIdentity5GSContents(c.presented)
+			ue.RegistrationRequest.SetMobileIdentity5GSContents(c.presented)
 
 			if _, err := BuildRegistrationAccept(ue, models.ACCESSTYPE__3_GPP_ACCESS, nil, nil, nil, nil); err != nil {
 				t.Fatalf("BuildRegistrationAccept: %v", err)

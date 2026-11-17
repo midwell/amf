@@ -42,8 +42,10 @@ func TestARegistrationRecordNamesTheAccessesTheUEIsRegisteredOver(t *testing.T) 
 		{"over 3GPP", models.ACCESSTYPE__3_GPP_ACCESS, nil, iri.RegResult3GPPAccess},
 		{"over non-3GPP", models.ACCESSTYPE_NON_3_GPP_ACCESS, nil, iri.RegResultNon3GPPAccess},
 		{
-			"over non-3GPP while registered over 3GPP", models.ACCESSTYPE_NON_3_GPP_ACCESS,
-			[]models.AccessType{models.ACCESSTYPE__3_GPP_ACCESS}, iri.RegResult3GPPAndNon3GPP,
+			name:       "over non-3GPP while registered over 3GPP",
+			completeOn: models.ACCESSTYPE_NON_3_GPP_ACCESS,
+			registered: []models.AccessType{models.ACCESSTYPE__3_GPP_ACCESS},
+			want:       iri.RegResult3GPPAndNon3GPP,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
