@@ -299,8 +299,8 @@ const (
 )
 
 // TestLiBlockRefusesUnknownKeys covers the whole startup path, not strictLiBlock alone: the
-// property is that a mistyped LI key stops the network function from starting, and that is only
-// true if InitConfigFactory calls the check.
+// property is that a mistyped LI key is refused and recorded for the LI subsystem without failing
+// the configuration load, and that is only true if InitConfigFactory calls the check.
 //
 // Both keys below are chosen because their defaults are not what the operator asked for. A
 // dropped `keepaliveTimeout` leaves the X1 keepalive procedure on the clause default rather than
