@@ -50,6 +50,7 @@ import (
 	utilLogger "github.com/omec-project/util/logger"
 	"github.com/urfave/cli/v3"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.uber.org/zap"
 )
 
 type AMF struct{}
@@ -127,6 +128,14 @@ func (amf *AMF) setLogLevel() {
 	utilLogger.ApplyLogSetting("Util", cfgLogger.Util, utilLogger.UtilLog, utilLogger.SetLogLevel)
 }
 
+// declineOptionalSubsystem logs that an optional subsystem did not start, and nothing that says
+// which. The message names none, and the line carries no caller: util's logger records each
+// line's call site, and the file and line of a call inside the Lawful Interception block would
+// name the branch to anyone with the source.
+func declineOptionalSubsystem() {
+	logger.InitLog.WithOptions(zap.WithCaller(false)).Errorln("an optional subsystem failed to initialise")
+}
+
 func (amf *AMF) Start() {
 	logger.InitLog.Infoln("server started")
 	var err error
@@ -189,7 +198,7 @@ func (amf *AMF) Start() {
 			// the ADMF over X1 from within Init; an earlier failure (e.g. bad LI
 			// credentials) has no X1 channel yet and, pending a restricted LI log sink,
 			// is surfaced only non-attributably here.
-			logger.InitLog.Errorln("an optional subsystem failed to initialise")
+			declineOptionalSubsystem()
 		}
 	}
 	if self.EnableDbStore {
