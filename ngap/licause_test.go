@@ -199,7 +199,7 @@ func ngapModuleDir(t *testing.T) string {
 	out, err := exec.CommandContext(t.Context(),
 		"go", "list", "-m", "-f", "{{.Dir}}", "github.com/omec-project/ngap/v2").Output()
 	if err != nil {
-		t.Skipf("cannot locate the ngap module (%v); without it the totality assertion below "+
+		t.Fatalf("cannot locate the ngap module (%v); without it the totality assertion below "+
 			"has nothing to be total over", err)
 	}
 
