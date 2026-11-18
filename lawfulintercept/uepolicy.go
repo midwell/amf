@@ -216,9 +216,10 @@ func forgetRemovedUE(ue *amfctx.AmfUe) {
 // MANAGE UE POLICY COMMAND that COMPLETE confirms, so a COMMAND relayed to a UE under a
 // warrant is held until its answer arrives.
 //
-// Only a UE some task matches is held for, so a subscriber under no warrant costs nothing
-// here. The consequence is that a task activated between a COMMAND and its COMPLETE does not
-// report that exchange: the COMPLETE finds nothing held.
+// Only a UE with a matching task that is to receive the record is held for, so a subscriber
+// under no warrant costs nothing here, and neither does one whose warrants are scoped to
+// identifier association or take no IRI. The consequence is that a task activated between a
+// COMMAND and its COMPLETE does not report that exchange: the COMPLETE finds nothing held.
 //
 // No-op and silent when LI is inactive or ue is not a target.
 func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
@@ -226,7 +227,7 @@ func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
 	if sub == nil || ue == nil || len(container) < uePolicyHeaderLen || container[1] != uePolicyCommand {
 		return
 	}
-	if len(sub.matchingTasks(ue.IdentitySnapshot())) == 0 {
+	if !sub.anyTaskReceives(ue.IdentitySnapshot(), iri.AMFUEPolicyTransfer{}) {
 		return
 	}
 	sub.policies.remember(ue, container[0], container)

@@ -1143,6 +1143,19 @@ func (s *subsystem) reportEvent(id amfctx.UeIdentity, event any) {
 	s.deliverIRI(s.matchingTasks(id), targetsOf(id), time.Now(), event)
 }
 
+// anyTaskReceives reports whether some task matching id is to receive a record of event's
+// type: one that takes IRI and whose scope includes that record's class. event serves only
+// to name the record.
+func (s *subsystem) anyTaskReceives(id amfctx.UeIdentity, event any) bool {
+	class := recordClassOf(event)
+	for _, t := range s.matchingTasks(id) {
+		if t.WantsProduct(types.ProductIRI) && produces(t, class) {
+			return true
+		}
+	}
+	return false
+}
+
 // reportNotProduced tells each warrant that wants event's record class that a record the
 // clause mandates for it was not produced, because the content it carries was not held when its
 // trigger occurred. event is the zero value of the record that was not produced and serves

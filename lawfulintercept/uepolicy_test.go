@@ -12,6 +12,9 @@ import (
 	"weak"
 
 	amfctx "github.com/omec-project/amf/context"
+	"github.com/omec-project/util/li/store"
+	"github.com/omec-project/util/li/types"
+	"github.com/omec-project/util/li/x2x3"
 )
 
 // uePolicyCommandOf builds an n-octet MANAGE UE POLICY COMMAND under pti: the PTI, the message
@@ -444,4 +447,48 @@ func TestACollectedUEDoesNotPushALiveOneOut(t *testing.T) {
 		t.Error("a live UE's COMMAND was evicted while a collected UE's entry held a slot")
 	}
 	runtime.KeepAlive(live)
+}
+
+// TestACommandIsHeldOnlyForATaskThatGetsItsRecord: a COMMAND is held so its COMPLETE can carry
+// it, so only a task that is to receive AMFUEPolicyTransfer holds one. A task scoped to
+// identifier association (TS 33.128 clause 6.2.2.2.1) or one that takes no IRI never receives
+// the record, and a COMMAND held for it would only take a slot of the shared bound from a UE
+// whose warrant does want it.
+func TestACommandIsHeldOnlyForATaskThatGetsItsRecord(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		scope    types.RecordScope
+		products []types.ProductType
+		wantHeld int
+	}{
+		{"identifier association only", types.RecordScopeIdentifierAssociation, []types.ProductType{types.ProductIRI}, 0},
+		{"content only", types.RecordScopeStandard, []types.ProductType{types.ProductCC}, 0},
+		{"no extension", types.RecordScopeStandard, []types.ProductType{types.ProductIRI}, 1},
+		{"all", types.RecordScopeAll, []types.ProductType{types.ProductIRI}, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := store.New()
+			if !st.Activate(types.InterceptTask{
+				XID:         testSubstitutionXID,
+				Targets:     []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}},
+				Products:    c.products,
+				RecordScope: c.scope,
+				State:       types.TaskActive,
+			}) {
+				t.Fatal("activate")
+			}
+			active.Store(&subsystem{
+				store: st, senderFor: func(string) sender { return &captureSender{} },
+				mdf2: testAgencyAddr,
+				ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
+			})
+			t.Cleanup(func() { active.Store(nil) })
+
+			NoteUEPolicyCommand(targetUE(), uePolicyCommandOf(1, 16))
+
+			if n := active.Load().policies.held(); n != c.wantHeld {
+				t.Errorf("%d UE(s) held a COMMAND, want %d", n, c.wantHeld)
+			}
+		})
+	}
 }
