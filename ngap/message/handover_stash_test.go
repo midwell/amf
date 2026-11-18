@@ -5,9 +5,11 @@ package message
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/omec-project/amf/logger"
+	"github.com/omec-project/amf/ngapconv"
 	"github.com/omec-project/ngap/v2/ngapType"
 	"github.com/omec-project/openapi/v2/models"
 )
@@ -39,10 +41,15 @@ func TestADuplicateHandoverRequiredLeavesTheLiveHandoversStashIntact(t *testing.
 	liveContainer := []byte{0x01, 0x02, 0x03, 0x04}
 	liveType := ngapType.HandoverType{Value: ngapType.HandoverTypePresentIntra5gs}
 
-	// The live handover: sent, so its values are what the acknowledgement must report.
+	// The live handover: sent, so its values are what the acknowledgement must report. Its
+	// PDU session item has to encode, or the request is never sent and keeps no stash.
 	SendHandoverRequest(sourceUe, sourceUe.Ran, *live, liveType,
 		ngapType.PDUSessionResourceSetupListHOReq{
-			List: []ngapType.PDUSessionResourceSetupItemHOReq{{}},
+			List: []ngapType.PDUSessionResourceSetupItemHOReq{{
+				PDUSessionID:            ngapType.PDUSessionID{Value: 10},
+				SNSSAI:                  ngapconv.SNssaiToNgap(models.Snssai{Sst: 1, Sd: new("010203")}),
+				HandoverRequestTransfer: []byte{0x00},
+			}},
 		},
 		ngapType.SourceToTargetTransparentContainer{Value: liveContainer}, false)
 
@@ -88,5 +95,38 @@ func TestADuplicateHandoverRequiredLeavesTheLiveHandoversStashIntact(t *testing.
 		t.Errorf("the stashed handover type is %d, want the live handover's %d: the duplicate's "+
 			"type replaced it, so both records for the handover that did happen name one that "+
 			"did not", sourceUe.HandOverType.Value, liveType.Value)
+	}
+}
+
+// TestAHandoverRequestThatCannotBeBuiltLeavesNoStash: past the guards the stash is committed,
+// and a HANDOVER REQUEST that then fails to build is never sent, so no acknowledge or failure
+// comes back to clear it. The copied source-to-target container would stay on the source
+// RanUe for as long as the RanUe does.
+func TestAHandoverRequestThatCannotBeBuiltLeavesNoStash(t *testing.T) {
+	sourceUe := newRanUeForAllowedNSSAITest(models.ACCESSTYPE__3_GPP_ACCESS)
+	sourceUe.Log = logger.NgapLog
+	sourceUe.Ran.Log = logger.NgapLog
+	// More distinct slices than NGAP's Allowed NSSAI can carry: BuildHandoverRequest refuses.
+	allowed := make([]models.AllowedSnssai, 0, maxAllowedNSSAIItems+1)
+	for index := range maxAllowedNSSAIItems + 1 {
+		allowed = append(allowed, models.AllowedSnssai{
+			AllowedSnssai: models.Snssai{Sst: int32(index + 1), Sd: new(fmt.Sprintf("%06x", index+1))},
+		})
+	}
+	sourceUe.AmfUe.AllowedNssai[models.ACCESSTYPE__3_GPP_ACCESS] = allowed
+
+	SendHandoverRequest(sourceUe, sourceUe.Ran, ngapType.Cause{
+		Present:      ngapType.CausePresentRadioNetwork,
+		RadioNetwork: &ngapType.CauseRadioNetwork{Value: ngapType.CauseRadioNetworkPresentUnspecified},
+	}, ngapType.HandoverType{Value: ngapType.HandoverTypePresentIntra5gs},
+		ngapType.PDUSessionResourceSetupListHOReq{List: []ngapType.PDUSessionResourceSetupItemHOReq{{}}},
+		ngapType.SourceToTargetTransparentContainer{Value: []byte{0x01, 0x02}}, false)
+
+	if sourceUe.TargetUe == nil {
+		t.Fatal("the request did not reach the build, so this test is not exercising its failure")
+	}
+	if sourceUe.HandOverSourceToTarget != nil || sourceUe.HandOverCause != nil {
+		t.Errorf("a request that was never sent left its stash (container % x, cause %v); "+
+			"nothing will come back to clear it", sourceUe.HandOverSourceToTarget, sourceUe.HandOverCause)
 	}
 }

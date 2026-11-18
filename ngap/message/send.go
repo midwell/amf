@@ -531,6 +531,8 @@ func SendHandoverRequest(sourceUe *context.RanUe, targetRan *context.AmfRan, cau
 		sourceToTargetTransparentContainer, nsci)
 	if err != nil {
 		sourceUe.Log.Errorf("build HandoverRequest failed: %s", err.Error())
+		// Not sent, so no acknowledge or failure will come back to drop what was stashed above.
+		sourceUe.ClearHandoverState()
 		return
 	}
 	SendToRanUe(targetUe, pkt)
