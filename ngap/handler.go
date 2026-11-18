@@ -3724,21 +3724,27 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 // command travelled over. It is a no-op for an untasked subscriber and cannot
 // affect the handover: it neither returns nor blocks, and every value it reads is
 // already in hand.
+//
+// The association is read once, through GetAmfUe: this runs on the target RAN's read
+// loop, and the source RAN's release or a replaced RanUe's delayed detach can drop it
+// at the same time.
 func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
 	handoverList ngapType.PDUSessionResourceHandoverList,
 ) {
-	if sourceUe == nil || sourceUe.AmfUe == nil {
+	ue := sourceUe.GetAmfUe()
+	if ue == nil {
 		return
 	}
-	h := handoverOf(sourceUe, targetToSource, handoverList)
+	h := handoverOf(sourceUe, ue, targetToSource, handoverList)
 
 	lawfulintercept.ReportHandoverRequest(h)
 	lawfulintercept.ReportHandoverCommand(h)
 }
 
 // handoverOf assembles what the two handover records are built from: the source UE's
-// association, the values HANDOVER REQUIRED stashed, and the acknowledge's own container.
-func handoverOf(sourceUe *context.RanUe, targetToSource []byte,
+// association, ue as reportHandover read it, the values HANDOVER REQUIRED stashed, and the
+// acknowledge's own container.
+func handoverOf(sourceUe *context.RanUe, ue *context.AmfUe, targetToSource []byte,
 	handoverList ngapType.PDUSessionResourceHandoverList,
 ) lawfulintercept.Handover {
 	// The record's vocabulary, not NGAP's — the two number these four values differently, and
@@ -3746,7 +3752,7 @@ func handoverOf(sourceUe *context.RanUe, targetToSource []byte,
 	// enumeration does not define. See liHandoverType.
 	handoverType, typeSubstituted := liHandoverType(int64(sourceUe.HandOverType.Value))
 	h := lawfulintercept.Handover{
-		UE:              sourceUe.AmfUe,
+		UE:              ue,
 		AMFUENGAPID:     sourceUe.AmfUeNgapId,
 		RANUENGAPID:     sourceUe.RanUeNgapId,
 		HandoverType:    handoverType,
