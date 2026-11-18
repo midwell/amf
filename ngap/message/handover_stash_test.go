@@ -103,7 +103,8 @@ func TestADuplicateHandoverRequiredLeavesTheLiveHandoversStashIntact(t *testing.
 // comes back to clear it. The copied source-to-target container would stay on the source
 // RanUe for as long as the RanUe does.
 func TestAHandoverRequestThatCannotBeBuiltLeavesNoStash(t *testing.T) {
-	sourceUe := newRanUeForAllowedNSSAITest(models.ACCESSTYPE__3_GPP_ACCESS)
+	// Any access will do; the request only has to fail to build.
+	sourceUe := newRanUeForAllowedNSSAITest(models.ACCESSTYPE_NON_3_GPP_ACCESS)
 	sourceUe.Log = logger.NgapLog
 	sourceUe.Ran.Log = logger.NgapLog
 	// More distinct slices than NGAP's Allowed NSSAI can carry: BuildHandoverRequest refuses.
@@ -113,7 +114,7 @@ func TestAHandoverRequestThatCannotBeBuiltLeavesNoStash(t *testing.T) {
 			AllowedSnssai: models.Snssai{Sst: int32(index + 1), Sd: new(fmt.Sprintf("%06x", index+1))},
 		})
 	}
-	sourceUe.AmfUe.AllowedNssai[models.ACCESSTYPE__3_GPP_ACCESS] = allowed
+	sourceUe.AmfUe.AllowedNssai[models.ACCESSTYPE_NON_3_GPP_ACCESS] = allowed
 
 	SendHandoverRequest(sourceUe, sourceUe.Ran, ngapType.Cause{
 		Present:      ngapType.CausePresentRadioNetwork,
