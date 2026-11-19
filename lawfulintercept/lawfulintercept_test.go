@@ -704,8 +704,8 @@ func TestDestinationsInUseFollowsTheTasking(t *testing.T) {
 		t.Errorf("destinationsInUse() = %v, want the endpoint the warrant named", got)
 	}
 
-	// A warrant naming nothing this element can resolve is delivered to the configured
-	// endpoint, so that is where product goes and what the probe must ask about.
+	// A warrant naming no destination is delivered to the configured endpoint, so that
+	// is where product goes and what the probe must ask about.
 	st.Activate(types.InterceptTask{
 		XID:      "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
 		Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: "208930100007489"}},
