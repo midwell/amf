@@ -683,7 +683,8 @@ type UeIdentity struct {
 	// fiveGSTAIList: "tracking areas associated with the registration area within
 	// which the UE is current registered". Not the serving TAI, which the AMF also
 	// holds. Only the 3GPP-access area is snapshotted, so a UE registered over
-	// non-3GPP access reports none.
+	// non-3GPP access reports none — including one that was registered over 3GPP
+	// access too and has deregistered from it (see IdentitySnapshot).
 	TaiList []models.Tai
 
 	// RatType backs the AMF's own rATType. The SMF reports its own from SMContext.
@@ -696,8 +697,18 @@ type UeIdentity struct {
 // under its own lock. Taken before identityMu rather than inside it: MarshalJSON holds
 // Mutex while it reads identity fields, and nesting the two here in the other order
 // would invert that.
+//
+// The 3GPP area is left out while 3GPP access is Deregistered. The area is allocated
+// during a registration and is not cleared when that access deregisters, so a UE still
+// registered over non-3GPP access keeps the 3GPP area it left; reporting it would name
+// tracking areas the UE is no longer registered in. Every other state keeps it,
+// including those of a registration under way, whose records report the area that
+// registration allocated.
 func (ue *AmfUe) IdentitySnapshot() UeIdentity {
-	taiList := ue.GetRegistrationArea(models.ACCESSTYPE__3_GPP_ACCESS)
+	var taiList []models.Tai
+	if st := ue.State[models.ACCESSTYPE__3_GPP_ACCESS]; st == nil || !st.Is(Deregistered) {
+		taiList = ue.GetRegistrationArea(models.ACCESSTYPE__3_GPP_ACCESS)
+	}
 
 	ue.identityMu.RLock()
 	defer ue.identityMu.RUnlock()
