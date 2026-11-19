@@ -1906,11 +1906,11 @@ func keepaliveConfig(cfg Config, reporter *x1.Reporter) x2x3.KeepaliveConfig {
 // configuredDestinations maps the pre-shared destinations from configuration onto the
 // form the X1 server resolves them in, and tells the ADMF about any it cannot use.
 //
-// An entry that does not resolve is not a small mistake: a task naming that DID falls
-// through to the configured default endpoint instead, so an operator's typo quietly sends
-// one agency's product to another's address. There is no general log to say so on — this
-// plane deliberately writes to none — and the count is all the ADMF needs, since the
-// entries themselves are the operator's configuration and not the ADMF's business.
+// An entry that does not resolve is not a small mistake: a task naming that DID is refused
+// with 2040 (DID does not exist on the NE), so an operator's typo stops the warrant it was
+// meant for. There is no general log to say so on — this plane deliberately writes to none —
+// and the count is all the ADMF needs, since the entries themselves are the operator's
+// configuration and not the ADMF's business.
 func configuredDestinations(dests []Destination, reporter *x1.Reporter) []x1.ConfiguredDestination {
 	out := make([]x1.ConfiguredDestination, 0, len(dests))
 	var rejected int
@@ -1926,7 +1926,7 @@ func configuredDestinations(dests []Destination, reporter *x1.Reporter) []x1.Con
 	if rejected > 0 {
 		reporter.NotifyAsync(x1.NEIssueInvalidConfig, fmt.Sprintf(
 			"%d configured delivery destination(s) are unusable and were dropped; "+
-				"a task naming one will be delivered to the default endpoint instead", rejected))
+				"a task naming one will be refused", rejected))
 	}
 
 	return out
