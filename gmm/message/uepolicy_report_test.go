@@ -152,3 +152,33 @@ func TestTheBuilderIsWhereTheUEPolicyHookLives(t *testing.T) {
 			"container type", len(reported))
 	}
 }
+
+// TestAUEPolicyContainerWhoseBuildFailsIsNotNoted: a build that fails produces no message, so
+// there is no COMMAND for a COMPLETE to confirm. Noting it anyway would replace a pending
+// COMMAND under the same PTI, or push another UE's out of the bounded cache, and the COMPLETE
+// for the COMMAND that was sent would then report the wrong policy or no record at all.
+func TestAUEPolicyContainerWhoseBuildFailsIsNotNoted(t *testing.T) {
+	reported := 0
+
+	restore := noteUEPolicyCommand
+	noteUEPolicyCommand = func(*context.AmfUe, []byte) { reported++ }
+	t.Cleanup(func() { noteUEPolicyCommand = restore })
+
+	ue := relayingUe(t)
+	ue.AmfUe.NASLog = logger.NasLog
+	// A security context whose ciphering algorithm no NEA identifier names, so encryption, and
+	// with it the build, fails.
+	ue.AmfUe.SecurityContextAvailable = true
+	ue.AmfUe.CipheringAlg = 0x0f
+
+	if _, err := BuildDLNASTransport(ue.AmfUe, models.ACCESSTYPE__3_GPP_ACCESS,
+		nasMessage.PayloadContainerTypeUEPolicy, []byte{0x2e, 0x01, 0x03}, 0, nil, nil, 0); err == nil {
+		t.Fatal("BuildDLNASTransport succeeded with an unknown ciphering algorithm; the test " +
+			"no longer reaches a failed build")
+	}
+
+	if reported != 0 {
+		t.Errorf("a UE policy container whose build failed was noted %d times, want 0: a "+
+			"COMMAND that was never sent replaces the one the COMPLETE confirms", reported)
+	}
+}
