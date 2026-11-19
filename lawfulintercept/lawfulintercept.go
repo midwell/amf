@@ -209,8 +209,7 @@ func (s *subsystem) destinationUnreachable(addr string) bool {
 }
 
 // destinationsInUse is where this element's xIRI currently goes: the X2 endpoints the tasking
-// it holds names, and the configured MDF2 for a task that names nothing this element can
-// resolve.
+// it holds names, and the configured MDF2 for a task that names no destination.
 //
 // It exists because a delivery client outlives the warrant that created it. A destination
 // whose last delivery failed and whose warrant was then deactivated can never be delivered to

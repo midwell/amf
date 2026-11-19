@@ -186,7 +186,8 @@ type Li struct {
 	// the ADMF had provisioned it with CreateDestination; a destination provisioned
 	// over X1 under the same DID takes precedence. Optional — an ADMF that
 	// provisions its own destinations needs none of these, and `mdf2` above still
-	// serves a task that names nothing resolvable.
+	// serves a task that names no destination. A task that names destinations none
+	// of which is an X2 endpoint is refused, not delivered to `mdf2`.
 	Destinations []LiDestination `yaml:"destinations,omitempty"`
 
 	AdmfURL string `yaml:"admfUrl"` // ADMF X1 endpoint for NE-initiated issue reports (optional)
