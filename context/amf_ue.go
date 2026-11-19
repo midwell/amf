@@ -701,11 +701,13 @@ type UeIdentity struct {
 // The 3GPP area is left out while 3GPP access is Deregistered. The area is allocated
 // during a registration and is not cleared when that access deregisters, so a UE still
 // registered over non-3GPP access keeps the 3GPP area it left; reporting it would name
-// tracking areas the UE is no longer registered in. Every other state keeps it,
-// including those of a registration under way, whose records report the area that
-// registration allocated.
+// tracking areas the UE is no longer registered in. The area is filtered on this one
+// state, not cleared: a registration under way keeps it, so its records report the area
+// that registration allocated, and a UE registering over 3GPP access again reports its
+// earlier area from authentication until the new one is allocated at ContextSetup.
 func (ue *AmfUe) IdentitySnapshot() UeIdentity {
 	var taiList []models.Tai
+	// A UE without a 3GPP state machine is one built by a test; init gives every UE both.
 	if st := ue.State[models.ACCESSTYPE__3_GPP_ACCESS]; st == nil || !st.Is(Deregistered) {
 		taiList = ue.GetRegistrationArea(models.ACCESSTYPE__3_GPP_ACCESS)
 	}

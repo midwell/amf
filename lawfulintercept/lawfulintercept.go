@@ -1425,7 +1425,7 @@ func amfRegistration(id amfctx.UeIdentity, result iri.AMFRegistrationResult) iri
 // amfLocationUpdate maps a UE identity snapshot to a TS 33.128 AMFLocationUpdate record,
 // emitted when a mobility registration update tells the AMF the UE has moved.
 // The Location subtree is minimal (see li/iri.Location): it says the location is current and
-// carries no cell or tracking area. The registration area is in FiveGSTAIList.
+// carries no cell or tracking area. The record has no member for the registration area.
 func amfLocationUpdate(id amfctx.UeIdentity) iri.AMFLocationUpdate {
 	return iri.AMFLocationUpdate{
 		SUCI:     suciOf(id),

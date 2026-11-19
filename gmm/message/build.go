@@ -98,17 +98,16 @@ func BuildDLNASTransport(ue *context.AmfUe, anType models.AccessType, payloadCon
 	// produced when the COMPLETE arrives uplink.
 	//
 	// Not on SendDLNASTransport, because one relay path builds the message here and hands it
-	// to NGAP itself without calling that function — and it is the *only* caller of this
-	// builder that passes a variable container type, so the only one that can carry a policy.
-	// Every other caller hard-codes N1SMInfo. On the builder, which every path must call to
-	// have a message at all, a relay path added later is covered without anybody remembering to.
+	// to NGAP itself without calling that function; the two paths that relay a pending N1N2
+	// policy message call it. On the builder, which every path must call to have a message at
+	// all, a relay path added later is covered without anybody remembering to.
 	//
 	// Noted only once the message is encoded: a build that fails produces no message, and noting
 	// its COMMAND would replace a pending COMMAND under the same PTI, or push another out of the
 	// bounded cache, for a transfer that never happened.
 	//
-	// **The trade, stated rather than hidden:** this notes the COMMAND when the element commits
-	// to the transfer rather than after the bytes leave. A message built and then not
+	// **The trade, stated rather than hidden:** this notes the COMMAND once the message is
+	// encoded rather than after the bytes leave. A message built and then not
 	// transmitted — the caller returning on an error between here and its send — is held as
 	// relayed; a UE that never received it does not complete it, so no record follows. The
 	// lower seam, ngap_message.SendDownlinkNasTransport, is common to all three paths but is
