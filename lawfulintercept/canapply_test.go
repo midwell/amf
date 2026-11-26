@@ -262,3 +262,61 @@ func TestATaskWhoseDestinationsCarryNoIRIIsRefused(t *testing.T) {
 		}
 	})
 }
+
+// TestATaskNamingNoDestinationNeedsAConfiguredMDF2: a task naming no destination is served by the
+// configured MDF2 and by nothing else, so on an element with no MDF2 it is refused rather than held
+// and reported running while its records go nowhere. A task naming an X2 destination needs no MDF2.
+func TestATaskNamingNoDestinationNeedsAConfiguredMDF2(t *testing.T) {
+	task := types.InterceptTask{
+		XID:      taskXID,
+		Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: "262019876543210"}},
+		Products: []types.ProductType{types.ProductIRI},
+	}
+	named := task
+	named.DIDs = []string{"did-iri"}
+	named.Deliveries = []types.DeliveryEndpoint{{Type: types.DeliveryX2, Address: "192.0.2.8:8888"}}
+
+	without := &subsystem{}
+	if err := without.canApplyHere(task); err == nil || !strings.Contains(err.Error(), "X2") {
+		t.Errorf("with no MDF2, a task naming no destination gave %v, want a refusal naming X2", err)
+	}
+	if err := without.canApplyHere(named); err != nil {
+		t.Errorf("with no MDF2, a task naming an X2 destination was refused: %v", err)
+	}
+	if err := (&subsystem{mdf2: "192.0.2.7:7777"}).canApplyHere(task); err != nil {
+		t.Errorf("with an MDF2, a task naming no destination was refused: %v", err)
+	}
+}
+
+// TestX1ServerRefusesATaskWithNowhereToGo is the test above through the X1 server this element
+// runs, which a direct call to canApplyHere passes with the check left unregistered.
+func TestX1ServerRefusesATaskWithNowhereToGo(t *testing.T) {
+	const dids = `
+      <ns1:listOfDIDs>
+        <ns1:dId>7d1c2f60-8a4e-4a1e-9f3b-2c5d6e7f8091</ns1:dId>
+      </ns1:listOfDIDs>`
+	request := activateWithTargets(supiTarget)
+	if !strings.Contains(request, dids) {
+		t.Fatal("the fixture no longer names its destination as this test removes it")
+	}
+	request = strings.Replace(request, dids, "", 1)
+
+	for _, tc := range []struct {
+		mdf2     string
+		wantHeld bool
+	}{{"", false}, {"192.0.2.7:7777", true}} {
+		st := store.New()
+		srv := newX1Server(st, Config{NEID: testNEID, AdmfID: testADMFID}, &subsystem{store: st, mdf2: tc.mdf2})
+		resp, err := srv.Process([]byte(request), admfCert(t, testADMFID))
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		if len(resp.Messages) != 1 {
+			t.Fatalf("got %d response messages, want 1", len(resp.Messages))
+		}
+		if _, held := st.Get(taskXID); held != tc.wantHeld {
+			t.Errorf("mdf2 %q: an X2Only task naming no destination held = %v, want %v (response error %+v)",
+				tc.mdf2, held, tc.wantHeld, resp.Messages[0].ErrorInformation)
+		}
+	}
+}

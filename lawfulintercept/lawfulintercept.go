@@ -312,7 +312,7 @@ func newX1Server(st *store.Store, cfg Config, sub *subsystem) *x1.Server {
 		// Refused only when *none* of the named identifiers is resolvable here: a
 		// warrant naming a SUPI and a UE address is one this element can partly serve,
 		// and declining it would refuse interception it is capable of performing.
-		x1.CanApply(canApply),
+		x1.CanApply(sub.canApplyHere),
 		x1.OnAuthFailure(func(code int) {
 			if sub.reporter == nil {
 				return
@@ -1996,6 +1996,25 @@ func canApply(task types.InterceptTask) error {
 		return errors.New("li: task names delivery destinations but none of them is an X2 " +
 			"endpoint; an AMF IRI-POI delivers xIRI over X2, so every record this task " +
 			"produced would be built, numbered and delivered to nowhere")
+	}
+
+	return nil
+}
+
+// canApplyHere is canApply and the one test that needs this element's configuration: a task
+// naming no destination is served by the configured MDF2 (see x2Destinations), so with no MDF2
+// configured it is served by nothing. Acknowledged, it would be held and reported running while
+// every record it produced was numbered and delivered nowhere, the condition canApply refuses
+// for a task whose named destinations give no X2 endpoint. MDF2 itself stays optional: an ADMF
+// that names a destination on every task needs none.
+func (s *subsystem) canApplyHere(task types.InterceptTask) error {
+	if err := canApply(task); err != nil {
+		return err
+	}
+	if len(task.DIDs) == 0 && s.mdf2 == "" {
+		return errors.New("li: task names no delivery destination and this element has no " +
+			"configured X2 endpoint to serve one, so every record this task produced would be " +
+			"delivered to nowhere")
 	}
 
 	return nil
