@@ -54,8 +54,8 @@ type pendingCommand struct {
 // It is keyed by a weak pointer, so an entry never keeps a UE context alive. A COMPLETE does not
 // end an entry: a UE that receives a retransmitted COMMAND it has already answered retransmits
 // its COMPLETE (TS 24.501 clause D.2.1.6 e), and that COMPLETE confirms the same COMMAND. An
-// entry ends when a COMMAND under the same PTI replaces it, on a COMMAND REJECT, when the
-// bounds above evict it, and when the UE context is removed (amfctx.SetRemovalHook) or the UE
+// entry ends when a COMMAND under the same PTI replaces it or is relayed while no task receives
+// the record, on a COMMAND REJECT, when the bounds above evict it, and when the UE context is removed (amfctx.SetRemovalHook) or the UE
 // is registered on no access. Its hold expiring stops it confirming anything at once, but it
 // is pruned — and stops counting toward maxPendingUEs — only on the next remember, as is the
 // entry of a UE context that has been collected.
@@ -222,7 +222,8 @@ func forgetRemovedUE(ue *amfctx.AmfUe) {
 // The consequence is that a task activated between a COMMAND and its COMPLETE does not report
 // that exchange: the COMPLETE finds nothing held.
 //
-// No-op and silent when LI is inactive or ue is not a target.
+// No-op and silent when LI is inactive. For a UE that is not a target it is silent and holds
+// nothing.
 func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
 	sub := active.Load()
 	if sub == nil || ue == nil || len(container) < uePolicyHeaderLen || container[1] != uePolicyCommand {
@@ -248,9 +249,9 @@ func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
 // the COMPLETE itself is not that content; it is reported to each matching warrant as
 // recordNotProduced instead. Nothing is held when the COMMAND was relayed before the UE was a
 // target or before this AMF started, when its hold ran out or the bounds above evicted it,
-// after a COMMAND REJECT under the same PTI or a COMMAND relayed under it while no task received
-// the record, or when the UE answered under a PTI other than the
-// COMMAND's, which TS 24.501 clause D.1.2 allows of earlier UEs. A MANAGE UE POLICY COMMAND
+// after a COMMAND REJECT under the same PTI or a COMMAND relayed under it while no task
+// received the record, or when the UE answered under a PTI other than the COMMAND's, which
+// TS 24.501 clause D.1.2 allows of earlier UEs. A MANAGE UE POLICY COMMAND
 // REJECT ends the procedure without a record, since the clause names only the COMPLETE. The
 // policy is copied, never parsed beyond those two octets.
 //

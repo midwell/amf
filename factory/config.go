@@ -175,7 +175,7 @@ type TLS struct {
 // is disabled and none of its hooks act.
 type Li struct {
 	X1Listen string `yaml:"x1Listen"` // address for the X1 provisioning listener
-	MDF2     string `yaml:"mdf2"`     // X2 delivery destination (host:port)
+	MDF2     string `yaml:"mdf2"`     // default X2 destination (host:port) for a task naming no destination
 	NEID     string `yaml:"neId"`     // this network element's identifier
 	Cert     string `yaml:"cert"`     // X0 LI PKI: this NE's certificate
 	Key      string `yaml:"key"`      // its private key
@@ -186,8 +186,9 @@ type Li struct {
 	// the ADMF had provisioned it with CreateDestination; a destination provisioned
 	// over X1 under the same DID takes precedence. Optional — an ADMF that
 	// provisions its own destinations needs none of these, and `mdf2` above still
-	// serves a task that names no destination. A task that names destinations none
-	// of which is an X2 endpoint is refused, not delivered to `mdf2`.
+	// serves a task that names no destination; without `mdf2` such a task is refused
+	// at activation. A task that names destinations none of which is an X2 endpoint is
+	// refused, not delivered to `mdf2`.
 	Destinations []LiDestination `yaml:"destinations,omitempty"`
 
 	AdmfURL string `yaml:"admfUrl"` // ADMF X1 endpoint for NE-initiated issue reports (optional)

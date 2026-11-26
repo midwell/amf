@@ -1991,7 +1991,7 @@ func canApply(task types.InterceptTask) error {
 	//
 	// Keyed on len(task.DIDs), exactly as x2Destinations is: a task naming *no* destination is a
 	// gap the provisioning function left and the configured endpoint fills it, which is a
-	// different fact and stays accepted.
+	// different fact and stays accepted here; canApplyHere refuses it when no MDF2 is configured.
 	if len(task.DIDs) > 0 && len(task.DeliveryAddresses(types.DeliveryX2)) == 0 {
 		return errors.New("li: task names delivery destinations but none of them is an X2 " +
 			"endpoint; an AMF IRI-POI delivers xIRI over X2, so every record this task " +

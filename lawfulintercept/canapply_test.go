@@ -319,4 +319,31 @@ func TestX1ServerRefusesATaskWithNowhereToGo(t *testing.T) {
 				tc.mdf2, held, tc.wantHeld, resp.Messages[0].ErrorInformation)
 		}
 	}
+
+	// A modification that takes a held task's destinations away is refused the same way, and the
+	// task stays as it was.
+	st := store.New()
+	srv := newX1Server(st, Config{
+		NEID: testNEID, AdmfID: testADMFID,
+		Destinations: []Destination{{
+			DID: "7d1c2f60-8a4e-4a1e-9f3b-2c5d6e7f8091", DeliveryType: "X2Only", Address: "192.0.2.8:8888",
+		}},
+	}, &subsystem{store: st})
+	if _, err := srv.Process([]byte(activateWithTargets(supiTarget)), admfCert(t, testADMFID)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if _, held := st.Get(taskXID); !held {
+		t.Fatal("the task naming its destination was not held, so the modification below tests nothing")
+	}
+	modify := strings.Replace(request, "ActivateTaskRequest", "ModifyTaskRequest", 1)
+	resp, err := srv.Process([]byte(modify), admfCert(t, testADMFID))
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(resp.Messages) != 1 || resp.Messages[0].ErrorInformation == nil {
+		t.Error("a modification leaving a task with no destination and no mdf2 was acknowledged")
+	}
+	if task, _ := st.Get(taskXID); len(task.DIDs) != 1 {
+		t.Errorf("after the refused modification the task names %d destinations, want the 1 it had", len(task.DIDs))
+	}
 }

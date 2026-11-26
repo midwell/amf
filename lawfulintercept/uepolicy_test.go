@@ -518,6 +518,8 @@ func TestACommandNotHeldEndsTheOneHeldUnderItsPTI(t *testing.T) {
 	ue := targetUE()
 
 	NoteUEPolicyCommand(ue, uePolicyCommandOf(5, 16))
+	other := uePolicyCommandOf(6, 20)
+	NoteUEPolicyCommand(ue, other)
 	if !st.Deactivate(testSubstitutionXID) {
 		t.Fatal("deactivate")
 	}
@@ -530,5 +532,11 @@ func TestACommandNotHeldEndsTheOneHeldUnderItsPTI(t *testing.T) {
 	if got := uePolicyRecords(t, snd); len(got) != 0 {
 		t.Errorf("the COMPLETE of a COMMAND relayed under no warrant was reported with the policy % x "+
 			"of the COMMAND held before it under the same PTI", got[0])
+	}
+
+	// Only that PTI's entry goes: the procedure under another PTI still reports its COMMAND.
+	ReportUEPolicyComplete(ue, uePolicyAnswer(6, uePolicyComplete))
+	if got := uePolicyRecords(t, snd); len(got) != 1 || !bytes.Equal(got[0], other) {
+		t.Errorf("the COMPLETE under another PTI reported %d record(s), want its own COMMAND % x", len(got), other)
 	}
 }
