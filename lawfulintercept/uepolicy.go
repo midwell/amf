@@ -55,10 +55,10 @@ type pendingCommand struct {
 // end an entry: a UE that receives a retransmitted COMMAND it has already answered retransmits
 // its COMPLETE (TS 24.501 clause D.2.1.6 e), and that COMPLETE confirms the same COMMAND. An
 // entry ends when a COMMAND under the same PTI replaces it or is relayed while no task receives
-// the record, on a COMMAND REJECT, when the bounds above evict it, and when the UE context is removed (amfctx.SetRemovalHook) or the UE
-// is registered on no access. Its hold expiring stops it confirming anything at once, but it
-// is pruned — and stops counting toward maxPendingUEs — only on the next remember, as is the
-// entry of a UE context that has been collected.
+// the record, on a COMMAND REJECT, when the bounds above evict it, and when the UE context is
+// removed (amfctx.SetRemovalHook) or the UE is registered on no access. Its hold expiring stops
+// it confirming anything at once, but it is pruned — and stops counting toward maxPendingUEs —
+// only on the next remember, as is the entry of a UE context that has been collected.
 type pendingPolicies struct {
 	byUE map[weak.Pointer[amfctx.AmfUe]][]pendingCommand
 	now  func() time.Time // nil means time.Now; a test substitutes a clock

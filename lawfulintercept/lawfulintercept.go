@@ -45,7 +45,7 @@ type Config struct {
 	BlockError error
 
 	X1Listen string // address for the X1 provisioning listener, e.g. ":8443"
-	MDF2     string // X2 delivery destination (MDF2 "host:port")
+	MDF2     string // default X2 destination ("host:port") for a task naming no destination
 	NEID     string // this network element's identifier (echoed in X1 responses)
 	Cert     string // X0-pre-provisioned LI PKI: this NE's certificate
 	Key      string //                            its private key
