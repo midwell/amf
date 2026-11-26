@@ -492,3 +492,43 @@ func TestACommandIsHeldOnlyForATaskThatGetsItsRecord(t *testing.T) {
 		})
 	}
 }
+
+// TestACommandNotHeldEndsTheOneHeldUnderItsPTI: a COMMAND relayed while no task receives the
+// record is not held, but it still begins a new procedure under its PTI, and a COMPLETE under that
+// PTI confirms it rather than the COMMAND held before. Left held, the earlier COMMAND was reported
+// as the policy of a COMPLETE that confirmed another, once a warrant was activated in between.
+func TestACommandNotHeldEndsTheOneHeldUnderItsPTI(t *testing.T) {
+	st := store.New()
+	task := types.InterceptTask{
+		XID:      testSubstitutionXID,
+		Targets:  []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}},
+		Products: []types.ProductType{types.ProductIRI},
+		State:    types.TaskActive,
+	}
+	if !st.Activate(task) {
+		t.Fatal("activate")
+	}
+	snd := &captureSender{}
+	active.Store(&subsystem{
+		store: st, senderFor: func(string) sender { return snd },
+		mdf2: testAgencyAddr,
+		ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
+	})
+	t.Cleanup(func() { active.Store(nil) })
+	ue := targetUE()
+
+	NoteUEPolicyCommand(ue, uePolicyCommandOf(5, 16))
+	if !st.Deactivate(testSubstitutionXID) {
+		t.Fatal("deactivate")
+	}
+	NoteUEPolicyCommand(ue, uePolicyCommandOf(5, 24))
+	if !st.Activate(task) {
+		t.Fatal("reactivate")
+	}
+	ReportUEPolicyComplete(ue, uePolicyAnswer(5, uePolicyComplete))
+
+	if got := uePolicyRecords(t, snd); len(got) != 0 {
+		t.Errorf("the COMPLETE of a COMMAND relayed under no warrant was reported with the policy % x "+
+			"of the COMMAND held before it under the same PTI", got[0])
+	}
+}

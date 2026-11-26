@@ -217,9 +217,10 @@ func forgetRemovedUE(ue *amfctx.AmfUe) {
 // warrant is held until its answer arrives.
 //
 // Only a UE with a matching task that is to receive the record is held for, so a subscriber
-// under no warrant costs nothing here, and neither does one whose warrants are scoped to
-// identifier association or take no IRI. The consequence is that a task activated between a
-// COMMAND and its COMPLETE does not report that exchange: the COMPLETE finds nothing held.
+// under no warrant holds nothing here, and neither does one whose warrants are scoped to
+// identifier association or take no IRI. Its COMMAND still drops one held under the same PTI.
+// The consequence is that a task activated between a COMMAND and its COMPLETE does not report
+// that exchange: the COMPLETE finds nothing held.
 //
 // No-op and silent when LI is inactive or ue is not a target.
 func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
@@ -228,6 +229,10 @@ func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
 		return
 	}
 	if !sub.anyTaskReceives(ue.IdentitySnapshot(), iri.AMFUEPolicyTransfer{}) {
+		// Not held, but it begins a new procedure under its PTI, and a COMPLETE under that PTI
+		// confirms this COMMAND. One held under the same PTI from before goes, or a warrant
+		// activated before that COMPLETE would report the earlier policy as this one.
+		sub.policies.drop(ue, container[0])
 		return
 	}
 	sub.policies.remember(ue, container[0], container)
@@ -243,7 +248,8 @@ func NoteUEPolicyCommand(ue *amfctx.AmfUe, container []byte) {
 // the COMPLETE itself is not that content; it is reported to each matching warrant as
 // recordNotProduced instead. Nothing is held when the COMMAND was relayed before the UE was a
 // target or before this AMF started, when its hold ran out or the bounds above evicted it,
-// after a COMMAND REJECT under the same PTI, or when the UE answered under a PTI other than the
+// after a COMMAND REJECT under the same PTI or a COMMAND relayed under it while no task received
+// the record, or when the UE answered under a PTI other than the
 // COMMAND's, which TS 24.501 clause D.1.2 allows of earlier UEs. A MANAGE UE POLICY COMMAND
 // REJECT ends the procedure without a record, since the clause names only the COMPLETE. The
 // policy is copied, never parsed beyond those two octets.
