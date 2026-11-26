@@ -246,7 +246,7 @@ func TestATaskWhoseDestinationsCarryNoIRIIsRefused(t *testing.T) {
 
 	t.Run("named destinations including an X2 one", func(t *testing.T) {
 		if err := canApply(base([]string{"did-iri", "did-cc"}, []types.DeliveryEndpoint{
-			{Type: types.DeliveryX2, Address: "192.0.2.8:8888"},
+			{Type: types.DeliveryX2, Address: testX2Addr},
 			{Type: types.DeliveryX3, Address: "192.0.2.9:9999"},
 		})); err != nil {
 			t.Errorf("a task naming an X2 endpoint alongside an X3 one was refused: %v", err)
@@ -274,7 +274,7 @@ func TestATaskNamingNoDestinationNeedsAConfiguredMDF2(t *testing.T) {
 	}
 	named := task
 	named.DIDs = []string{"did-iri"}
-	named.Deliveries = []types.DeliveryEndpoint{{Type: types.DeliveryX2, Address: "192.0.2.8:8888"}}
+	named.Deliveries = []types.DeliveryEndpoint{{Type: types.DeliveryX2, Address: testX2Addr}}
 
 	without := &subsystem{}
 	if err := without.canApplyHere(task); err == nil || !strings.Contains(err.Error(), "X2") {
@@ -300,6 +300,7 @@ func TestX1ServerRefusesATaskWithNowhereToGo(t *testing.T) {
 		t.Fatal("the fixture no longer names its destination as this test removes it")
 	}
 	request = strings.Replace(request, dids, "", 1)
+	cert := admfCert(t, testADMFID)
 
 	for _, tc := range []struct {
 		mdf2     string
@@ -307,7 +308,7 @@ func TestX1ServerRefusesATaskWithNowhereToGo(t *testing.T) {
 	}{{"", false}, {"192.0.2.7:7777", true}} {
 		st := store.New()
 		srv := newX1Server(st, Config{NEID: testNEID, AdmfID: testADMFID}, &subsystem{store: st, mdf2: tc.mdf2})
-		resp, err := srv.Process([]byte(request), admfCert(t, testADMFID))
+		resp, err := srv.Process([]byte(request), cert)
 		if err != nil {
 			t.Fatalf("Process: %v", err)
 		}
@@ -326,17 +327,17 @@ func TestX1ServerRefusesATaskWithNowhereToGo(t *testing.T) {
 	srv := newX1Server(st, Config{
 		NEID: testNEID, AdmfID: testADMFID,
 		Destinations: []Destination{{
-			DID: "7d1c2f60-8a4e-4a1e-9f3b-2c5d6e7f8091", DeliveryType: "X2Only", Address: "192.0.2.8:8888",
+			DID: "7d1c2f60-8a4e-4a1e-9f3b-2c5d6e7f8091", DeliveryType: testX2Only, Address: testX2Addr,
 		}},
 	}, &subsystem{store: st})
-	if _, err := srv.Process([]byte(activateWithTargets(supiTarget)), admfCert(t, testADMFID)); err != nil {
+	if _, err := srv.Process([]byte(activateWithTargets(supiTarget)), cert); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
 	if _, held := st.Get(taskXID); !held {
 		t.Fatal("the task naming its destination was not held, so the modification below tests nothing")
 	}
 	modify := strings.Replace(request, "ActivateTaskRequest", "ModifyTaskRequest", 1)
-	resp, err := srv.Process([]byte(modify), admfCert(t, testADMFID))
+	resp, err := srv.Process([]byte(modify), cert)
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -347,3 +348,6 @@ func TestX1ServerRefusesATaskWithNowhereToGo(t *testing.T) {
 		t.Errorf("after the refused modification the task names %d destinations, want the 1 it had", len(task.DIDs))
 	}
 }
+
+// testX2Addr is an X2 endpoint a task names.
+const testX2Addr = "192.0.2.8:8888"
