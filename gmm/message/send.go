@@ -151,6 +151,8 @@ func SendAuthenticationRequest(ue *context.RanUe) {
 						accessType, amfUe.State[accessType].Current())
 					return
 				}
+				// Lawful Interception IRI-POI: the UE context goes, and every access with it.
+				lawfulintercept.ReportAbortedRegistration(amfUe, accessType, true)
 				amfUe.PublishUeCtxtInfoOnRemoval(accessType)
 				amfUe.Remove()
 			})
@@ -327,6 +329,8 @@ func SendSecurityModeCommand(ue *context.RanUe, anType models.AccessType, eapSuc
 						anType, amfUe.State[anType].Current())
 					return
 				}
+				// Lawful Interception IRI-POI: the UE context goes, and every access with it.
+				lawfulintercept.ReportAbortedRegistration(amfUe, anType, true)
 				amfUe.PublishUeCtxtInfoOnRemoval(anType)
 				amfUe.Remove()
 			})

@@ -102,3 +102,23 @@ func TestARegistrationRejectIsReportedOnceBuilt(t *testing.T) {
 		t.Error("the reject is reported before it is built, so one that fails to build is reported as sent")
 	}
 }
+
+// T3560 running out removes the UE in the middle of a registration procedure, which ends a
+// registration the procedure began from. Each removal hands the procedure to
+// lawfulintercept.ReportAbortedRegistration first, which reports the deregistration when the
+// UE was registered (TS 33.128 clause 6.2.2.2.3).
+func TestEveryT3560AbortAccountsForTheRegistrationItEnds(t *testing.T) {
+	for _, fn := range []string{"SendAuthenticationRequest", "SendSecurityModeCommand"} {
+		calls := callsIn(t, "send.go", fn)
+
+		remove := firstIndex(calls, "amfUe.Remove")
+		report := firstIndex(calls, "lawfulintercept.ReportAbortedRegistration")
+		if remove < 0 {
+			t.Fatalf("%s removes no UE; this guard no longer describes the code", fn)
+		}
+		if report < 0 || report > remove {
+			t.Errorf("%s reports the aborted registration at %d and removes the UE at %d; "+
+				"the report must come first", fn, report, remove)
+		}
+	}
+}

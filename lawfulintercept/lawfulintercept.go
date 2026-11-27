@@ -835,6 +835,36 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.Ac
 	sub.reportEvent(id, payloadDir, amfDeregistration(id, dir, access))
 }
 
+// ReportAbortedRegistration reports a registration procedure that ends with access
+// deregistered, which matters when the procedure began from the Registered state: the UE was
+// registered on access and no longer is, so TS 33.128 clause 6.2.2.2.3 reports an
+// AMFDeregistration, network-initiated since the network ended the registration. When the UE
+// is left registered on no access its SUPI to 5G-GUTI binding is released, and clause
+// 6.2.2.2.7 reports an AMFIdentifierDeassociation. removed says the UE context is being
+// removed, which ends every access it holds.
+//
+// Call it where the procedure fails, before the state is written. A procedure that began
+// from Deregistered reports nothing, and each procedure reports once: the record of where
+// it began is consumed here, whether or not LI is active. Silent, and reports nothing when
+// LI is inactive or ue is not a target.
+func ReportAbortedRegistration(ue *amfctx.AmfUe, access models.AccessType, removed bool) {
+	if ue == nil || !ue.TakeRegisteredAtProcedureStart(access) || active.Load() == nil {
+		return
+	}
+	other := models.ACCESSTYPE_NON_3_GPP_ACCESS
+	if access == models.ACCESSTYPE_NON_3_GPP_ACCESS {
+		other = models.ACCESSTYPE__3_GPP_ACCESS
+	}
+	scope, otherRegistered := accessType(access), registeredOn(ue, other)
+	if removed && otherRegistered {
+		scope = iri.AccessBoth
+	}
+	ReportDeregistration(ue, true, scope)
+	if removed || !otherRegistered {
+		ReportIdentifierDeassociation(ue)
+	}
+}
+
 // DeregistrationScope maps the access a UE-originating deregistration asked for onto the
 // record's own vocabulary.
 //
@@ -1790,12 +1820,18 @@ func registeredAccesses(ue *amfctx.AmfUe) []iri.AMFRegistrationResult {
 		{models.ACCESSTYPE__3_GPP_ACCESS, iri.RegResult3GPPAccess},
 		{models.ACCESSTYPE_NON_3_GPP_ACCESS, iri.RegResultNon3GPPAccess},
 	} {
-		if st := ue.State[a.access]; st != nil && st.Is(amfctx.Registered) {
+		if registeredOn(ue, a.access) {
 			accesses = append(accesses, a.result)
 		}
 	}
 
 	return accesses
+}
+
+// registeredOn reports whether ue is in the Registered state on access.
+func registeredOn(ue *amfctx.AmfUe, access models.AccessType) bool {
+	st := ue.State[access]
+	return st != nil && st.Is(amfctx.Registered)
 }
 
 // taskTargets reports whether ue's identifiers satisfy every criterion task names.

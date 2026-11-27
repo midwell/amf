@@ -65,6 +65,8 @@ func DeRegistered(ctx ctxt.Context, state *fsm.State, event fsm.EventType, args 
 		}
 	case StartAuthEvent:
 		logger.GmmLog.Debugln(event)
+		amfUe := args[ArgAmfUe].(*context.AmfUe)
+		amfUe.SetRegisteredAtProcedureStart(args[ArgAccessType].(models.AccessType), false)
 	case fsm.ExitEvent:
 		logger.GmmLog.Debugln(event)
 	default:
@@ -137,6 +139,10 @@ func Registered(ctx ctxt.Context, state *fsm.State, event fsm.EventType, args fs
 		}
 	case StartAuthEvent:
 		logger.GmmLog.Debugln(event)
+		// The UE stays registered on this access while the procedure runs, and a procedure
+		// that fails leaves it deregistered; see lawfulintercept.ReportAbortedRegistration.
+		amfUe := args[ArgAmfUe].(*context.AmfUe)
+		amfUe.SetRegisteredAtProcedureStart(args[ArgAccessType].(models.AccessType), true)
 	case InitDeregistrationEvent:
 		logger.GmmLog.Debugln(event)
 	case NwInitiatedDeregistrationEvent:
@@ -253,10 +259,15 @@ func Authentication(ctx ctxt.Context, state *fsm.State, event fsm.EventType, arg
 	case AuthFailEvent:
 		logger.GmmLog.Debugln(event)
 		logger.GmmLog.Warnln("reject authentication")
+		// Lawful Interception IRI-POI: this event leaves the access Deregistered.
+		lawfulintercept.ReportAbortedRegistration(args[ArgAmfUe].(*context.AmfUe),
+			args[ArgAccessType].(models.AccessType), false)
 	case AuthErrorEvent:
 		amfUe := args[ArgAmfUe].(*context.AmfUe)
 		accessType := args[ArgAccessType].(models.AccessType)
 		logger.GmmLog.Debugln(event)
+		// Lawful Interception IRI-POI: this event leaves the access Deregistered.
+		lawfulintercept.ReportAbortedRegistration(amfUe, accessType, false)
 		if err := HandleAuthenticationError(amfUe, accessType); err != nil {
 			logger.GmmLog.Errorln(err)
 		}
@@ -387,6 +398,8 @@ func SecurityMode(ctx ctxt.Context, state *fsm.State, event fsm.EventType, args 
 		amfUe.SecurityContextAvailable = false
 		amfUe.T3560.Stop()
 		amfUe.T3560 = nil
+		// Lawful Interception IRI-POI: this event leaves the access Deregistered.
+		lawfulintercept.ReportAbortedRegistration(amfUe, accessType, false)
 		// SecurityModeAbortEvent always transitions SecurityMode -> Deregistered (see gmm/init.go), and
 		// Deregistered's own EntryEvent never publishes; without this, the Add published on SUPI
 		// resolution never gets a matching Del.
@@ -407,6 +420,8 @@ func SecurityMode(ctx ctxt.Context, state *fsm.State, event fsm.EventType, args 
 		logger.GmmLog.Debugln(event)
 		amfUe := args[ArgAmfUe].(*context.AmfUe)
 		accessType := args[ArgAccessType].(models.AccessType)
+		// Lawful Interception IRI-POI: this event leaves the access Deregistered.
+		lawfulintercept.ReportAbortedRegistration(amfUe, accessType, false)
 		// SecurityModeFailEvent always transitions SecurityMode -> Deregistered (see gmm/init.go), and
 		// Deregistered's own EntryEvent never publishes; without this, the Add published on SUPI
 		// resolution never gets a matching Del.
@@ -563,6 +578,8 @@ func ContextSetup(ctx ctxt.Context, state *fsm.State, event fsm.EventType, args 
 			logger.GmmLog.Errorln("invalid type assertion for ArgAccessType")
 			return
 		}
+		// Lawful Interception IRI-POI: this event leaves the access Deregistered.
+		lawfulintercept.ReportAbortedRegistration(amfUe, accessType, false)
 		// ContextSetupFailEvent always transitions ContextSetup -> Deregistered (see gmm/init.go), and
 		// Deregistered's own EntryEvent never publishes; without this, the Add published on SUPI
 		// resolution never gets a matching Del.

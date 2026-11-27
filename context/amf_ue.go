@@ -75,8 +75,9 @@ type AmfUe struct {
 	// Mutex sync.Mutex `json:"mutex,omitempty" yaml:"mutex" bson:"mutex,omitempty"`
 	Mutex sync.Mutex `json:"-"`
 	// identityMu guards the UE identity fields (Supi/Pei/Gpsi/Tmsi/Guti,
-	// RegistrationType5GS and SuciRaw) and the user-location and reachability fields the service
-	// handlers read (RatType/Location/Tai/Reachability), so they can be read safely
+	// RegistrationType5GS and SuciRaw), the user-location and reachability fields the service
+	// handlers read (RatType/Location/Tai/Reachability), and registeredAtProcedureStart,
+	// so they can be read safely
 	// from goroutines other than the one running the UE's NAS procedure (e.g. SBI
 	// handlers, logging). Use the Get*/Set* accessors below; do not touch those
 	// fields directly across goroutines. It is deliberately separate from Mutex
@@ -96,6 +97,10 @@ type AmfUe struct {
 
 	/* Gmm State */
 	State map[models.AccessType]*fsm.State `json:"-"`
+	// registeredAtProcedureStart holds, per access, whether the registration procedure
+	// under way began from the Registered state. The UE is still registered during that
+	// procedure although State has left Registered. See SetRegisteredAtProcedureStart.
+	registeredAtProcedureStart map[models.AccessType]bool
 	/* Registration procedure related context */
 	RegistrationType5GS                uint8                           `json:"registrationType5GS,omitempty"`
 	IdentityTypeUsedForRegistration    uint8                           `json:"identityTypeUsedForRegistration,omitempty"`
@@ -768,6 +773,36 @@ func (ue *AmfUe) SetPei(v string)  { ue.identityMu.Lock(); ue.Pei = v; ue.identi
 func (ue *AmfUe) SetGpsi(v string) { ue.identityMu.Lock(); ue.Gpsi = v; ue.identityMu.Unlock() }
 func (ue *AmfUe) SetGuti(v string) { ue.identityMu.Lock(); ue.Guti = v; ue.identityMu.Unlock() }
 func (ue *AmfUe) SetTmsi(v int32)  { ue.identityMu.Lock(); ue.Tmsi = v; ue.identityMu.Unlock() }
+
+// SetRegisteredAtProcedureStart records whether the registration procedure starting on access
+// began from the Registered state. Every registration procedure starts with the GMM state
+// machine's StartAuthEvent, which sets it, so the value always describes the procedure under way.
+func (ue *AmfUe) SetRegisteredAtProcedureStart(access models.AccessType, registered bool) {
+	ue.identityMu.Lock()
+	defer ue.identityMu.Unlock()
+	if ue.registeredAtProcedureStart == nil {
+		ue.registeredAtProcedureStart = map[models.AccessType]bool{}
+	}
+	ue.registeredAtProcedureStart[access] = registered
+}
+
+// RegisteredAtProcedureStart reports whether the registration procedure on access began from
+// the Registered state.
+func (ue *AmfUe) RegisteredAtProcedureStart(access models.AccessType) bool {
+	ue.identityMu.RLock()
+	defer ue.identityMu.RUnlock()
+	return ue.registeredAtProcedureStart[access]
+}
+
+// TakeRegisteredAtProcedureStart reports whether the registration procedure on access began
+// from the Registered state, and clears it, so a procedure that ends is accounted for once.
+func (ue *AmfUe) TakeRegisteredAtProcedureStart(access models.AccessType) bool {
+	ue.identityMu.Lock()
+	defer ue.identityMu.Unlock()
+	was := ue.registeredAtProcedureStart[access]
+	delete(ue.registeredAtProcedureStart, access)
+	return was
+}
 
 // SetSuciRaw stores the 5GS mobile identity octets alongside the formatted Suci. It
 // copies, because the caller's buffer is a slice of the decoded NAS message and does

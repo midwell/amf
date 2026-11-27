@@ -2755,6 +2755,9 @@ func HandleInitialContextSetupFailure(ctx ctxt.Context, ran *context.AmfRan, mes
 	if amfUe.T3550 != nil {
 		amfUe.T3550.Stop()
 		amfUe.T3550 = nil
+		// Lawful Interception IRI-POI: the registration procedure ends with the access
+		// Deregistered.
+		lawfulintercept.ReportAbortedRegistration(amfUe, ran.AnType, false)
 		amfUe.State[ran.AnType].Set(context.Deregistered)
 		amfUe.ClearRegistrationRequestData(ran.AnType)
 	}
