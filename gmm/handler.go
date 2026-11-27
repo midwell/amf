@@ -106,6 +106,11 @@ var (
 	reportIdentifierDeassociation = lawfulintercept.ReportIdentifierDeassociation
 )
 
+// reportAbortedRegistration is the Lawful Interception hook for a registration procedure that
+// ends with the access deregistered or the UE removed, reached through a package variable so a
+// test can observe which paths raise it. Production behaviour is the same function.
+var reportAbortedRegistration = lawfulintercept.ReportAbortedRegistration
+
 func HandleULNASTransport(ctx ctxt.Context, ue *context.AmfUe, anType models.AccessType,
 	ulNasTransport *nasMessage.ULNASTransport,
 ) error {

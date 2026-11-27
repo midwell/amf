@@ -48,9 +48,32 @@ func TestARegistrationProcedureRecordsWhereItBegan(t *testing.T) {
 	}
 }
 
+// abortedCall is one call of the reportAbortedRegistration hook.
+type abortedCall struct {
+	ue      *context.AmfUe
+	access  models.AccessType
+	removed bool
+}
+
+// observeAbortedRegistrations replaces the hook for the test and records its calls. What
+// lawfulintercept.ReportAbortedRegistration delivers for each argument set — an
+// AMFDeregistration, network-initiated, for the access, and the deassociation — is asserted in
+// that package, where interception can be activated.
+func observeAbortedRegistrations(t *testing.T) *[]abortedCall {
+	t.Helper()
+	calls := &[]abortedCall{}
+	original := reportAbortedRegistration
+	reportAbortedRegistration = func(ue *context.AmfUe, access models.AccessType, removed bool) {
+		*calls = append(*calls, abortedCall{ue, access, removed})
+	}
+	t.Cleanup(func() { reportAbortedRegistration = original })
+	return calls
+}
+
 // TestEveryFailedProcedureAccountsForTheRegistrationItEnds: each event that drops a
-// registration procedure to Deregistered hands the procedure to
-// lawfulintercept.ReportAbortedRegistration, which consumes the record of where it began.
+// registration procedure to Deregistered hands that procedure, its access and the UE to
+// lawfulintercept.ReportAbortedRegistration once, before the state is written, and without a
+// removal: the UE context stays.
 func TestEveryFailedProcedureAccountsForTheRegistrationItEnds(t *testing.T) {
 	disableKafkaForRelayTest(t)
 	const access = models.ACCESSTYPE__3_GPP_ACCESS
@@ -65,13 +88,25 @@ func TestEveryFailedProcedureAccountsForTheRegistrationItEnds(t *testing.T) {
 		{context.SecurityMode, SecurityMode, SecurityModeAbortEvent},
 		{context.ContextSetup, ContextSetup, ContextSetupFailEvent},
 	} {
+		calls := observeAbortedRegistrations(t)
 		ue := procedureUE(c.state)
 		ue.T3560 = context.NewTimer(time.Hour, 0, func(int32) {}, func() {})
-		ue.SetRegisteredAtProcedureStart(access, true)
+		var stateAtReport fsm.StateType
+		inner := reportAbortedRegistration
+		reportAbortedRegistration = func(u *context.AmfUe, a models.AccessType, removed bool) {
+			stateAtReport = u.State[a].Current()
+			inner(u, a, removed)
+		}
+
 		c.callback(ctxt.Background(), ue.State[access], c.event,
 			fsm.ArgsType{ArgAmfUe: ue, ArgAccessType: access})
-		if ue.RegisteredAtProcedureStart(access) {
-			t.Errorf("%s in %s left the registration it ends unaccounted for", c.event, c.state)
+
+		want := []abortedCall{{ue, access, false}}
+		if len(*calls) != 1 || (*calls)[0] != want[0] {
+			t.Errorf("%s in %s reported %+v, want %+v", c.event, c.state, *calls, want)
+		}
+		if stateAtReport != c.state {
+			t.Errorf("%s in %s reported with the access already %s", c.event, c.state, stateAtReport)
 		}
 		if ue.T3560 != nil {
 			ue.T3560.Stop()
