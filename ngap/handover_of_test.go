@@ -19,7 +19,7 @@ func TestAHandoverRecordKnowsWhetherHandoverRequiredWasCarried(t *testing.T) {
 	list := ngapType.PDUSessionResourceHandoverList{}
 
 	stashed := &context.RanUe{HandOverSourceToTarget: []byte{0x01, 0x02}}
-	if h := handoverOf(stashed, nil, []byte{}, list); !h.HasSourceToTarget {
+	if h := handoverOf(stashed, &context.RanUe{}, nil, []byte{}, list); !h.HasSourceToTarget {
 		t.Error("a stashed source-to-target container was not marked carried, so the record " +
 			"would be reported as not produced although everything it needs is held")
 	} else if h.TargetToSource == nil || len(h.TargetToSource) != 0 {
@@ -28,7 +28,7 @@ func TestAHandoverRecordKnowsWhetherHandoverRequiredWasCarried(t *testing.T) {
 	}
 
 	cleared := &context.RanUe{}
-	if h := handoverOf(cleared, nil, []byte{0x03}, list); h.HasSourceToTarget {
+	if h := handoverOf(cleared, &context.RanUe{}, nil, []byte{0x03}, list); h.HasSourceToTarget {
 		t.Error("no stash was marked carried, so the record would be emitted with a missing " +
 			"mandatory container")
 	}
@@ -53,7 +53,21 @@ func TestTheHandoverRecordReadsTheUEUnderItsLock(t *testing.T) {
 		}
 	}()
 	for range 2000 {
-		reportHandover(sourceUe, []byte{0x02}, ngapType.PDUSessionResourceHandoverList{})
+		reportHandover(sourceUe, &context.RanUe{}, []byte{0x02}, ngapType.PDUSessionResourceHandoverList{})
 	}
 	<-done
+}
+
+// The request record is triggered by the acknowledge and carries the identifiers of the
+// association it arrived over, the target node's; the command record carries the source's.
+func TestTheHandoverRecordsCarryTheirOwnAssociation(t *testing.T) {
+	source := &context.RanUe{AmfUeNgapId: 7, RanUeNgapId: 9}
+	target := &context.RanUe{AmfUeNgapId: 11, RanUeNgapId: 13}
+	h := handoverOf(source, target, nil, nil, ngapType.PDUSessionResourceHandoverList{})
+	if h.AMFUENGAPID != 7 || h.RANUENGAPID != 9 {
+		t.Errorf("source ids = %d/%d, want 7/9", h.AMFUENGAPID, h.RANUENGAPID)
+	}
+	if h.TargetAMFUENGAPID != 11 || h.TargetRANUENGAPID != 13 {
+		t.Errorf("target ids = %d/%d, want 11/13", h.TargetAMFUENGAPID, h.TargetRANUENGAPID)
+	}
 }

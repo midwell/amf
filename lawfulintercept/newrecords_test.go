@@ -97,6 +97,8 @@ func sampleHandover() Handover {
 		UE:                targetUE(),
 		AMFUENGAPID:       7,
 		RANUENGAPID:       9,
+		TargetAMFUENGAPID: 11,
+		TargetRANUENGAPID: 13,
 		HandoverType:      1,
 		TargetToSource:    []byte{0xDE, 0xAD, 0x00},
 		SourceToTarget:    []byte{0x00, 0xBE, 0xEF},
@@ -126,8 +128,9 @@ func TestReportHandoverRecords(t *testing.T) {
 	if req.event != eventRANHandoverRequest {
 		t.Fatalf("first record is XIRIEvent [%d], want aMFRANHandoverRequest [%d]", req.event, eventRANHandoverRequest)
 	}
-	if amf, ran := integer(t, req.member(t, 2)), integer(t, req.member(t, 3)); amf != 7 || ran != 9 {
-		t.Errorf("NGAP ids = %d/%d, want 7/9", amf, ran)
+	// The target node's association, which the acknowledge arrived over.
+	if amf, ran := integer(t, req.member(t, 2)), integer(t, req.member(t, 3)); amf != 11 || ran != 13 {
+		t.Errorf("NGAP ids = %d/%d, want the target association's 11/13", amf, ran)
 	}
 	if got := req.member(t, 11).Bytes; !bytes.Equal(got, h.SourceToTarget) {
 		t.Errorf("sourceToTargetContainer = % x — the container carried from HANDOVER REQUIRED", got)
@@ -146,6 +149,10 @@ func TestReportHandoverRecords(t *testing.T) {
 	cmd := records[1]
 	if cmd.event != eventRANHandoverCommand {
 		t.Fatalf("second record is XIRIEvent [%d], want aMFRANHandoverCommand [%d]", cmd.event, eventRANHandoverCommand)
+	}
+	// The source node's association, which the command travels over.
+	if amf, ran := integer(t, cmd.member(t, 2)), integer(t, cmd.member(t, 3)); amf != 7 || ran != 9 {
+		t.Errorf("command NGAP ids = %d/%d, want the source association's 7/9", amf, ran)
 	}
 	if got := cmd.member(t, 5).Bytes; !bytes.Equal(got, h.TargetToSource) {
 		t.Errorf("command targetToSourceContainer = % x", got)

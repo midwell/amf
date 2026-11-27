@@ -3719,7 +3719,7 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 		}
 		ngap_message.SendHandoverCommand(sourceUe, pduSessionResourceHandoverList, pduSessionResourceToReleaseList,
 			*targetToSourceTransparentContainer, nil)
-		reportHandover(sourceUe, targetToSourceTransparentContainer.Value, pduSessionResourceHandoverList)
+		reportHandover(sourceUe, targetUe, targetToSourceTransparentContainer.Value, pduSessionResourceHandoverList)
 		sourceUe.ClearHandoverState()
 	}
 }
@@ -3736,31 +3736,32 @@ var reportLocationUpdate = lawfulintercept.ReportLocationUpdate
 // SendHandoverCommand returns no error, so a command it failed to build is reported
 // as sent.
 //
-// The identifiers are the source UE's, because that is the NG association the
-// command travelled over. It is a no-op for an untasked subscriber and cannot
+// The command record carries the source UE's identifiers, the NG association the command
+// travelled over, and the request record the target UE's, the association the acknowledge
+// arrived over. It is a no-op for an untasked subscriber and cannot
 // affect the handover: it neither returns nor blocks, and every value it reads is
 // already in hand.
 //
 // The association is read once, through GetAmfUe: this runs on the target RAN's read
 // loop, and the source RAN's release or a replaced RanUe's delayed detach can drop it
 // at the same time.
-func reportHandover(sourceUe *context.RanUe, targetToSource []byte,
+func reportHandover(sourceUe, targetUe *context.RanUe, targetToSource []byte,
 	handoverList ngapType.PDUSessionResourceHandoverList,
 ) {
 	ue := sourceUe.GetAmfUe()
 	if ue == nil {
 		return
 	}
-	h := handoverOf(sourceUe, ue, targetToSource, handoverList)
+	h := handoverOf(sourceUe, targetUe, ue, targetToSource, handoverList)
 
 	lawfulintercept.ReportHandoverRequest(h)
 	lawfulintercept.ReportHandoverCommand(h)
 }
 
-// handoverOf assembles what the two handover records are built from: the source UE's
-// association, ue as reportHandover read it, the values HANDOVER REQUIRED stashed, and the
+// handoverOf assembles what the two handover records are built from: the source and target
+// UEs' associations, ue as reportHandover read it, the values HANDOVER REQUIRED stashed, and the
 // acknowledge's own container.
-func handoverOf(sourceUe *context.RanUe, ue *context.AmfUe, targetToSource []byte,
+func handoverOf(sourceUe, targetUe *context.RanUe, ue *context.AmfUe, targetToSource []byte,
 	handoverList ngapType.PDUSessionResourceHandoverList,
 ) lawfulintercept.Handover {
 	// The record's vocabulary, not NGAP's — the two number these four values differently, and
@@ -3768,13 +3769,15 @@ func handoverOf(sourceUe *context.RanUe, ue *context.AmfUe, targetToSource []byt
 	// enumeration does not define. See liHandoverType.
 	handoverType, typeSubstituted := liHandoverType(int64(sourceUe.HandOverType.Value))
 	h := lawfulintercept.Handover{
-		UE:              ue,
-		AMFUENGAPID:     sourceUe.AmfUeNgapId,
-		RANUENGAPID:     sourceUe.RanUeNgapId,
-		HandoverType:    handoverType,
-		TypeSubstituted: typeSubstituted,
-		TargetToSource:  targetToSource,
-		SourceToTarget:  sourceUe.HandOverSourceToTarget,
+		UE:                ue,
+		AMFUENGAPID:       sourceUe.AmfUeNgapId,
+		RANUENGAPID:       sourceUe.RanUeNgapId,
+		TargetAMFUENGAPID: targetUe.AmfUeNgapId,
+		TargetRANUENGAPID: targetUe.RanUeNgapId,
+		HandoverType:      handoverType,
+		TypeSubstituted:   typeSubstituted,
+		TargetToSource:    targetToSource,
+		SourceToTarget:    sourceUe.HandOverSourceToTarget,
 		// The stash is nil only when no HANDOVER REQUIRED left one: SendHandoverRequest refuses
 		// an empty container before stashing. The target-to-source container is the
 		// acknowledge's own mandatory IE, which its handler checks present, and may be empty.

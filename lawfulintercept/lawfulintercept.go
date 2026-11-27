@@ -675,14 +675,19 @@ func ReportServiceAccept(ue *amfctx.AmfUe, serviceType uint8) {
 // ACKNOWLEDGE arrives — the point where TS 33.128 places both handover records.
 // The caller assembles it so this package never touches ngapType.
 type Handover struct {
-	UE             *amfctx.AmfUe
-	AMFUENGAPID    int64
-	RANUENGAPID    int64
-	HandoverType   int64
-	TargetToSource []byte // from the acknowledge
-	SourceToTarget []byte // carried from HANDOVER REQUIRED
-	PDUSessionID   int32
-	CauseGroup     HandoverCauseGroup
+	UE *amfctx.AmfUe
+	// AMFUENGAPID and RANUENGAPID are the source NG-RAN node's association, which the
+	// HANDOVER COMMAND travels over; TargetAMFUENGAPID and TargetRANUENGAPID are the target
+	// node's, which the HANDOVER REQUEST ACKNOWLEDGE carries.
+	AMFUENGAPID       int64
+	RANUENGAPID       int64
+	TargetAMFUENGAPID int64
+	TargetRANUENGAPID int64
+	HandoverType      int64
+	TargetToSource    []byte // from the acknowledge
+	SourceToTarget    []byte // carried from HANDOVER REQUIRED
+	PDUSessionID      int32
+	CauseGroup        HandoverCauseGroup
 	// CauseValue is the cause in the vocabulary of the *record*, not of NGAP. The two number
 	// the same causes differently, so the caller maps it before setting this field.
 	CauseValue int64
@@ -786,10 +791,12 @@ func ReportHandoverRequest(h Handover) {
 	}
 
 	id := h.UE.IdentitySnapshot()
+	// The identifiers of the association the acknowledge arrived over: table 6.2.2.2.9.3-1's
+	// rANUENGAPID is the one "the AMF receives from the NG-RAN node", the target node here.
 	sub.reportEvent(id, x2x3.DirectionToTarget, iri.AMFRANHandoverRequest{
 		UserIdentifiers:               userIdentifiers(id),
-		AMFUENGAPID:                   iri.AMFUENGAPID(h.AMFUENGAPID),
-		RANUENGAPID:                   iri.RANUENGAPID(h.RANUENGAPID),
+		AMFUENGAPID:                   iri.AMFUENGAPID(h.TargetAMFUENGAPID),
+		RANUENGAPID:                   iri.RANUENGAPID(h.TargetRANUENGAPID),
 		HandoverType:                  iri.HandoverType(h.HandoverType),
 		HandoverCause:                 handoverCause(h.CauseGroup, h.CauseValue),
 		PDUSessionResourceInformation: iri.PDUSessionResourceInformation{PDUSessionID: iri.PDUSessionID(h.PDUSessionID)},
