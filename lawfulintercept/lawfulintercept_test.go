@@ -409,6 +409,17 @@ func TestFiveGGUTIPrefersTheUEsOwnGUTI(t *testing.T) {
 	}
 }
 
+// TestFiveGGUTITakesTheTMSIFromTheGUTI: a UE that presented a 5G-GUTI of a served GUAMI has
+// that GUTI stored while ue.Tmsi still holds the value allocated earlier. The record names the
+// GUTI the UE holds, so all of it, 5G-TMSI included, comes from the GUTI string.
+func TestFiveGGUTITakesTheTMSIFromTheGUTI(t *testing.T) {
+	// mcc(262) + mnc(01) + amfId(010203) + 5G-TMSI 0x0badf00d; ue.Tmsi is 1.
+	g := fiveGGUTI(amfctx.UeIdentity{Guti: "26201010203" + "0badf00d", Tmsi: 1})
+	if g.FiveGTMSI != 0x0badf00d {
+		t.Errorf("5G-TMSI = %#08x, want 0x0badf00d from the GUTI the UE holds", uint32(g.FiveGTMSI))
+	}
+}
+
 // TestMobilityUpdateIsReportedOnce: a mobility registration update is reported as
 // an AMFLocationUpdate from the mobility handler. It also reaches
 // HandleRegistrationComplete — BuildRegistrationAccept carries the 5G-GUTI IE

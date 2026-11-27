@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1774,6 +1775,11 @@ func taskTargets(task types.InterceptTask, id amfctx.UeIdentity) bool {
 // UE's GUTI was cut from. Reading it back is the only way to report the identifier
 // the UE is actually known by, which is the whole point of the field.
 //
+// The 5G-TMSI comes from the same string, as the paging identity does, and not from
+// ue.Tmsi: a UE presenting a 5G-GUTI of a served GUAMI has that GUTI stored while
+// ue.Tmsi keeps the value allocated earlier, and a record combining the two would name
+// a 5G-GUTI the UE does not hold.
+//
 // The served-GUAMI list remains the fallback for a UE that has no GUTI yet. If
 // even that is empty there is no PLMN to put in a GUTI, so this returns the zero
 // GUTI: a record where the GUTI is optional omits it, and one where it is mandatory
@@ -1782,9 +1788,10 @@ func taskTargets(task types.InterceptTask, id amfctx.UeIdentity) bool {
 func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 	g := iri.FiveGGUTI{FiveGTMSI: iri.FiveGTMSI(uint32(id.Tmsi))}
 
-	if mcc, mnc, amfID, ok := splitGUTI(id.Guti); ok {
+	if mcc, mnc, amfID, tmsi, ok := splitGUTI(id.Guti); ok {
 		g.MCC, g.MNC = iri.MCC(mcc), iri.MNC(mnc)
 		setAMFIdentifier(&g, amfID)
+		g.FiveGTMSI = iri.FiveGTMSI(tmsi)
 		return g
 	}
 
@@ -1799,10 +1806,10 @@ func fiveGGUTI(id amfctx.UeIdentity) iri.FiveGGUTI {
 	return g
 }
 
-// splitGUTI takes a 5G-GUTI apart into its PLMN and AMF identifier components.
+// splitGUTI takes a 5G-GUTI apart into its PLMN, AMF identifier and 5G-TMSI components.
 // The AMF composes it as MCC(3) + MNC(2..3) + AmfId(6 hex) + 5G-TMSI(8 hex), so
 // the MNC's width is whatever is left once the two fixed-width tails are removed.
-func splitGUTI(guti string) (mcc, mnc, amfID string, ok bool) {
+func splitGUTI(guti string) (mcc, mnc, amfID string, tmsi uint32, ok bool) {
 	const (
 		mccLen   = 3
 		amfIDLen = 6
@@ -1811,9 +1818,13 @@ func splitGUTI(guti string) (mcc, mnc, amfID string, ok bool) {
 	// A two- or three-digit MNC are the only valid widths.
 	mncLen := len(guti) - mccLen - amfIDLen - tmsiLen
 	if mncLen < 2 || mncLen > 3 {
-		return "", "", "", false
+		return "", "", "", 0, false
 	}
-	return guti[:mccLen], guti[mccLen : mccLen+mncLen], guti[mccLen+mncLen : mccLen+mncLen+amfIDLen], true
+	t, err := strconv.ParseUint(guti[len(guti)-tmsiLen:], 16, 32)
+	if err != nil {
+		return "", "", "", 0, false
+	}
+	return guti[:mccLen], guti[mccLen : mccLen+mncLen], guti[mccLen+mncLen : mccLen+mncLen+amfIDLen], uint32(t), true
 }
 
 // setAMFIdentifier unpacks the 6-hex AMF identifier, which encodes
