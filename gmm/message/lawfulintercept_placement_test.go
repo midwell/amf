@@ -10,10 +10,12 @@ import (
 	"testing"
 )
 
-// callsIn reports the calls inside one function of a file, closures included, in source
+// callsIn reports the calls inside one function of send.go, closures included, in source
 // order: selector calls as "x.Fn" and bare calls as "Fn".
-func callsIn(t *testing.T, file, fn string) []string {
+func callsIn(t *testing.T, fn string) []string {
 	t.Helper()
+
+	const file = "send.go"
 
 	parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
 	if err != nil {
@@ -75,7 +77,7 @@ func firstIndex(names []string, want string) int {
 // a UE that "has deregistered from the 5GS over at least one access type", so every branch that
 // removes the UE reports the deregistration, and the end of its identifier binding.
 func TestEveryT3522AbortReportsTheDeregistration(t *testing.T) {
-	calls := callsIn(t, "send.go", "SendDeregistrationRequest")
+	calls := callsIn(t, "SendDeregistrationRequest")
 
 	removals := count(calls, "amfUe.Remove")
 	if removals == 0 {
@@ -91,7 +93,7 @@ func TestEveryT3522AbortReportsTheDeregistration(t *testing.T) {
 
 // A reject that could not be built is not sent, so it is not reported either.
 func TestARegistrationRejectIsReportedOnceBuilt(t *testing.T) {
-	calls := callsIn(t, "send.go", "SendRegistrationReject")
+	calls := callsIn(t, "SendRegistrationReject")
 
 	build := firstIndex(calls, "BuildRegistrationReject")
 	report := firstIndex(calls, "lawfulintercept.ReportRegistrationReject")
@@ -109,7 +111,7 @@ func TestARegistrationRejectIsReportedOnceBuilt(t *testing.T) {
 // UE was registered (TS 33.128 clause 6.2.2.2.3).
 func TestEveryT3560AbortAccountsForTheRegistrationItEnds(t *testing.T) {
 	for _, fn := range []string{"SendAuthenticationRequest", "SendSecurityModeCommand"} {
-		calls := callsIn(t, "send.go", fn)
+		calls := callsIn(t, fn)
 
 		remove := firstIndex(calls, "amfUe.Remove")
 		report := firstIndex(calls, "lawfulintercept.ReportAbortedRegistration")

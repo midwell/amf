@@ -44,6 +44,7 @@ func TestRegistrationCompleteReportsEveryRegistrationType(t *testing.T) {
 				models.ACCESSTYPE__3_GPP_ACCESS: fsm.NewState(context.Deregistered),
 			},
 		}
+		//nolint:errcheck // the state has no transition for the success event; the report precedes it
 		_ = HandleRegistrationComplete(ctxt.Background(), ue, models.ACCESSTYPE__3_GPP_ACCESS,
 			nasMessage.NewRegistrationComplete(0))
 		reportRegistration = restore

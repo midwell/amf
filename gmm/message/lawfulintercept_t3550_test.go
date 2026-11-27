@@ -14,15 +14,15 @@ import "testing"
 // writes ue.T3550 unsynchronised with SendRegistrationAccept's own write of it, so a test
 // that lets the timer run out trips the race detector on code this test is not about.
 func TestT3550RunningOutReportsTheRegistration(t *testing.T) {
-	calls := callsIn(t, "send.go", "SendRegistrationAccept")
+	calls := callsIn(t, "SendRegistrationAccept")
 
 	if got := count(calls, "liReportRegistration"); got != 1 {
 		t.Fatalf("SendRegistrationAccept reports the registration %d times, want 1, when T3550 runs out", got)
 	}
 	report := firstIndex(calls, "liReportRegistration")
-	clear := firstIndex(calls, "ue.ClearRegistrationRequestData")
-	if clear < 0 || report > clear {
+	cleared := firstIndex(calls, "ue.ClearRegistrationRequestData")
+	if cleared < 0 || report > cleared {
 		t.Errorf("the registration is reported at %d and its request data cleared at %d; "+
-			"the report must come first", report, clear)
+			"the report must come first", report, cleared)
 	}
 }
