@@ -2798,6 +2798,13 @@ func HandleRegistrationComplete(ctx ctxt.Context, ue *context.AmfUe, accessType 
 ) error {
 	ue.GmmLog.Info("Handle Registration Complete")
 
+	// TS 24.501 4.4.4.3: REGISTRATION COMPLETE is not among the messages processed without
+	// integrity protection, so one that failed its check completes nothing; T3550 keeps
+	// retransmitting the accept.
+	if ue.MacFailed {
+		return fmt.Errorf("NAS message integrity check failed")
+	}
+
 	if ue.T3550 != nil {
 		ue.T3550.Stop()
 		ue.T3550 = nil // clear the timer
