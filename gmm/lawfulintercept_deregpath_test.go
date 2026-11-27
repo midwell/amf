@@ -128,10 +128,7 @@ func TestANetworkInitiatedDeregistrationIsReportedWhereItCompletes(t *testing.T)
 func TestAnotherMessageInPlaceOfTheAcceptIsReported(t *testing.T) {
 	calls := calledIn(t, "sm.go", "DeregisteredInitiated")
 
-	for _, want := range []string{
-		"lawfulintercept.ReportDeregistration",
-		"lawfulintercept.ReportIdentifierDeassociation",
-	} {
+	for _, want := range []string{"reportDeregistration", "reportIdentifierDeassociation"} {
 		if indexOf(calls, want) < 0 {
 			t.Errorf("DeregisteredInitiated does not call %s on the state-mismatch branch", want)
 		}

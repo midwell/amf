@@ -98,6 +98,14 @@ var reportUEPolicyComplete = lawfulintercept.ReportUEPolicyComplete
 // behaviour is the same function.
 var reportRegistration = lawfulintercept.ReportRegistration
 
+// reportDeregistration and reportIdentifierDeassociation are the Lawful Interception hooks the
+// state machine raises when a message ends a deregistration, reached through package variables
+// so a test can observe them. Production behaviour is the same functions.
+var (
+	reportDeregistration          = lawfulintercept.ReportDeregistration
+	reportIdentifierDeassociation = lawfulintercept.ReportIdentifierDeassociation
+)
+
 func HandleULNASTransport(ctx ctxt.Context, ue *context.AmfUe, anType models.AccessType,
 	ulNasTransport *nasMessage.ULNASTransport,
 ) error {
