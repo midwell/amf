@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
+	"time"
 
 	"github.com/omec-project/amf/context"
 	"github.com/omec-project/nas/v2/nasMessage"
@@ -88,5 +89,37 @@ func TestOnlyRegistrationCompleteReportsARegistration(t *testing.T) {
 			}
 			return true
 		})
+	}
+}
+
+// TestRegistrationCompleteStopsT3550BeforeReporting: T3550 running out also reports the
+// registration, so REGISTRATION COMPLETE stops it before its own report; otherwise a last
+// expiry between the two would report the registration a second time.
+func TestRegistrationCompleteStopsT3550BeforeReporting(t *testing.T) {
+	var runningAtReport bool
+	restore := reportRegistration
+	t.Cleanup(func() { reportRegistration = restore })
+
+	req := nasMessage.NewRegistrationRequest(0)
+	req.SetFOR(nasMessage.FollowOnRequestPending)
+	ue := &context.AmfUe{
+		GmmLog:              zap.NewNop().Sugar(),
+		RegistrationRequest: req,
+		State: map[models.AccessType]*fsm.State{
+			models.ACCESSTYPE__3_GPP_ACCESS: fsm.NewState(context.Deregistered),
+		},
+		T3550: context.NewTimer(time.Hour, 0, func(int32) {}, func() {}),
+	}
+	reportRegistration = func(ue *context.AmfUe, _ models.AccessType) { runningAtReport = ue.T3550 != nil }
+
+	//nolint:errcheck // the state has no transition for the success event; the report precedes it
+	_ = HandleRegistrationComplete(ctxt.Background(), ue, models.ACCESSTYPE__3_GPP_ACCESS,
+		nasMessage.NewRegistrationComplete(0))
+
+	if runningAtReport {
+		t.Error("the registration was reported while T3550 could still report it")
+	}
+	if ue.T3550 != nil {
+		ue.T3550.Stop()
 	}
 }
