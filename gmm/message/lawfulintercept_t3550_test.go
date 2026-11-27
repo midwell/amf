@@ -4,6 +4,9 @@
 package message
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 	"time"
 
@@ -40,7 +43,8 @@ func TestT3550RunningOutReportsOnlyAProcedureStillWaiting(t *testing.T) {
 		report bool
 	}{
 		{"still waiting for the answer", context.ContextSetup, this, true},
-		{"the RAN leg was released meanwhile", context.ContextSetup, nil, true},
+		// A release of the RAN leg stops the retransmissions and leaves T3550 running.
+		{"a late expiry of a T3550 already stopped", context.ContextSetup, nil, false},
 		{"a context setup failure ended the procedure", context.Deregistered, nil, false},
 		{"REGISTRATION COMPLETE arrived", context.Registered, nil, false},
 		{"a later accept runs its own T3550", context.ContextSetup, other, false},
@@ -70,12 +74,59 @@ func TestT3550RunningOutReportsOnlyAProcedureStillWaiting(t *testing.T) {
 	}
 }
 
-// The expiry reaches that check: SendRegistrationAccept's T3550 hands its last expiry to it.
+// The expiry reaches that check, on the UE's NAS goroutine: SendRegistrationAccept's T3550 hands
+// its last expiry to registrationAcceptUnanswered inside ue.RunSerialized and reports nothing
+// itself, and no expiry clears ue.T3550 off that goroutine, which would let a timer still
+// running pass for one that was stopped.
 func TestT3550RunningOutGoesThroughTheCheck(t *testing.T) {
-	if got := count(callsIn(t, "SendRegistrationAccept"), "registrationAcceptUnanswered"); got != 1 {
-		t.Errorf("SendRegistrationAccept hands T3550's expiry to registrationAcceptUnanswered %d times, want 1", got)
+	parsed, err := parser.ParseFile(token.NewFileSet(), "send.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing send.go: %v", err)
 	}
-	if got := count(callsIn(t, "SendRegistrationAccept"), "liReportRegistration"); got != 0 {
-		t.Errorf("SendRegistrationAccept reports the registration itself %d times, want 0", got)
+	var fn *ast.FuncDecl
+	for _, d := range parsed.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "SendRegistrationAccept" {
+			fn = fd
+		}
+	}
+	if fn == nil {
+		t.Fatal("no SendRegistrationAccept in send.go")
+	}
+
+	serialized, unserialized := 0, 0
+	ast.Inspect(fn, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "RunSerialized" {
+				ast.Inspect(n, func(m ast.Node) bool {
+					if c, ok := m.(*ast.CallExpr); ok {
+						if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "registrationAcceptUnanswered" {
+							serialized++
+						}
+					}
+					return true
+				})
+				return false
+			}
+			if id, ok := n.Fun.(*ast.Ident); ok &&
+				(id.Name == "registrationAcceptUnanswered" || id.Name == "liReportRegistration") {
+				unserialized++
+			}
+		case *ast.AssignStmt:
+			for i, lhs := range n.Lhs {
+				sel, ok := lhs.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "T3550" {
+					continue
+				}
+				if id, ok := n.Rhs[i].(*ast.Ident); ok && id.Name == "nil" {
+					t.Error("SendRegistrationAccept clears ue.T3550 off the UE's NAS goroutine")
+				}
+			}
+		}
+		return true
+	})
+	if serialized != 1 || unserialized != 0 {
+		t.Errorf("T3550's expiry reaches registrationAcceptUnanswered %d times through RunSerialized "+
+			"and reports or checks %d times outside it, want 1 and 0", serialized, unserialized)
 	}
 }

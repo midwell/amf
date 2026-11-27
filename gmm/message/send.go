@@ -486,8 +486,9 @@ func SendRegistrationAccept(
 		t3550 = context.NewTimer(cfg.ExpireTime, cfg.MaxRetryTimes, func(expireTimes int32) {
 			ranUe := ue.GetRanUe(anType)
 			if ranUe == nil {
+				// Not retransmitted, and T3550 left in place: it still runs, and its last
+				// expiry ends the procedure as for any unanswered accept.
 				ue.GmmLog.Warnln("[NAS] UE Context released, abort retransmission of Registration Accept")
-				ue.T3550 = nil
 			} else {
 				if ranUe.UeContextRequest && !ranUe.RecvdInitialContextSetupResponse {
 					ngap_message.SendInitialContextSetupRequest(ue, anType, nasMsg, pduSessionResourceSetupList, nil, nil, nil)
@@ -509,12 +510,11 @@ func SendRegistrationAccept(
 // registrationAcceptUnanswered ends the registration whose REGISTRATION ACCEPT t3550 guarded
 // when the UE never answered it: the access becomes Registered (TS 24.501 5.5.1.2.8 case c,
 // 5.5.1.3.8 case c). It runs on the UE's NAS goroutine, and only while the access is still in
-// ContextSetup with t3550 as its T3550, or with none, as a release of the RAN leg leaves it: a
-// REGISTRATION COMPLETE, a failure, or another accept has otherwise ended or replaced that
-// procedure, and registering the UE here would undo it.
+// ContextSetup with t3550 as its T3550: whatever ends the procedure otherwise, a REGISTRATION
+// COMPLETE, a failure, or another accept, stops or replaces that timer, and registering the UE
+// on a late expiry would undo it.
 func registrationAcceptUnanswered(ue *context.AmfUe, anType models.AccessType, t3550 *context.Timer) {
-	if st := ue.State[anType]; st == nil || !st.Is(context.ContextSetup) ||
-		(ue.T3550 != nil && ue.T3550 != t3550) {
+	if st := ue.State[anType]; st == nil || !st.Is(context.ContextSetup) || ue.T3550 != t3550 {
 		ue.GmmLog.Infof("T3550 ran out for a registration procedure that has ended; nothing to do")
 		return
 	}
