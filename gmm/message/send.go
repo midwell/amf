@@ -158,8 +158,8 @@ func SendAuthenticationRequest(ue *context.RanUe) {
 	}
 }
 
-func SendServiceAccept(ue *context.RanUe, anType models.AccessType, pDUSessionStatus *[16]bool, reactivationResult *[16]bool,
-	errPduSessionId, errCause []uint8,
+func SendServiceAccept(ue *context.RanUe, anType models.AccessType, serviceType uint8, pDUSessionStatus *[16]bool,
+	reactivationResult *[16]bool, errPduSessionId, errCause []uint8,
 ) {
 	if ue == nil {
 		logger.GmmLog.Error("RanUe is nil")
@@ -181,7 +181,7 @@ func SendServiceAccept(ue *context.RanUe, anType models.AccessType, pDUSessionSt
 	// Reported here rather than in the caller because this function returns no
 	// error: a build failure above logs and returns, and a caller that reported
 	// afterwards would claim an accept that was never built.
-	lawfulintercept.ReportServiceAccept(amfUe)
+	lawfulintercept.ReportServiceAccept(amfUe, serviceType)
 }
 
 func SendConfigurationUpdateCommand(amfUe *context.AmfUe, accessType models.AccessType,

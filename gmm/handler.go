@@ -2194,7 +2194,7 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 	// TODO: workaround to send service accept in ICSR
 	ranUe.UeContextRequest = true
 	if serviceType == nasMessage.ServiceTypeSignalling {
-		err := sendServiceAccept(ue, anType, ctxList, suList, nil, nil, nil, nil)
+		err := sendServiceAccept(ue, anType, serviceType, ctxList, suList, nil, nil, nil, nil)
 		return err
 	}
 	n1n2Message := ue.N1N2Message
@@ -2302,7 +2302,7 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 			removePendingPayloadFiles(n1n2Message)
 			// downlink signalling
 			if n2Info == nil {
-				err = sendServiceAccept(ue, anType, ctxList, suList, acceptPduSessionPsi,
+				err = sendServiceAccept(ue, anType, serviceType, ctxList, suList, acceptPduSessionPsi,
 					reactivationResult, errPduSessionId, errCause)
 				if err != nil {
 					return err
@@ -2399,7 +2399,7 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 						nasPdu, n2Info)
 				}
 			}
-			err = sendServiceAccept(ue, anType, ctxList, suList, acceptPduSessionPsi,
+			err = sendServiceAccept(ue, anType, serviceType, ctxList, suList, acceptPduSessionPsi,
 				reactivationResult, errPduSessionId, errCause)
 			if err != nil {
 				return err
@@ -2407,7 +2407,7 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 		}
 		// downlink signaling
 		if ue.ConfigurationUpdateMessage != nil {
-			err := sendServiceAccept(ue, anType, ctxList, suList,
+			err := sendServiceAccept(ue, anType, serviceType, ctxList, suList,
 				acceptPduSessionPsi, reactivationResult, errPduSessionId, errCause)
 			if err != nil {
 				return err
@@ -2445,13 +2445,13 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 					return nil
 				}
 			}
-			err := sendServiceAccept(ue, anType, ctxList, suList, acceptPduSessionPsi,
+			err := sendServiceAccept(ue, anType, serviceType, ctxList, suList, acceptPduSessionPsi,
 				reactivationResult, errPduSessionId, errCause)
 			if err != nil {
 				return err
 			}
 		} else {
-			err := sendServiceAccept(ue, anType, ctxList, suList, acceptPduSessionPsi,
+			err := sendServiceAccept(ue, anType, serviceType, ctxList, suList, acceptPduSessionPsi,
 				reactivationResult, errPduSessionId, errCause)
 			if err != nil {
 				return err
@@ -2467,7 +2467,8 @@ func HandleServiceRequest(ctx ctxt.Context, ue *context.AmfUe, anType models.Acc
 	return nil
 }
 
-func sendServiceAccept(ue *context.AmfUe, anType models.AccessType, ctxList ngapType.PDUSessionResourceSetupListCxtReq,
+func sendServiceAccept(ue *context.AmfUe, anType models.AccessType, serviceType uint8,
+	ctxList ngapType.PDUSessionResourceSetupListCxtReq,
 	suList ngapType.PDUSessionResourceSetupListSUReq, pDUSessionStatus *[16]bool,
 	reactivationResult *[16]bool, errPduSessionId, errCause []uint8,
 ) error {
@@ -2489,7 +2490,7 @@ func sendServiceAccept(ue *context.AmfUe, anType models.AccessType, ctxList ngap
 		} else {
 			ngap_message.SendInitialContextSetupRequest(ue, anType, nasPdu, nil, nil, nil, nil)
 		}
-		lawfulintercept.ReportServiceAccept(ue)
+		lawfulintercept.ReportServiceAccept(ue, serviceType)
 	} else if len(suList.List) != 0 {
 		nasPdu, err := gmm_message.BuildServiceAccept(ue, anType, pDUSessionStatus, reactivationResult,
 			errPduSessionId, errCause)
@@ -2497,11 +2498,12 @@ func sendServiceAccept(ue *context.AmfUe, anType models.AccessType, ctxList ngap
 			return err
 		}
 		ngap_message.SendPDUSessionResourceSetupRequest(ranUe, nasPdu, suList)
-		lawfulintercept.ReportServiceAccept(ue)
+		lawfulintercept.ReportServiceAccept(ue, serviceType)
 	} else {
 		// The third branch reports from inside gmm_message.SendServiceAccept, which
 		// is where a build failure is visible — see the note there.
-		gmm_message.SendServiceAccept(ranUe, anType, pDUSessionStatus, reactivationResult, errPduSessionId, errCause)
+		gmm_message.SendServiceAccept(ranUe, anType, serviceType, pDUSessionStatus, reactivationResult,
+			errPduSessionId, errCause)
 	}
 	return nil
 }

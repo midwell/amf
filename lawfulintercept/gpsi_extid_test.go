@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	amfctx "github.com/omec-project/amf/context"
+	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/util/li/iri"
 	"github.com/omec-project/util/li/store"
 	"github.com/omec-project/util/li/types"
@@ -44,7 +45,7 @@ func TestAnExternalIdentifierIsTheRecordsGPSI(t *testing.T) {
 
 	// Known by its External Identifier only: AMFUEServiceAccept's user identifiers are
 	// mandatory and must not be empty.
-	ReportServiceAccept(&amfctx.AmfUe{Gpsi: "extid-" + testExternalID, Guti: testGUTI, Tmsi: 42})
+	ReportServiceAccept(&amfctx.AmfUe{Gpsi: "extid-" + testExternalID, Guti: testGUTI, Tmsi: 42}, nasMessage.ServiceTypeData)
 
 	if records := decodeRecords(t, snd); len(records) != 1 {
 		t.Fatalf("delivered %d records for a subject tasked by its External Identifier, want 1", len(records))

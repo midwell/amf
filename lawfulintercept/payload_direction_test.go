@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/li/iri"
 	"github.com/omec-project/util/li/store"
@@ -26,7 +27,7 @@ func TestPayloadDirectionFollowsTheInitiator(t *testing.T) {
 		want   x2x3.PayloadDirection
 	}{
 		{"registration", func(*subsystem) { ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS) }, x2x3.DirectionFromTarget},
-		{"service accept", func(*subsystem) { ReportServiceAccept(targetUE()) }, x2x3.DirectionFromTarget},
+		{"service accept", func(*subsystem) { ReportServiceAccept(targetUE(), nasMessage.ServiceTypeData) }, x2x3.DirectionFromTarget},
 		{"UE-initiated deregistration", func(*subsystem) {
 			ReportDeregistration(targetUE(), false, iri.AccessThreeGPP)
 		}, x2x3.DirectionFromTarget},

@@ -61,7 +61,10 @@ func TestReportServiceAccept(t *testing.T) {
 	snd := &captureSender{}
 	activateIRI(t, snd, testTargetSUPI)
 
-	ReportServiceAccept(targetUE())
+	// The 5G-TMSI the record names is the one in the GUTI the UE holds, not ue.Tmsi.
+	ue := targetUE()
+	ue.Tmsi = 1
+	ReportServiceAccept(ue, nasMessage.ServiceTypeMobileTerminatedServices)
 
 	records := decodeRecords(t, snd)
 	if len(records) != 1 {
@@ -70,6 +73,14 @@ func TestReportServiceAccept(t *testing.T) {
 	rec := records[0]
 	if rec.event != eventUEServiceAccept {
 		t.Fatalf("delivered XIRIEvent [%d], want aMFUEServiceAccept [%d]", rec.event, eventUEServiceAccept)
+	}
+	// TS 33.128 table 6.2.2.2.13-1: serviceType per TS 24.501 clause 9.11.3.50, and the
+	// 5G-TMSI "if known".
+	if got := rec.member(t, 3).Bytes; len(got) != 1 || got[0] != nasMessage.ServiceTypeMobileTerminatedServices {
+		t.Errorf("serviceType = % x, want %02x", got, nasMessage.ServiceTypeMobileTerminatedServices)
+	}
+	if got := integer(t, rec.member(t, 4)); got != 42 {
+		t.Errorf("fiveGTMSI = %d, want 42 from the UE's GUTI", got)
 	}
 	if got := supiOf(t, rec.member(t, 1)); got != testTargetSUPI {
 		t.Errorf("SUPI = %q", got)
@@ -248,7 +259,7 @@ func TestNewRecordsSilentForUntaskedSubscriber(t *testing.T) {
 	snd := &captureSender{}
 	activateIRI(t, snd, "999999999999999") // someone else
 
-	ReportServiceAccept(targetUE())
+	ReportServiceAccept(targetUE(), nasMessage.ServiceTypeData)
 	ue := targetUE()
 	NoteUEPolicyCommand(ue, uePolicyCommandOf(1, 16))
 	ReportUEPolicyComplete(ue, []byte{1, uePolicyComplete})
@@ -266,7 +277,7 @@ func TestNewRecordsSilentForUntaskedSubscriber(t *testing.T) {
 func TestNewRecordsSurviveMissingContext(t *testing.T) {
 	t.Run("no subsystem", func(t *testing.T) {
 		active.Store(nil)
-		ReportServiceAccept(targetUE())
+		ReportServiceAccept(targetUE(), nasMessage.ServiceTypeData)
 		NoteUEPolicyCommand(targetUE(), uePolicyCommandOf(1, 16))
 		ReportUEPolicyComplete(targetUE(), []byte{1, uePolicyComplete})
 		ReportHandoverRequest(sampleHandover())
@@ -274,7 +285,7 @@ func TestNewRecordsSurviveMissingContext(t *testing.T) {
 	})
 	t.Run("nil UE", func(t *testing.T) {
 		activateIRI(t, &captureSender{}, testTargetSUPI)
-		ReportServiceAccept(nil)
+		ReportServiceAccept(nil, nasMessage.ServiceTypeData)
 		NoteUEPolicyCommand(nil, uePolicyCommandOf(1, 16))
 		ReportUEPolicyComplete(nil, []byte{1, uePolicyComplete})
 		h := sampleHandover()
@@ -284,7 +295,7 @@ func TestNewRecordsSurviveMissingContext(t *testing.T) {
 	})
 	t.Run("delivery fails", func(t *testing.T) {
 		activateIRI(t, senderFunc(func(*x2x3.PDU) error { return errDelivery }), testTargetSUPI)
-		ReportServiceAccept(targetUE())
+		ReportServiceAccept(targetUE(), nasMessage.ServiceTypeData)
 		ReportHandoverCommand(sampleHandover())
 	})
 }

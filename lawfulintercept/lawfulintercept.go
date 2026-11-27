@@ -658,8 +658,9 @@ func ReportLocationUpdate(ue *amfctx.AmfUe) {
 //
 // TS 33.128 also names a SERVICE ACCEPT answering a CONTROL PLANE SERVICE
 // REQUEST, which this AMF does not implement, so only the plain event occurs.
-// No-op and silent when LI is inactive or ue is not a target.
-func ReportServiceAccept(ue *amfctx.AmfUe) {
+// serviceType is the service type value the SERVICE REQUEST carried (TS 24.501
+// clause 9.11.3.50). No-op and silent when LI is inactive or ue is not a target.
+func ReportServiceAccept(ue *amfctx.AmfUe, serviceType uint8) {
 	sub := active.Load()
 	if sub == nil || ue == nil {
 		return
@@ -667,7 +668,7 @@ func ReportServiceAccept(ue *amfctx.AmfUe) {
 	id := ue.IdentitySnapshot()
 	// The service request procedure is UE-initiated (TS 24.501 clause 5.6.1), paging being
 	// only what may prompt it.
-	sub.reportEvent(id, x2x3.DirectionFromTarget, amfServiceAccept(id))
+	sub.reportEvent(id, x2x3.DirectionFromTarget, amfServiceAccept(id, serviceType))
 }
 
 // Handover describes one handover as the AMF sees it when the HANDOVER REQUEST
@@ -1632,11 +1633,20 @@ func userIdentifiers(id amfctx.UeIdentity) iri.UserIdentifiers {
 // serviceMessageIdentity is the message-type octet, per TS 24.501 clause 9.7 —
 // not the whole PDU. The serviceAccept arm is the one that applies: the record is
 // generated because the AMF sent an accept.
-func amfServiceAccept(id amfctx.UeIdentity) iri.AMFUEServiceAccept {
-	return iri.AMFUEServiceAccept{
+//
+// serviceType is the one octet of TS 24.501 clause 9.11.3.50 with the value in bits 1 to 4,
+// and fiveGTMSI the 5G-TMSI of the GUTI the UE holds, omitted when it holds none.
+func amfServiceAccept(id amfctx.UeIdentity, serviceType uint8) iri.AMFUEServiceAccept {
+	rec := iri.AMFUEServiceAccept{
 		UserIdentifiers:        userIdentifiers(id),
 		ServiceMessageIdentity: iri.ServiceAcceptIdentity{nas.MsgTypeServiceAccept},
+		ServiceType:            iri.ServiceType{serviceType & 0x0f},
 	}
+	if _, _, _, tmsi, ok := splitGUTI(id.Guti); ok {
+		t := iri.FiveGTMSI(tmsi)
+		rec.FiveGTMSI = &t
+	}
+	return rec
 }
 
 // amfUEPolicyTransfer maps a UE identity snapshot and an opaque policy container
