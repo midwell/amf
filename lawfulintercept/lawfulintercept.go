@@ -852,27 +852,42 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.Ac
 // registered on access and no longer is, so TS 33.128 clause 6.2.2.2.3 reports an
 // AMFDeregistration, network-initiated since the network ended the registration. When the UE
 // is left registered on no access its SUPI to 5G-GUTI binding is released, and clause
-// 6.2.2.2.7 reports an AMFIdentifierDeassociation. removed says the UE context is being
-// removed, which ends every access it holds.
+// 6.2.2.2.7 reports an AMFIdentifierDeassociation.
+//
+// removed says the UE context is being removed, which ends every access it holds: a
+// registration on the other access ends with it whatever this procedure began from, and is
+// reported with it.
 //
 // Call it where the procedure fails, before the state is written. A procedure that began
-// from Deregistered reports nothing, and each procedure reports once: the record of where
-// it began is consumed here, whether or not LI is active. Silent, and reports nothing when
-// LI is inactive or ue is not a target.
+// from Deregistered reports nothing for its own access, and each procedure reports once: the
+// record of where it began is consumed here, whether or not LI is active. Silent, and reports
+// nothing when LI is inactive or ue is not a target.
 func ReportAbortedRegistration(ue *amfctx.AmfUe, access models.AccessType, removed bool) {
-	if ue == nil || !ue.TakeRegisteredAtProcedureStart(access) || active.Load() == nil {
+	if ue == nil {
+		return
+	}
+	wasRegistered := ue.TakeRegisteredAtProcedureStart(access)
+	if active.Load() == nil {
 		return
 	}
 	other := models.ACCESSTYPE_NON_3_GPP_ACCESS
 	if access == models.ACCESSTYPE_NON_3_GPP_ACCESS {
 		other = models.ACCESSTYPE__3_GPP_ACCESS
 	}
-	scope, otherRegistered := accessType(access), registeredOn(ue, other)
-	if removed && otherRegistered {
+	otherEnds := removed && registeredOn(ue, other)
+	var scope iri.AccessType
+	switch {
+	case wasRegistered && otherEnds:
 		scope = iri.AccessBoth
+	case wasRegistered:
+		scope = accessType(access)
+	case otherEnds:
+		scope = accessType(other)
+	default:
+		return
 	}
 	ReportDeregistration(ue, true, scope, nil)
-	if removed || !otherRegistered {
+	if removed || !registeredOn(ue, other) {
 		ReportIdentifierDeassociation(ue)
 	}
 }

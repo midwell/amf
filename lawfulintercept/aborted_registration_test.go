@@ -37,6 +37,10 @@ func TestAnAbortedReRegistrationReportsTheDeregistration(t *testing.T) {
 		{"no other access", true, amfctx.Deregistered, false, []int{eventDeregistration, eventDeassociation}, iri.AccessThreeGPP},
 		{"other access registered", true, amfctx.Registered, false, []int{eventDeregistration}, iri.AccessThreeGPP},
 		{"context removed with the other access", true, amfctx.Registered, true, []int{eventDeregistration, eventDeassociation}, iri.AccessBoth},
+		// A procedure on 3GPP access that began deregistered, while the UE is registered over
+		// non-3GPP access: the removal ends that registration.
+		{"context removed, only the other access registered", false, amfctx.Registered, true, []int{eventDeregistration, eventDeassociation}, iri.AccessNonThreeGPP},
+		{"context removed, no access registered", false, amfctx.Deregistered, true, nil, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			snd := &captureSender{}
@@ -61,7 +65,11 @@ func TestAnAbortedReRegistrationReportsTheDeregistration(t *testing.T) {
 			ue.SetRegisteredAtProcedureStart(models.ACCESSTYPE__3_GPP_ACCESS, c.fromRegistered)
 
 			ReportAbortedRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS, c.removed)
-			ReportAbortedRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS, c.removed)
+			// A procedure that fails without removing the UE reports once however it is ended
+			// again. A removal is followed by the context going, so it has no second call.
+			if !c.removed {
+				ReportAbortedRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS, c.removed)
+			}
 
 			records := decodeRecords(t, snd)
 			if len(records) != len(c.wantEvents) {
