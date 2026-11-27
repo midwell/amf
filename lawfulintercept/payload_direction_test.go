@@ -84,3 +84,35 @@ func TestPayloadDirectionFollowsTheInitiator(t *testing.T) {
 		})
 	}
 }
+
+// TestAMobilityLocationUpdateIsFromTheTarget: a task scoped to IdentifierAssociation receives an
+// AMFLocationUpdate in place of a mobility registration's AMFRegistration. It reports the same
+// UE-initiated registration procedure, so its Payload Direction is "sent from the target" (3).
+func TestAMobilityLocationUpdateIsFromTheTarget(t *testing.T) {
+	snd := &captureSender{}
+	st := store.New()
+	st.Activate(types.InterceptTask{
+		XID:         testSubstitutionXID,
+		Targets:     []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}},
+		Products:    []types.ProductType{types.ProductIRI},
+		State:       types.TaskActive,
+		RecordScope: types.RecordScopeIdentifierAssociation,
+	})
+	active.Store(&subsystem{
+		store: st, senderFor: func(string) sender { return snd },
+		mdf2: testAgencyAddr,
+		ids:  x2x3.NewIdentity(testNEID, amfInterceptionPoint),
+	})
+	t.Cleanup(func() { active.Store(nil) })
+
+	ue := targetUE()
+	ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
+	ReportRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS)
+
+	if len(snd.pdus) != 1 {
+		t.Fatalf("delivered %d PDUs, want the one AMFLocationUpdate", len(snd.pdus))
+	}
+	if got := snd.pdus[0].Direction; got != x2x3.DirectionFromTarget {
+		t.Errorf("Payload Direction = %d, want %d", got, x2x3.DirectionFromTarget)
+	}
+}
