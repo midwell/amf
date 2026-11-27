@@ -1809,8 +1809,8 @@ func accessType(a models.AccessType) iri.AccessType {
 	return iri.AccessThreeGPP
 }
 
-// registeredAccesses lists the accesses ue is in the Registered state on, 3GPP first, as the
-// registration results that name them.
+// registeredAccesses lists the accesses ue is registered on (see registeredOn), 3GPP first, as
+// the registration results that name them.
 func registeredAccesses(ue *amfctx.AmfUe) []iri.AMFRegistrationResult {
 	var accesses []iri.AMFRegistrationResult
 	for _, a := range []struct {
@@ -1828,10 +1828,21 @@ func registeredAccesses(ue *amfctx.AmfUe) []iri.AMFRegistrationResult {
 	return accesses
 }
 
-// registeredOn reports whether ue is in the Registered state on access.
+// registeredOn reports whether ue is registered on access: in the Registered state, or in a
+// registration procedure that began from it. A UE updating its registration stays
+// 5GMM-REGISTERED while the procedure runs, although the state machine has left Registered.
 func registeredOn(ue *amfctx.AmfUe, access models.AccessType) bool {
 	st := ue.State[access]
-	return st != nil && st.Is(amfctx.Registered)
+	if st == nil {
+		return false
+	}
+	switch st.Current() {
+	case amfctx.Registered:
+		return true
+	case amfctx.Authentication, amfctx.SecurityMode, amfctx.ContextSetup:
+		return ue.RegisteredAtProcedureStart(access)
+	}
+	return false
 }
 
 // taskTargets reports whether ue's identifiers satisfy every criterion task names.

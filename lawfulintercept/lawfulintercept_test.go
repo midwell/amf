@@ -244,6 +244,29 @@ func TestRegistered(t *testing.T) {
 	}
 }
 
+// TestAUEUpdatingItsRegistrationIsRegistered: a registered UE in a registration procedure stays
+// 5GMM-REGISTERED while the state machine runs it, so a warrant activated then draws its
+// start-of-interception record (TS 33.128 clause 6.2.2.2.5). A procedure that began
+// deregistered is not a registration.
+func TestAUEUpdatingItsRegistrationIsRegistered(t *testing.T) {
+	for _, st := range []fsm.StateType{amfctx.Authentication, amfctx.SecurityMode, amfctx.ContextSetup} {
+		for _, fromRegistered := range []bool{true, false} {
+			ue := &amfctx.AmfUe{State: map[models.AccessType]*fsm.State{
+				models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(st),
+				models.ACCESSTYPE_NON_3_GPP_ACCESS: fsm.NewState(amfctx.Deregistered),
+			}}
+			ue.SetRegisteredAtProcedureStart(models.ACCESSTYPE__3_GPP_ACCESS, fromRegistered)
+			got := registeredAccesses(ue)
+			if fromRegistered && (len(got) != 1 || got[0] != iri.RegResult3GPPAccess) {
+				t.Errorf("a registered UE in %s is registered over %v, want 3GPP access", st, got)
+			}
+			if !fromRegistered && len(got) != 0 {
+				t.Errorf("a deregistered UE in %s is registered over %v, want none", st, got)
+			}
+		}
+	}
+}
+
 func TestIdentifierAssociationMapping(t *testing.T) {
 	amfctx.AMF_Self().ServedGuamiList = []models.Guami{
 		{PlmnId: models.PlmnIdNid{Mcc: "262", Mnc: "01"}, AmfId: "010203"},
