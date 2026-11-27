@@ -394,6 +394,34 @@ configuration:
 		}
 	})
 
+	// A mapping may not repeat a key, and the decode of the whole file refuses one that does,
+	// which stopped the AMF with an error naming the key. The repeated block is an unusable li
+	// block like any other: refused for interception, with the rest of the configuration in
+	// force, and the first block read so the refusal can reach the ADMF it names.
+	t.Run("a repeated li key", func(t *testing.T) {
+		orig := AmfConfig
+		t.Cleanup(func() { AmfConfig = orig })
+		t.Cleanup(func() { liBlockErr = nil })
+
+		body := "info:\n  version: 1.0.0\nconfiguration:\n  amfName: AMF\n" +
+			strings.TrimPrefix(good, "info:\n  version: 1.0.0\nconfiguration:\n") +
+			"  li:\n    neId: amf-2\n  amfId: cafe01\n"
+		if err := InitConfigFactory(write(t, body)); err != nil {
+			t.Fatalf("a repeated li key stopped the whole configuration load, which stops the "+
+				"network function: %v", err)
+		}
+		if LiBlockError() == nil {
+			t.Fatal("a repeated li key was accepted")
+		}
+		if AmfConfig.Configuration.AmfName != "AMF" || AmfConfig.Configuration.AmfId != "cafe01" {
+			t.Errorf("amfName %q, amfId %q: the configuration around the li blocks was not decoded",
+				AmfConfig.Configuration.AmfName, AmfConfig.Configuration.AmfId)
+		}
+		if li := AmfConfig.Configuration.Li; li == nil || li.AdmfURL != "https://admf:9443" {
+			t.Errorf("li = %+v, want the first block read, with its admfUrl", li)
+		}
+	})
+
 	t.Run("no li block at all", func(t *testing.T) {
 		orig := AmfConfig
 		t.Cleanup(func() { AmfConfig = orig })

@@ -62,8 +62,19 @@ func strictLiBlock(content []byte) (*Li, error) {
 		} `yaml:"configuration"`
 	}
 	if err := yaml.Unmarshal(content, &outer); err != nil {
-		// Anything that makes the file undecodable is the real decode's to report, with its own
-		// message. This check has nothing to add about it.
+		// A repeated `li` key is this check's to refuse; see withoutRepeatedLi. The first block
+		// is read as far as it reads, so the refusal can reach the ADMF it names.
+		if _, config, keys := configurationLi(content); len(keys) > 1 {
+			li := &Li{}
+			if raw, err := yaml.Marshal(config.Content[keys[0]+1]); err == nil {
+				//nolint:errcheck // the refusal below is the verdict; this only fills what reads
+				_ = yaml.Load(raw, li, yaml.WithKnownFields())
+			}
+			return li, fmt.Errorf("configuration.li: the key appears %d times, and which of the "+
+				"blocks was meant cannot be told", len(keys))
+		}
+		// Anything else that makes the file undecodable is the real decode's to report, with its
+		// own message. This check has nothing to add about it.
 		return nil, nil
 	}
 
@@ -92,4 +103,60 @@ func strictLiBlock(content []byte) (*Li, error) {
 	}
 
 	return li, nil
+}
+
+// configurationLi parses content into a node tree and finds every `li` key of its configuration
+// mapping: doc is the tree, config the mapping, and keys the indices of the `li` keys in its
+// Content, each followed by its value. keys is empty when there is no such mapping.
+func configurationLi(content []byte) (doc, config *yaml.Node, keys []int) {
+	doc = &yaml.Node{}
+	// A node tree holds a repeated key as written, where a decode into Go values refuses it.
+	if err := yaml.Unmarshal(content, doc); err != nil || len(doc.Content) == 0 {
+		return nil, nil, nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil, nil, nil
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "configuration" && root.Content[i+1].Kind == yaml.MappingNode {
+			config = root.Content[i+1]
+		}
+	}
+	if config == nil {
+		return nil, nil, nil
+	}
+	for i := 0; i+1 < len(config.Content); i += 2 {
+		if config.Content[i].Value == "li" {
+			keys = append(keys, i)
+		}
+	}
+	return doc, config, keys
+}
+
+// withoutRepeatedLi returns content without its `li` blocks when configuration names `li` more
+// than once, and false otherwise.
+//
+// A mapping that repeats a key is not valid YAML, so the decode of the whole configuration
+// refuses it, and a refused configuration load stops the AMF. With the blocks taken out, the rest
+// of the configuration decodes as written, and the repeated key is refused by strictLiBlock as
+// any unusable `li` block is: interception does not start, and the LI subsystem says why to the
+// ADMF only.
+func withoutRepeatedLi(content []byte) ([]byte, bool) {
+	doc, config, keys := configurationLi(content)
+	if len(keys) < 2 {
+		return nil, false
+	}
+	kept := make([]*yaml.Node, 0, len(config.Content))
+	for i := 0; i+1 < len(config.Content); i += 2 {
+		if config.Content[i].Value != "li" {
+			kept = append(kept, config.Content[i], config.Content[i+1])
+		}
+	}
+	config.Content = kept
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/omec-project/amf/logger"
 	"github.com/omec-project/util/nfconfig"
+	"go.yaml.in/yaml/v4"
 )
 
 var AmfConfig Config
@@ -27,7 +28,20 @@ func InitConfigFactory(f string) error {
 	// Reset first, so a load that returns early cannot leave an earlier load's verdict behind.
 	liBlockErr = nil
 	if err := nfconfig.LoadYAML(f, &AmfConfig); err != nil {
-		return err
+		// A configuration naming `li` twice is refused by the decode as a whole. That refusal
+		// belongs to the LI block alone, so the rest is decoded without it and strictLiBlock
+		// below refuses the block; see withoutRepeatedLi. Any other error stands.
+		content, readErr := os.ReadFile(f)
+		if readErr != nil {
+			return err
+		}
+		rest, repeated := withoutRepeatedLi(content)
+		if !repeated {
+			return err
+		}
+		if err := yaml.Unmarshal(rest, &AmfConfig); err != nil {
+			return err
+		}
 	}
 	// The lenient decode above stays lenient — the AMF must keep starting on a configuration
 	// carrying a key this version does not model. It does not decode the LI block at all (Config
