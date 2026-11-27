@@ -2102,6 +2102,9 @@ func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe
 				context.UeContextReleaseDueToNwInitiatedDeregistraion, ngapType.CausePresentNas, ngapType.CauseNasPresentDeregister)
 		} else {
 			ue.GmmLog.Infof("Removing UE Context")
+			// Lawful Interception IRI-POI: the UE context goes, and a registration on the
+			// other access with it.
+			reportAbortedRegistration(ue, accessType, true)
 			ue.PublishUeCtxtInfoOnRemoval(accessType)
 			ue.Remove()
 		}

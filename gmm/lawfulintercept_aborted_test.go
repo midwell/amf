@@ -151,3 +151,23 @@ func TestAContextSetupFailureStopsT3550(t *testing.T) {
 		t.Error("T3550 still runs after the context setup failure ended the procedure")
 	}
 }
+
+// TestANetworkDeregistrationThatRemovesTheUEAccountsForTheOtherAccess: a network-initiated
+// deregistration of an unconnected UE removes the UE context, and a registration on the other
+// access with it, so the removal is handed to lawfulintercept.ReportAbortedRegistration, which
+// reports that access.
+func TestANetworkDeregistrationThatRemovesTheUEAccountsForTheOtherAccess(t *testing.T) {
+	disableKafkaForRelayTest(t)
+	calls := observeAbortedRegistrations(t)
+	const access = models.ACCESSTYPE__3_GPP_ACCESS
+	ue := procedureUE(context.Registered)
+	ue.State[models.ACCESSTYPE_NON_3_GPP_ACCESS] = fsm.NewState(context.Registered)
+
+	if err := NetworkInitiatedDeregistrationProcedure(ctxt.Background(), ue, access); err != nil {
+		t.Fatalf("NetworkInitiatedDeregistrationProcedure: %v", err)
+	}
+
+	if want := (abortedCall{ue, access, true}); len(*calls) != 1 || (*calls)[0] != want {
+		t.Errorf("the removal reported %+v, want %+v", *calls, want)
+	}
+}

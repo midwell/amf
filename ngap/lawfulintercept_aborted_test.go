@@ -69,3 +69,30 @@ func TestAReleaseThatRemovesTheUEAccountsForItsRegistrations(t *testing.T) {
 		t.Error("the removal left the registration it ends unaccounted for")
 	}
 }
+
+// The release that completes a network-initiated deregistration removes the UE context, and a
+// registration on the other access with it, so it is handed to
+// lawfulintercept.ReportAbortedRegistration as a removal.
+func TestTheReleaseAfterANetworkDeregistrationAccountsForTheOtherAccess(t *testing.T) {
+	type call struct {
+		ue      *context.AmfUe
+		access  models.AccessType
+		removed bool
+	}
+	var calls []call
+	original := reportAbortedRegistration
+	reportAbortedRegistration = func(ue *context.AmfUe, access models.AccessType, removed bool) {
+		calls = append(calls, call{ue, access, removed})
+	}
+	t.Cleanup(func() { reportAbortedRegistration = original })
+
+	ran, ranUe, amfUe := newReleasingUe(t, "imsi-208930100009990",
+		context.UeContextReleaseDueToNwInitiatedDeregistraion, 990)
+	recordDatastoreWrites(t)
+
+	HandleUEContextReleaseComplete(ctxt.Background(), ran, releaseCompletePdu(ranUe))
+
+	if want := (call{amfUe, models.ACCESSTYPE__3_GPP_ACCESS, true}); len(calls) != 1 || calls[0] != want {
+		t.Errorf("the release reported %+v, want %+v", calls, want)
+	}
+}

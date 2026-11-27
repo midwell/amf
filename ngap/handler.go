@@ -1281,7 +1281,7 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		if !amfUe.SecurityContextAvailable {
 			ran.Log.Infof("Valid Security is not exist for the UE[%s], so deleting AmfUe Context", amfUe.GetSupi())
 			// Lawful Interception IRI-POI: the UE context goes, and every access with it.
-			lawfulintercept.ReportAbortedRegistration(amfUe, ran.AnType, true)
+			reportAbortedRegistration(amfUe, ran.AnType, true)
 			// Remove() tears down every access, so force Del regardless of the other access's state.
 			amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
 			context.RemoveUeAndDeleteItsContext(amfUe)
@@ -1331,6 +1331,9 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		if err != nil {
 			ran.Log.Errorln(err.Error())
 		}
+		// Lawful Interception IRI-POI: the UE context goes, and a registration on the other
+		// access with it.
+		reportAbortedRegistration(amfUe, ran.AnType, true)
 		// Remove() tears down every access, so force Del regardless of the other access's state.
 		amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
 		context.RemoveUeAndDeleteItsContext(amfUe)
@@ -2759,7 +2762,7 @@ func HandleInitialContextSetupFailure(ctx ctxt.Context, ran *context.AmfRan, mes
 		amfUe.T3550 = nil
 		// Lawful Interception IRI-POI: the registration procedure ends with the access
 		// Deregistered.
-		lawfulintercept.ReportAbortedRegistration(amfUe, ran.AnType, false)
+		reportAbortedRegistration(amfUe, ran.AnType, false)
 		amfUe.State[ran.AnType].Set(context.Deregistered)
 		amfUe.ClearRegistrationRequestData(ran.AnType)
 	}
@@ -3730,6 +3733,11 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 // through a package variable so a test can observe which handlers raise it. Production
 // behaviour is the same function.
 var reportLocationUpdate = lawfulintercept.ReportLocationUpdate
+
+// reportAbortedRegistration is the Lawful Interception hook for a registration procedure that
+// ends with the access deregistered or the UE removed, reached through a package variable so a
+// test can observe which handlers raise it. Production behaviour is the same function.
+var reportAbortedRegistration = lawfulintercept.ReportAbortedRegistration
 
 // reportHandover emits the two handover xIRIs TS 33.128 mandates, both of which
 // belong at this point: AMFRANHandoverRequest triggers on the AMF *receiving* the
