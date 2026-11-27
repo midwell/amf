@@ -32,16 +32,26 @@ func TestAnAbortedReRegistrationReportsTheDeregistration(t *testing.T) {
 		removed        bool
 		wantEvents     []int
 		wantAccess     iri.AccessType
+		// state is the access's own state when the report is made; ContextSetup when empty.
+		state fsm.StateType
 	}{
-		{"began deregistered", false, amfctx.Deregistered, false, nil, 0},
-		{"no other access", true, amfctx.Deregistered, false, []int{eventDeregistration, eventDeassociation}, iri.AccessThreeGPP},
-		{"other access registered", true, amfctx.Registered, false, []int{eventDeregistration}, iri.AccessThreeGPP},
-		{"context removed with the other access", true, amfctx.Registered, true, []int{eventDeregistration, eventDeassociation}, iri.AccessBoth},
+		{"began deregistered", false, amfctx.Deregistered, false, nil, 0, ""},
+		{"no other access", true, amfctx.Deregistered, false, []int{eventDeregistration, eventDeassociation}, iri.AccessThreeGPP, ""},
+		{"other access registered", true, amfctx.Registered, false, []int{eventDeregistration}, iri.AccessThreeGPP, ""},
+		{"context removed with the other access", true, amfctx.Registered, true, []int{eventDeregistration, eventDeassociation}, iri.AccessBoth, ""},
 		// A procedure on 3GPP access that began deregistered, while the UE is registered over
 		// non-3GPP access: the removal ends that registration.
-		{"context removed, only the other access registered", false, amfctx.Registered, true, []int{eventDeregistration, eventDeassociation}, iri.AccessNonThreeGPP},
-		{"context removed, no access registered", false, amfctx.Deregistered, true, nil, 0},
+		{"context removed, only the other access registered", false, amfctx.Registered, true, []int{eventDeregistration, eventDeassociation}, iri.AccessNonThreeGPP, ""},
+		{"context removed, no access registered", false, amfctx.Deregistered, true, nil, 0, ""},
+		// A re-registration from Registered that succeeded leaves its record behind; the
+		// access was then deregistered, and a later removal outside any procedure ends no
+		// registration.
+		{"a removal outside a procedure", true, amfctx.Deregistered, true, nil, 0, amfctx.Deregistered},
 	} {
+		state := c.state
+		if state == "" {
+			state = amfctx.ContextSetup
+		}
 		t.Run(c.name, func(t *testing.T) {
 			snd := &captureSender{}
 			st := store.New()
@@ -59,7 +69,7 @@ func TestAnAbortedReRegistrationReportsTheDeregistration(t *testing.T) {
 
 			ue := targetUE()
 			ue.State = map[models.AccessType]*fsm.State{
-				models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(amfctx.ContextSetup),
+				models.ACCESSTYPE__3_GPP_ACCESS:    fsm.NewState(state),
 				models.ACCESSTYPE_NON_3_GPP_ACCESS: fsm.NewState(c.otherState),
 			}
 			ue.SetRegisteredAtProcedureStart(models.ACCESSTYPE__3_GPP_ACCESS, c.fromRegistered)

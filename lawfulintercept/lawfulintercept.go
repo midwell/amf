@@ -866,7 +866,8 @@ func ReportAbortedRegistration(ue *amfctx.AmfUe, access models.AccessType, remov
 	if ue == nil {
 		return
 	}
-	wasRegistered := ue.TakeRegisteredAtProcedureStart(access)
+	// The record outlives a procedure that succeeded, so it counts only while one is under way.
+	wasRegistered := ue.TakeRegisteredAtProcedureStart(access) && inRegistrationProcedure(ue, access)
 	if active.Load() == nil {
 		return
 	}
@@ -1892,11 +1893,22 @@ func registeredOn(ue *amfctx.AmfUe, access models.AccessType) bool {
 	if st == nil {
 		return false
 	}
-	switch st.Current() {
-	case amfctx.Registered:
+	if st.Is(amfctx.Registered) {
 		return true
+	}
+	return inRegistrationProcedure(ue, access) && ue.RegisteredAtProcedureStart(access)
+}
+
+// inRegistrationProcedure reports whether ue's state machine is running a registration
+// procedure on access.
+func inRegistrationProcedure(ue *amfctx.AmfUe, access models.AccessType) bool {
+	st := ue.State[access]
+	if st == nil {
+		return false
+	}
+	switch st.Current() {
 	case amfctx.Authentication, amfctx.SecurityMode, amfctx.ContextSetup:
-		return ue.RegisteredAtProcedureStart(access)
+		return true
 	}
 	return false
 }
