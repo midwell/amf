@@ -482,7 +482,8 @@ func SendRegistrationAccept(
 
 	if context.AMF_Self().T3550Cfg.Enable {
 		cfg := context.AMF_Self().T3550Cfg
-		ue.T3550 = context.NewTimer(cfg.ExpireTime, cfg.MaxRetryTimes, func(expireTimes int32) {
+		var t3550 *context.Timer
+		t3550 = context.NewTimer(cfg.ExpireTime, cfg.MaxRetryTimes, func(expireTimes int32) {
 			ranUe := ue.GetRanUe(anType)
 			if ranUe == nil {
 				ue.GmmLog.Warnln("[NAS] UE Context released, abort retransmission of Registration Accept")
@@ -497,14 +498,31 @@ func SendRegistrationAccept(
 			}
 		}, func() {
 			ue.GmmLog.Warnf("T3550 Expires %d times, abort retransmission of Registration Accept", cfg.MaxRetryTimes)
-			ue.T3550 = nil // clear the timer
-			// Lawful Interception IRI-POI: the access becomes 5GMM-REGISTERED here instead of
-			// at REGISTRATION COMPLETE, so the registration is reported here, before the state
-			// is written as HandleRegistrationComplete reports it.
-			liReportRegistration(ue, anType)
-			// TS 24.501 5.5.1.2.8 case c, 5.5.1.3.8 case c
-			ue.State[anType].Set(context.Registered)
-			ue.ClearRegistrationRequestData(anType)
+			// Serialized with the UE's NAS messages, so it cannot interleave with a REGISTRATION
+			// COMPLETE or a failure that ends the same procedure.
+			ue.RunSerialized(func() { registrationAcceptUnanswered(ue, anType, t3550) })
 		})
+		ue.T3550 = t3550
 	}
+}
+
+// registrationAcceptUnanswered ends the registration whose REGISTRATION ACCEPT t3550 guarded
+// when the UE never answered it: the access becomes Registered (TS 24.501 5.5.1.2.8 case c,
+// 5.5.1.3.8 case c). It runs on the UE's NAS goroutine, and only while the access is still in
+// ContextSetup with t3550 as its T3550, or with none, as a release of the RAN leg leaves it: a
+// REGISTRATION COMPLETE, a failure, or another accept has otherwise ended or replaced that
+// procedure, and registering the UE here would undo it.
+func registrationAcceptUnanswered(ue *context.AmfUe, anType models.AccessType, t3550 *context.Timer) {
+	if st := ue.State[anType]; st == nil || !st.Is(context.ContextSetup) ||
+		(ue.T3550 != nil && ue.T3550 != t3550) {
+		ue.GmmLog.Infof("T3550 ran out for a registration procedure that has ended; nothing to do")
+		return
+	}
+	ue.T3550 = nil
+	// Lawful Interception IRI-POI: the access becomes 5GMM-REGISTERED here instead of at
+	// REGISTRATION COMPLETE, so the registration is reported here, before the state is
+	// written as HandleRegistrationComplete reports it.
+	liReportRegistration(ue, anType)
+	ue.State[anType].Set(context.Registered)
+	ue.ClearRegistrationRequestData(anType)
 }

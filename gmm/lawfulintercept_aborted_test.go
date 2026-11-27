@@ -78,3 +78,21 @@ func TestEveryFailedProcedureAccountsForTheRegistrationItEnds(t *testing.T) {
 		}
 	}
 }
+
+// TestAContextSetupFailureStopsT3550: the failure ends the registration procedure, so the
+// REGISTRATION ACCEPT T3550 guards is no longer awaited. Left running, its last expiry would
+// register the UE the failure has just deregistered.
+func TestAContextSetupFailureStopsT3550(t *testing.T) {
+	disableKafkaForRelayTest(t)
+	const access = models.ACCESSTYPE__3_GPP_ACCESS
+	ue := procedureUE(context.ContextSetup)
+	ue.T3550 = context.NewTimer(time.Hour, 0, func(int32) {}, func() {})
+
+	ContextSetup(ctxt.Background(), ue.State[access], ContextSetupFailEvent,
+		fsm.ArgsType{ArgAmfUe: ue, ArgAccessType: access})
+
+	if ue.T3550 != nil {
+		ue.T3550.Stop()
+		t.Error("T3550 still runs after the context setup failure ended the procedure")
+	}
+}

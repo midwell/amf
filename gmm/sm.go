@@ -578,6 +578,11 @@ func ContextSetup(ctx ctxt.Context, state *fsm.State, event fsm.EventType, args 
 			logger.GmmLog.Errorln("invalid type assertion for ArgAccessType")
 			return
 		}
+		// The procedure is over, and with it the REGISTRATION ACCEPT T3550 guards.
+		if amfUe.T3550 != nil {
+			amfUe.T3550.Stop()
+			amfUe.T3550 = nil
+		}
 		// Lawful Interception IRI-POI: this event leaves the access Deregistered.
 		lawfulintercept.ReportAbortedRegistration(amfUe, accessType, false)
 		// ContextSetupFailEvent always transitions ContextSetup -> Deregistered (see gmm/init.go), and
