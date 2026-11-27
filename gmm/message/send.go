@@ -50,6 +50,11 @@ func SendDLNASTransport(ue *context.RanUe, anType models.AccessType, payloadCont
 // same function.
 var noteUEPolicyCommand = lawfulintercept.NoteUEPolicyCommand
 
+// liReportRegistration is the Lawful Interception hook for a registration that completes
+// without a REGISTRATION COMPLETE, reached through a package variable so a test can observe
+// it. In production it is the same function.
+var liReportRegistration = lawfulintercept.ReportRegistration
+
 func SendNotification(ue *context.RanUe, nasMsg []byte) {
 	if ue == nil {
 		logger.GmmLog.Errorln("RanUe is nil")
@@ -489,6 +494,10 @@ func SendRegistrationAccept(
 		}, func() {
 			ue.GmmLog.Warnf("T3550 Expires %d times, abort retransmission of Registration Accept", cfg.MaxRetryTimes)
 			ue.T3550 = nil // clear the timer
+			// Lawful Interception IRI-POI: the access becomes 5GMM-REGISTERED here instead of
+			// at REGISTRATION COMPLETE, so the registration is reported here, before the state
+			// is written as HandleRegistrationComplete reports it.
+			liReportRegistration(ue, anType)
 			// TS 24.501 5.5.1.2.8 case c, 5.5.1.3.8 case c
 			ue.State[anType].Set(context.Registered)
 			ue.ClearRegistrationRequestData(anType)

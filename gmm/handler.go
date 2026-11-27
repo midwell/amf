@@ -2784,7 +2784,7 @@ func HandleRegistrationComplete(ctx ctxt.Context, ue *context.AmfUe, accessType 
 	// Lawful Interception IRI-POI: emit an AMFRegistration xIRI if this UE is a
 	// tasked target, for every registration type. REGISTRATION COMPLETE is where the
 	// access becomes 5GMM-REGISTERED after the accept was sent, which is the trigger
-	// of TS 33.128 clause 6.2.2.2.2. No-op
+	// of TS 33.128 clause 6.2.2.2.2; T3550 running out reports in its place. No-op
 	// (and silent) unless LI is configured.
 	reportRegistration(ue, accessType)
 
