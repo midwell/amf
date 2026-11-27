@@ -161,3 +161,57 @@ func TestARegistrationRejectIsReportedOnlyForAnAuthenticatedUE(t *testing.T) {
 		})
 	}
 }
+
+// TestARejectCarriesOnlyTheGUTIItUsed: table 6.2.2.2.6-1's gUTI is the "5G-GUTI used in the
+// procedure, if available". A UE registering by SUCI used none, so the GUTI the AMF allocated
+// for it, which a reject never carries to the UE, is left out; a UE registering by 5G-GUTI used
+// the one it presented.
+func TestARejectCarriesOnlyTheGUTIItUsed(t *testing.T) {
+	const gutiMember = 8
+	// SUCI: IMSI format, PLMN 262/01, routing indicator 0123, scheme 1, key 0x1B, output.
+	suci := []byte{0x01, 0x62, 0xf2, 0x10, 0x10, 0x32, 0x01, 0x1B, 0xDE, 0xAD, 0xBE, 0xEF}
+	// 5G-GUTI: PLMN 262/01, AMF identifier 010203, 5G-TMSI 0x0badf00d.
+	guti := []byte{0xf2, 0x62, 0xf2, 0x10, 0x01, 0x02, 0x03, 0x0b, 0xad, 0xf0, 0x0d}
+	for _, c := range []struct {
+		name     string
+		identity []byte
+		wantTMSI int64
+	}{
+		{"by SUCI", suci, -1},
+		{"by 5G-GUTI", guti, 0x0badf00d},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			snd := &captureSender{}
+			activateIRI(t, snd, testTargetSUPI)
+
+			ue := targetUE() // holds testGUTI, which this registration did not use
+			ue.SecurityContextAvailable = true
+			ue.NgKsi = models.NgKsi{Ksi: 1}
+			ue.RegistrationRequest = nasMessage.NewRegistrationRequest(0)
+			ue.RegistrationRequest.MobileIdentity5GS.SetLen(uint16(len(c.identity)))
+			ue.RegistrationRequest.MobileIdentity5GS.Buffer = c.identity
+
+			ReportRegistrationReject(ue, nasMessage.Cause5GMMProtocolErrorUnspecified)
+
+			records := decodeRecords(t, snd)
+			if len(records) != 1 {
+				t.Fatalf("delivered %d records, want 1", len(records))
+			}
+			g, present := records[0].members[gutiMember]
+			if c.wantTMSI < 0 {
+				if present {
+					t.Errorf("the reject carries a 5G-GUTI the registration did not use: % x", g.Bytes)
+				}
+				return
+			}
+			if !present {
+				t.Fatal("the reject carries no 5G-GUTI, though the registration used one")
+			}
+			// FiveGGUTI's last member is fiveGTMSI [6].
+			members := elements(t, "gUTI", g.Bytes)
+			if got := integer(t, members[len(members)-1]); got != c.wantTMSI {
+				t.Errorf("5G-TMSI = %#x, want the presented %#x", got, c.wantTMSI)
+			}
+		})
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	amfctx "github.com/omec-project/amf/context"
+	"github.com/omec-project/amf/nasconv"
 	"github.com/omec-project/nas/v2"
 	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
@@ -932,7 +933,25 @@ func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, x2x3.DirectionFromTarget, amfUnsuccessfulRegistration(id, cause))
+	sub.reportEvent(id, x2x3.DirectionFromTarget,
+		amfUnsuccessfulRegistration(id, cause, gutiPresented(ue.RegistrationRequest)))
+}
+
+// gutiPresented is the 5G-GUTI the UE named as its 5GS mobile identity in req, composed as
+// AllocateGutiToUe composes one, or "" when it named another identity. It is the 5G-GUTI a
+// rejected registration used: a GUTI the AMF allocated in the procedure never reached the UE.
+func gutiPresented(req *nasMessage.RegistrationRequest) string {
+	if req == nil {
+		return ""
+	}
+	buf := req.GetMobileIdentity5GSContents()
+	// TS 24.501 figure 9.11.3.4.1: type of identity in bits 1 to 3 of the first octet, and
+	// eleven octets in all.
+	if len(buf) != 11 || buf[0]&0x07 != nasMessage.MobileIdentity5GSType5gGuti {
+		return ""
+	}
+	_, guti := nasconv.GutiToString(buf)
+	return guti
 }
 
 // ReportIdentifierAssociation emits an AMFIdentifierAssociation xIRI for ue if
@@ -1521,17 +1540,23 @@ func amfDeregistration(id amfctx.UeIdentity, dir iri.AMFDirection, access iri.Ac
 }
 
 // amfUnsuccessfulRegistration maps a rejected registration to a TS 33.128
-// AMFUnsuccessfulProcedure record with a 5GMM failure cause.
-func amfUnsuccessfulRegistration(id amfctx.UeIdentity, cause uint8) iri.AMFUnsuccessfulProcedure {
-	return iri.AMFUnsuccessfulProcedure{
+// AMFUnsuccessfulProcedure record with a 5GMM failure cause. guti is the 5G-GUTI the
+// registration used (see gutiPresented), and the record carries none when it used none:
+// table 6.2.2.2.6-1's gUTI is the "5G-GUTI used in the procedure, if available".
+func amfUnsuccessfulRegistration(id amfctx.UeIdentity, cause uint8, guti string) iri.AMFUnsuccessfulProcedure {
+	rec := iri.AMFUnsuccessfulProcedure{
 		SUCI:                suciOf(id),
 		FailedProcedureType: iri.FailedRegistration,
 		FailureCause:        iri.FiveGMMCause(cause),
 		SUPI:                supiChoice(id),
 		PEI:                 peiChoice(id),
 		GPSI:                gpsiChoice(id),
-		GUTI:                fiveGGUTI(id),
 	}
+	if mcc, mnc, amfID, tmsi, ok := splitGUTI(guti); ok {
+		rec.GUTI = iri.FiveGGUTI{MCC: iri.MCC(mcc), MNC: iri.MNC(mnc), FiveGTMSI: iri.FiveGTMSI(tmsi)}
+		setAMFIdentifier(&rec.GUTI, amfID)
+	}
+	return rec
 }
 
 // amfStartOfInterception maps an already-registered UE identity snapshot to a TS 33.128

@@ -173,7 +173,7 @@ func TestDeregistrationMapping(t *testing.T) {
 }
 
 func TestUnsuccessfulRegistrationMapping(t *testing.T) {
-	rec := amfUnsuccessfulRegistration(targetIdentity(), nasMessage.Cause5GMM5GSServicesNotAllowed)
+	rec := amfUnsuccessfulRegistration(targetIdentity(), nasMessage.Cause5GMM5GSServicesNotAllowed, testGUTI)
 	if rec.FailedProcedureType != iri.FailedRegistration {
 		t.Errorf("failedProcedureType = %d, want FailedRegistration", rec.FailedProcedureType)
 	}
@@ -354,7 +354,7 @@ func TestEncodeAllEvents(t *testing.T) {
 		"registration":            amfRegistration(id, iri.RegResult3GPPAccess),
 		"locationUpdate":          amfLocationUpdate(id),
 		"deregistration":          amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP, nil),
-		"unsuccessful":            amfUnsuccessfulRegistration(id, nasMessage.Cause5GMM5GSServicesNotAllowed),
+		"unsuccessful":            amfUnsuccessfulRegistration(id, nasMessage.Cause5GMM5GSServicesNotAllowed, testGUTI),
 		"startOfInterception":     amfStartOfInterception(id, iri.RegResult3GPPAccess),
 		"identifierAssociation":   amfIdentifierAssociation(id),
 		"identifierDeassociation": amfIdentifierDeassociation(id),

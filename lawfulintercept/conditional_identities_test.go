@@ -44,7 +44,7 @@ func TestEachAMFRecordCarriesTheSUCIItHolds(t *testing.T) {
 		{"AMFRegistration", amfRegistration(id, iri.RegResult3GPPAccess).SUCI},
 		{"AMFDeregistration", amfDeregistration(id, iri.DirUEInitiated, iri.AccessThreeGPP, id.SuciRaw).SUCI},
 		{"AMFLocationUpdate", amfLocationUpdate(id).SUCI},
-		{"AMFUnsuccessfulProcedure", amfUnsuccessfulRegistration(id, 0x0B).SUCI},
+		{"AMFUnsuccessfulProcedure", amfUnsuccessfulRegistration(id, 0x0B, "").SUCI},
 		{"AMFStartOfInterceptionWithRegisteredUE", amfStartOfInterception(id, iri.RegResult3GPPAccess).SUCI},
 		{"AMFIdentifierAssociation", amfIdentifierAssociation(id).SUCI},
 		{"AMFIdentifierDeassociation", amfIdentifierDeassociation(id).SUCI},
