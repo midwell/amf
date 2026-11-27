@@ -3159,12 +3159,10 @@ func deregisteringEveryAccess(ue *context.AmfUe, bothAccesses bool, arrivedOn mo
 	}
 
 	// Otherwise this deregistration covers the access it arrived on, and the binding
-	// survives if the UE is still registered anywhere else.
-	for access, st := range ue.State {
-		if access == arrivedOn || st == nil {
-			continue
-		}
-		if st.Is(context.Registered) {
+	// survives if the UE is still registered anywhere else, a registration update under way
+	// there included.
+	for access := range ue.State {
+		if access != arrivedOn && lawfulintercept.RegisteredOn(ue, access) {
 			return false
 		}
 	}

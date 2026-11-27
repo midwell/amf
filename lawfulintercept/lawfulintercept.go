@@ -1885,6 +1885,10 @@ func registeredAccesses(ue *amfctx.AmfUe) []iri.AMFRegistrationResult {
 	return accesses
 }
 
+// RegisteredOn reports whether ue is registered on access, as the records of this package count
+// it; see registeredOn.
+func RegisteredOn(ue *amfctx.AmfUe, access models.AccessType) bool { return registeredOn(ue, access) }
+
 // registeredOn reports whether ue is registered on access: in the Registered state, or in a
 // registration procedure that began from it. A UE updating its registration stays
 // 5GMM-REGISTERED while the procedure runs, although the state machine has left Registered.

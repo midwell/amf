@@ -22,6 +22,14 @@ func dualRegisteredUE(nonThreeGPP fsm.StateType) *context.AmfUe {
 	}}
 }
 
+// updatingUE is a UE registered over 3GPP access and in a registration procedure over non-3GPP
+// access, begun from Registered when fromRegistered.
+func updatingUE(fromRegistered bool) *context.AmfUe {
+	ue := dualRegisteredUE(context.ContextSetup)
+	ue.SetRegisteredAtProcedureStart(models.ACCESSTYPE_NON_3_GPP_ACCESS, fromRegistered)
+	return ue
+}
+
 // TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased: the AMF holds one SUPI↔5G-GUTI
 // binding across every access a UE is registered on, so a dual-registered UE deregistering one
 // access keeps it. A ReportIdentifierDeassociation fired unconditionally on either
@@ -53,6 +61,18 @@ func TestTheIdentifierBindingIsReleasedOnlyWhenItIsReleased(t *testing.T) {
 		{
 			name:      "the last access a UE holds releases it",
 			ue:        dualRegisteredUE(context.Deregistered),
+			arrivedOn: models.ACCESSTYPE__3_GPP_ACCESS,
+			want:      true,
+		},
+		{
+			name:      "the other access in a registration update from Registered keeps it",
+			ue:        updatingUE(true),
+			arrivedOn: models.ACCESSTYPE__3_GPP_ACCESS,
+			want:      false,
+		},
+		{
+			name:      "the other access registering from Deregistered does not keep it",
+			ue:        updatingUE(false),
 			arrivedOn: models.ACCESSTYPE__3_GPP_ACCESS,
 			want:      true,
 		},
