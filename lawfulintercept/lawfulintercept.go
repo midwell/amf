@@ -637,6 +637,21 @@ func registrationResultOf(ue *amfctx.AmfUe, completedOn models.AccessType) iri.A
 	return result
 }
 
+// ReportLocationUpdate emits an AMFLocationUpdate xIRI when NG-RAN tells the AMF the target has
+// moved: the PATH SWITCH REQUEST of an Xn handover, the HANDOVER NOTIFY of an N2 handover, and
+// the PDU SESSION RESOURCE MODIFY INDICATION NG-RAN sends when it activates or releases dual
+// connectivity (TS 33.128 clause 6.2.2.2.4). Every task scope receives it (clause 6.2.2.2.1).
+// NG-RAN initiates these procedures, so the record is "sent to the target". No-op and silent
+// when LI is inactive or ue is not a target.
+func ReportLocationUpdate(ue *amfctx.AmfUe) {
+	sub := active.Load()
+	if sub == nil || ue == nil {
+		return
+	}
+	id := ue.IdentitySnapshot()
+	sub.reportEvent(id, x2x3.DirectionToTarget, amfLocationUpdate(id))
+}
+
 // ReportServiceAccept emits an AMFUEServiceAccept xIRI when the AMF has sent a
 // SERVICE ACCEPT to the target. Call it only where an accept was actually sent:
 // a record for an accept the AMF failed to build is a false report.

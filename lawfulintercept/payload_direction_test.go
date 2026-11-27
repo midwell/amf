@@ -45,6 +45,7 @@ func TestPayloadDirectionFollowsTheInitiator(t *testing.T) {
 			NoteUEPolicyCommand(ue, uePolicyCommandOf(7, 32))
 			ReportUEPolicyComplete(ue, uePolicyAnswer(7, uePolicyComplete))
 		}, x2x3.DirectionToTarget},
+		{"location update", func(*subsystem) { ReportLocationUpdate(targetUE()) }, x2x3.DirectionToTarget},
 		{"identifier association", func(*subsystem) { ReportIdentifierAssociation(targetUE()) }, x2x3.DirectionNotApplicable},
 		{"identifier deassociation", func(*subsystem) { ReportIdentifierDeassociation(targetUE()) }, x2x3.DirectionNotApplicable},
 		{"start of interception", func(s *subsystem) {

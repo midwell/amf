@@ -2472,6 +2472,10 @@ func HandlePDUSessionResourceModifyIndication(ctx ctxt.Context, ran *context.Amf
 		ran.Log.Errorln("AmfUe is nil")
 		return
 	}
+	// Lawful Interception IRI-POI: reported for every indication. NG-RAN sends one when dual
+	// connectivity is activated or released (TS 37.340 clause 10), and what changed is in the
+	// transfers, which the AMF passes to the SMF unread.
+	reportLocationUpdate(amfUe)
 
 	pduSessionResourceModifyListModCfm := ngapType.PDUSessionResourceModifyListModCfm{}
 	pduSessionResourceFailedToModifyListModCfm := ngapType.PDUSessionResourceFailedToModifyListModCfm{}
@@ -3256,6 +3260,8 @@ func HandleHandoverNotify(ctx ctxt.Context, ran *context.AmfRan, message *ngapTy
 		ran.Log.Errorln("AmfUe is nil")
 		return
 	}
+	// Lawful Interception IRI-POI: the UE is now on the target NG-RAN node.
+	reportLocationUpdate(amfUe)
 	sourceUe := targetUe.SourceUe
 	if sourceUe == nil {
 		// TODO: Send to S-AMF
@@ -3413,6 +3419,8 @@ func HandlePathSwitchRequest(ctx ctxt.Context, ran *context.AmfRan, message *nga
 	ranUe.SetRanUeNgapId(rANUENGAPID.Value)
 
 	ranUe.UpdateLocation(userLocationInformation)
+	// Lawful Interception IRI-POI: the UE is now on the target NG-RAN node.
+	reportLocationUpdate(amfUe)
 
 	var pduSessionResourceSwitchedList ngapType.PDUSessionResourceSwitchedList
 	var pduSessionResourceReleasedListPSAck ngapType.PDUSessionResourceReleasedListPSAck
@@ -3712,6 +3720,11 @@ func HandleHandoverRequestAcknowledge(ctx ctxt.Context, ran *context.AmfRan, mes
 		sourceUe.ClearHandoverState()
 	}
 }
+
+// reportLocationUpdate is the Lawful Interception hook for a location NG-RAN reports, reached
+// through a package variable so a test can observe which handlers raise it. Production
+// behaviour is the same function.
+var reportLocationUpdate = lawfulintercept.ReportLocationUpdate
 
 // reportHandover emits the two handover xIRIs TS 33.128 mandates, both of which
 // belong at this point: AMFRANHandoverRequest triggers on the AMF *receiving* the

@@ -451,6 +451,30 @@ func TestMobilityRegistrationIsAnAMFRegistration(t *testing.T) {
 	}
 }
 
+// TestALocationUpdateReachesEveryScope: an IdentifierAssociation-scoped task receives
+// AMFLocationUpdate (TS 33.128 clause 6.2.2.2.1), so the location NG-RAN reports reaches it.
+func TestALocationUpdateReachesEveryScope(t *testing.T) {
+	snd := &captureSender{}
+	st := store.New()
+	st.Activate(types.InterceptTask{
+		XID:         testSubstitutionXID,
+		Targets:     []types.TargetIdentifier{{Type: types.TargetSUPI, Value: testTargetSUPI}},
+		Products:    []types.ProductType{types.ProductIRI},
+		RecordScope: types.RecordScopeIdentifierAssociation,
+	})
+	active.Store(&subsystem{
+		ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
+		store: st, senderFor: func(string) sender { return snd }, mdf2: testAgencyAddr,
+	})
+	t.Cleanup(func() { active.Store(nil) })
+
+	ReportLocationUpdate(targetUE())
+
+	if records := decodeRecords(t, snd); len(records) != 1 || records[0].event != 3 {
+		t.Fatalf("the IdentifierAssociation task received %+v, want one AMFLocationUpdate [3]", records)
+	}
+}
+
 // addressCapture records what was delivered and, crucially, where. The subject of these
 // tests is the destination, and a capture that forgets the address cannot see a misdelivery:
 // with one configured endpoint, delivering to the task's destination and delivering to
