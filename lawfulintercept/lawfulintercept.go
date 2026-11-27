@@ -828,8 +828,12 @@ func handoverCause(group HandoverCauseGroup, value int64) any {
 // ReportDeregistration emits an AMFDeregistration xIRI for ue if it matches an
 // active task. networkInitiated distinguishes a network-ordered deregistration
 // from a UE-originating one; access is the access type being deregistered.
+// identity is the 5GS mobile identity a UE-originating DEREGISTRATION REQUEST carried, and nil
+// for a network-initiated deregistration: the record's sUCI is the "SUCI used in the
+// deregistration" (TS 33.128 table 6.2.2.2.3-1), so it is present only when that identity is a
+// SUCI, not whenever the UE registered with one.
 // No-op and silent when LI is inactive or ue is not a target.
-func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.AccessType) {
+func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.AccessType, identity []byte) {
 	sub := active.Load()
 	if sub == nil || ue == nil {
 		return
@@ -839,7 +843,7 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.Ac
 		dir, payloadDir = iri.DirNetworkInitiated, x2x3.DirectionToTarget
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, payloadDir, amfDeregistration(id, dir, access))
+	sub.reportEvent(id, payloadDir, amfDeregistration(id, dir, access, identity))
 }
 
 // ReportAbortedRegistration reports a registration procedure that ends with access
@@ -866,7 +870,7 @@ func ReportAbortedRegistration(ue *amfctx.AmfUe, access models.AccessType, remov
 	if removed && otherRegistered {
 		scope = iri.AccessBoth
 	}
-	ReportDeregistration(ue, true, scope)
+	ReportDeregistration(ue, true, scope, nil)
 	if removed || !otherRegistered {
 		ReportIdentifierDeassociation(ue)
 	}
@@ -1502,10 +1506,11 @@ func amfLocationUpdate(id amfctx.UeIdentity) iri.AMFLocationUpdate {
 	}
 }
 
-// amfDeregistration maps a UE identity snapshot to a TS 33.128 AMFDeregistration record.
-func amfDeregistration(id amfctx.UeIdentity, dir iri.AMFDirection, access iri.AccessType) iri.AMFDeregistration {
+// amfDeregistration maps a UE identity snapshot to a TS 33.128 AMFDeregistration record, with
+// the sUCI taken from identity, the mobile identity the deregistration used.
+func amfDeregistration(id amfctx.UeIdentity, dir iri.AMFDirection, access iri.AccessType, identity []byte) iri.AMFDeregistration {
 	return iri.AMFDeregistration{
-		SUCI:                    suciOf(id),
+		SUCI:                    suciFrom(identity),
 		DeregistrationDirection: dir,
 		AccessType:              access,
 		SUPI:                    supiChoice(id),
@@ -1548,8 +1553,12 @@ func amfStartOfInterception(id amfctx.UeIdentity, result iri.AMFRegistrationResu
 // value when the UE did not present a SUCI at all — which is every registration by
 // 5G-GUTI, and so most of them. An all-zero SUCI encodes as absent, which is what
 // "conditional on availability" asks for.
-func suciOf(id amfctx.UeIdentity) iri.SUCI {
-	suci, ok := suciFromNAS(id.SuciRaw)
+func suciOf(id amfctx.UeIdentity) iri.SUCI { return suciFrom(id.SuciRaw) }
+
+// suciFrom builds the sUCI record member from a 5GS mobile identity, or the zero value when it
+// is not a SUCI this element can render.
+func suciFrom(identity []byte) iri.SUCI {
+	suci, ok := suciFromNAS(identity)
 	if !ok {
 		return iri.SUCI{}
 	}

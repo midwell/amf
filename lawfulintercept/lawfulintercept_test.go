@@ -158,7 +158,7 @@ func TestRegistrationType(t *testing.T) {
 func TestDeregistrationMapping(t *testing.T) {
 	id := targetIdentity()
 
-	net := amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP)
+	net := amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP, nil)
 	if net.DeregistrationDirection != iri.DirNetworkInitiated || net.AccessType != iri.AccessThreeGPP {
 		t.Errorf("network dereg = dir %d access %d", net.DeregistrationDirection, net.AccessType)
 	}
@@ -166,7 +166,7 @@ func TestDeregistrationMapping(t *testing.T) {
 		t.Errorf("dereg SUPI = %#v", net.SUPI)
 	}
 
-	ue2 := amfDeregistration(id, iri.DirUEInitiated, iri.AccessNonThreeGPP)
+	ue2 := amfDeregistration(id, iri.DirUEInitiated, iri.AccessNonThreeGPP, nil)
 	if ue2.DeregistrationDirection != iri.DirUEInitiated || ue2.AccessType != iri.AccessNonThreeGPP {
 		t.Errorf("ue dereg = dir %d access %d", ue2.DeregistrationDirection, ue2.AccessType)
 	}
@@ -353,7 +353,7 @@ func TestEncodeAllEvents(t *testing.T) {
 	events := map[string]any{
 		"registration":            amfRegistration(id, iri.RegResult3GPPAccess),
 		"locationUpdate":          amfLocationUpdate(id),
-		"deregistration":          amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP),
+		"deregistration":          amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP, nil),
 		"unsuccessful":            amfUnsuccessfulRegistration(id, nasMessage.Cause5GMM5GSServicesNotAllowed),
 		"startOfInterception":     amfStartOfInterception(id, iri.RegResult3GPPAccess),
 		"identifierAssociation":   amfIdentifierAssociation(id),

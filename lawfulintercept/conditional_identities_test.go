@@ -42,7 +42,7 @@ func TestEachAMFRecordCarriesTheSUCIItHolds(t *testing.T) {
 		suci   iri.SUCI
 	}{
 		{"AMFRegistration", amfRegistration(id, iri.RegResult3GPPAccess).SUCI},
-		{"AMFDeregistration", amfDeregistration(id, iri.DirNetworkInitiated, iri.AccessThreeGPP).SUCI},
+		{"AMFDeregistration", amfDeregistration(id, iri.DirUEInitiated, iri.AccessThreeGPP, id.SuciRaw).SUCI},
 		{"AMFLocationUpdate", amfLocationUpdate(id).SUCI},
 		{"AMFUnsuccessfulProcedure", amfUnsuccessfulRegistration(id, 0x0B).SUCI},
 		{"AMFStartOfInterceptionWithRegisteredUE", amfStartOfInterception(id, iri.RegResult3GPPAccess).SUCI},
@@ -63,6 +63,19 @@ func TestEachAMFRecordCarriesTheSUCIItHolds(t *testing.T) {
 					"without it (%v)", tc.suci.RoutingIndicatorLength)
 			}
 		})
+	}
+}
+
+// TestADeregistrationCarriesOnlyTheSUCIItUsed: table 6.2.2.2.3-1's sUCI is the "SUCI used in the
+// deregistration". A UE that registered with a SUCI and deregisters by 5G-GUTI, or is
+// deregistered by the network, used none, so the record carries none.
+func TestADeregistrationCarriesOnlyTheSUCIItUsed(t *testing.T) {
+	id := fullIdentity()
+	guti := []byte{0xf2, 0x62, 0xf2, 0x10, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x2a}
+	for name, identity := range map[string][]byte{"by 5G-GUTI": guti, "network-initiated": nil} {
+		if got := amfDeregistration(id, iri.DirUEInitiated, iri.AccessThreeGPP, identity).SUCI; got.MCC != "" {
+			t.Errorf("a deregistration %s carries the registration's SUCI %+v", name, got)
+		}
 	}
 }
 

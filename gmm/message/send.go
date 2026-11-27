@@ -390,7 +390,7 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 							amfUe.State[models.ACCESSTYPE__3_GPP_ACCESS].Current())
 						return
 					}
-					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(accessType))
+					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(accessType), nil)
 					amfUe.State[models.ACCESSTYPE__3_GPP_ACCESS].Set(context.Deregistered)
 					lawfulintercept.ReportIdentifierDeassociation(amfUe)
 					amfUe.PublishUeCtxtInfoOnRemoval(models.ACCESSTYPE__3_GPP_ACCESS)
@@ -404,7 +404,7 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 							amfUe.State[models.ACCESSTYPE_NON_3_GPP_ACCESS].Current())
 						return
 					}
-					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(accessType))
+					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(accessType), nil)
 					amfUe.State[models.ACCESSTYPE_NON_3_GPP_ACCESS].Set(context.Deregistered)
 					lawfulintercept.ReportIdentifierDeassociation(amfUe)
 					amfUe.PublishUeCtxtInfoOnRemoval(models.ACCESSTYPE_NON_3_GPP_ACCESS)
@@ -420,7 +420,7 @@ func SendDeregistrationRequest(ue *context.RanUe, accessType uint8, reRegistrati
 						amfUe.GmmLog.Infoln("T3522 abort for both access types is stale; skipping removal")
 						return
 					}
-					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(nasMessage.AccessTypeBoth))
+					lawfulintercept.ReportDeregistration(amfUe, true, lawfulintercept.DeregistrationScope(nasMessage.AccessTypeBoth), nil)
 					amfUe.State[models.ACCESSTYPE__3_GPP_ACCESS].Set(context.Deregistered)
 					amfUe.State[models.ACCESSTYPE_NON_3_GPP_ACCESS].Set(context.Deregistered)
 					lawfulintercept.ReportIdentifierDeassociation(amfUe)

@@ -631,7 +631,7 @@ func DeregisteredInitiated(ctx ctxt.Context, state *fsm.State, event fsm.EventTy
 			// access type that marks the network's.
 			releasesBinding := false
 			if amfUe.DeregistrationTargetAccessType != 0 {
-				reportDeregistration(amfUe, true, lawfulintercept.AccessScope(accessType))
+				reportDeregistration(amfUe, true, lawfulintercept.AccessScope(accessType), nil)
 				releasesBinding = deregisteringEveryAccess(amfUe, false, accessType)
 				amfUe.DeregistrationTargetAccessType = 0
 			}

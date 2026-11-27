@@ -29,10 +29,10 @@ func TestPayloadDirectionFollowsTheInitiator(t *testing.T) {
 		{"registration", func(*subsystem) { ReportRegistration(targetUE(), models.ACCESSTYPE__3_GPP_ACCESS) }, x2x3.DirectionFromTarget},
 		{"service accept", func(*subsystem) { ReportServiceAccept(targetUE(), nasMessage.ServiceTypeData) }, x2x3.DirectionFromTarget},
 		{"UE-initiated deregistration", func(*subsystem) {
-			ReportDeregistration(targetUE(), false, iri.AccessThreeGPP)
+			ReportDeregistration(targetUE(), false, iri.AccessThreeGPP, nil)
 		}, x2x3.DirectionFromTarget},
 		{"network-initiated deregistration", func(*subsystem) {
-			ReportDeregistration(targetUE(), true, iri.AccessThreeGPP)
+			ReportDeregistration(targetUE(), true, iri.AccessThreeGPP, nil)
 		}, x2x3.DirectionToTarget},
 		{"registration reject", func(*subsystem) {
 			ue := targetUE()

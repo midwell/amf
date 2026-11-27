@@ -36,7 +36,7 @@ func TestAnUnexpectedMessageEndsOnlyTheNetworksDeregistrationOnce(t *testing.T) 
 		t.Run(c.name, func(t *testing.T) {
 			var dereg, deasso int
 			restoreDereg, restoreDeasso := reportDeregistration, reportIdentifierDeassociation
-			reportDeregistration = func(*context.AmfUe, bool, iri.AccessType) { dereg++ }
+			reportDeregistration = func(*context.AmfUe, bool, iri.AccessType, []byte) { dereg++ }
 			reportIdentifierDeassociation = func(*context.AmfUe) { deasso++ }
 			t.Cleanup(func() {
 				reportDeregistration, reportIdentifierDeassociation = restoreDereg, restoreDeasso

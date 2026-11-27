@@ -64,7 +64,7 @@ func TestAnUnknownPLMNLeavesTheOptionalGUTIOut(t *testing.T) {
 	if g := fiveGGUTI(id); g != (iri.FiveGGUTI{}) {
 		t.Errorf("GUTI with no PLMN = %+v, want the zero GUTI, which an optional member omits", g)
 	}
-	if _, err := iri.EncodeXIRI(amfDeregistration(id, iri.DirUEInitiated, iri.AccessThreeGPP)); err != nil {
+	if _, err := iri.EncodeXIRI(amfDeregistration(id, iri.DirUEInitiated, iri.AccessThreeGPP, nil)); err != nil {
 		t.Errorf("a deregistration was refused over a GUTI it could omit: %v", err)
 	}
 }

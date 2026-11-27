@@ -2034,7 +2034,7 @@ func NetworkInitiatedDeregistrationProcedure(ctx ctxt.Context, ue *context.AmfUe
 		// One access here, and it is the one this procedure was called for — a
 		// network-initiated deregistration names its access rather than reading one
 		// out of a request.
-		lawfulintercept.ReportDeregistration(ue, true, lawfulintercept.AccessScope(accessType))
+		lawfulintercept.ReportDeregistration(ue, true, lawfulintercept.AccessScope(accessType), nil)
 
 		// The binding goes only if the UE is left registered nowhere. Reported before
 		// SetDeregisteredState, so the state this reads is the one the record
@@ -2928,7 +2928,8 @@ func HandleDeregistrationRequest(ctx ctxt.Context, ue *context.AmfUe, anType mod
 		// message arrived on rather than inventing a scope.
 		deregScope = lawfulintercept.AccessScope(anType)
 	}
-	lawfulintercept.ReportDeregistration(ue, false, deregScope)
+	lawfulintercept.ReportDeregistration(ue, false, deregScope,
+		deregistrationRequest.GetMobileIdentity5GSContents())
 
 	// The identifier binding is released only when the UE is leaving altogether. A
 	// dual-registered UE deregistering one access keeps its SUPI↔5G-GUTI binding for
@@ -3084,7 +3085,7 @@ func HandleDeregistrationAccept(ctx ctxt.Context, ue *context.AmfUe, anType mode
 		deregScope = lawfulintercept.AccessScope(anType)
 	}
 
-	lawfulintercept.ReportDeregistration(ue, true, deregScope)
+	lawfulintercept.ReportDeregistration(ue, true, deregScope, nil)
 
 	releasesBinding := deregisteringEveryAccess(ue,
 		ue.DeregistrationTargetAccessType == nasMessage.AccessTypeBoth, anType)
