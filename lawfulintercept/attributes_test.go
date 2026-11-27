@@ -309,8 +309,8 @@ func TestTheTimestampIsTheEventsNotThePDUs(t *testing.T) {
 
 	happened := time.Date(2026, 8, 14, 6, 28, 15, 322_190_000, time.UTC)
 	id := targetUE().IdentitySnapshot()
-	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id, iri.RegResult3GPPAccess))
-	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, amfRegistration(id, iri.RegResult3GPPAccess))
+	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, x2x3.DirectionFromTarget, amfRegistration(id, iri.RegResult3GPPAccess))
+	sub.deliverIRI(sub.matchingTasks(id), targetsOf(id), happened, x2x3.DirectionFromTarget, amfRegistration(id, iri.RegResult3GPPAccess))
 
 	if len(snd.pdus) != 2 {
 		t.Fatalf("delivered %d records, want 2", len(snd.pdus))

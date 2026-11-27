@@ -604,7 +604,7 @@ func ReportRegistration(ue *amfctx.AmfUe, access models.AccessType) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, registrationEvent(id, registrationResultOf(ue, access)))
+	sub.reportEvent(id, x2x3.DirectionFromTarget, registrationEvent(id, registrationResultOf(ue, access)))
 }
 
 // registrationEvent picks the xIRI for a completed registration: a mobility
@@ -648,7 +648,9 @@ func ReportServiceAccept(ue *amfctx.AmfUe) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, amfServiceAccept(id))
+	// The service request procedure is UE-initiated (TS 24.501 clause 5.6.1), paging being
+	// only what may prompt it.
+	sub.reportEvent(id, x2x3.DirectionFromTarget, amfServiceAccept(id))
 }
 
 // Handover describes one handover as the AMF sees it when the HANDOVER REQUEST
@@ -710,7 +712,8 @@ func ReportHandoverCommand(h Handover) {
 		return
 	}
 	id := h.UE.IdentitySnapshot()
-	sub.reportEvent(id, iri.AMFRANHandoverCommand{
+	// A handover is initiated by the network: the source NG-RAN node decides it.
+	sub.reportEvent(id, x2x3.DirectionToTarget, iri.AMFRANHandoverCommand{
 		UserIdentifiers:         userIdentifiers(id),
 		AMFUENGAPID:             iri.AMFUENGAPID(h.AMFUENGAPID),
 		RANUENGAPID:             iri.RANUENGAPID(h.RANUENGAPID),
@@ -765,7 +768,7 @@ func ReportHandoverRequest(h Handover) {
 	}
 
 	id := h.UE.IdentitySnapshot()
-	sub.reportEvent(id, iri.AMFRANHandoverRequest{
+	sub.reportEvent(id, x2x3.DirectionToTarget, iri.AMFRANHandoverRequest{
 		UserIdentifiers:               userIdentifiers(id),
 		AMFUENGAPID:                   iri.AMFUENGAPID(h.AMFUENGAPID),
 		RANUENGAPID:                   iri.RANUENGAPID(h.RANUENGAPID),
@@ -806,12 +809,12 @@ func ReportDeregistration(ue *amfctx.AmfUe, networkInitiated bool, access iri.Ac
 	if sub == nil || ue == nil {
 		return
 	}
-	dir := iri.DirUEInitiated
+	dir, payloadDir := iri.DirUEInitiated, x2x3.DirectionFromTarget
 	if networkInitiated {
-		dir = iri.DirNetworkInitiated
+		dir, payloadDir = iri.DirNetworkInitiated, x2x3.DirectionToTarget
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, amfDeregistration(id, dir, access))
+	sub.reportEvent(id, payloadDir, amfDeregistration(id, dir, access))
 }
 
 // DeregistrationScope maps the access a UE-originating deregistration asked for onto the
@@ -870,7 +873,7 @@ func ReportRegistrationReject(ue *amfctx.AmfUe, cause uint8) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, amfUnsuccessfulRegistration(id, cause))
+	sub.reportEvent(id, x2x3.DirectionFromTarget, amfUnsuccessfulRegistration(id, cause))
 }
 
 // ReportIdentifierAssociation emits an AMFIdentifierAssociation xIRI for ue if
@@ -883,7 +886,7 @@ func ReportIdentifierAssociation(ue *amfctx.AmfUe) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, amfIdentifierAssociation(id))
+	sub.reportEvent(id, x2x3.DirectionNotApplicable, amfIdentifierAssociation(id))
 }
 
 // ReportIdentifierDeassociation emits an AMFIdentifierDeassociation xIRI for ue
@@ -898,7 +901,7 @@ func ReportIdentifierDeassociation(ue *amfctx.AmfUe) {
 	// Registered on no access, so no UE policy procedure it had open will complete.
 	sub.policies.forget(ue)
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, amfIdentifierDeassociation(id))
+	sub.reportEvent(id, x2x3.DirectionNotApplicable, amfIdentifierDeassociation(id))
 }
 
 // applyTaskChange is the X1 lifecycle hook (x1.OnTaskChange): one event per
@@ -1122,7 +1125,7 @@ func (s *subsystem) scanRegisteredUEs(task types.InterceptTask, already *types.I
 		if !taskTargets(current, rec.id) {
 			continue
 		}
-		s.deliverIRI([]types.InterceptTask{current}, rec.ids, activated, rec.event)
+		s.deliverIRI([]types.InterceptTask{current}, rec.ids, activated, x2x3.DirectionNotApplicable, rec.event)
 	}
 }
 
@@ -1132,15 +1135,16 @@ func covered(task *types.InterceptTask, id amfctx.UeIdentity) bool {
 }
 
 // reportEvent delivers event to every task the subject's identity matches, as the
-// identity and the clock stood when the event was observed.
+// identity and the clock stood when the event was observed. dir is the PDU's Payload
+// Direction (see deliverIRI).
 //
 // The instant is taken here, at the hook, because the X2 Timestamp attribute is the
 // time the *event* occurred (TS 33.128 table 5.3.2-2) rather than the time a PDU was
 // built. These hooks run synchronously with the procedure they observe, so this is as
 // close to the event as this element can get; sampling the clock further down would
 // time the record instead, and a mediation function cannot tell the two apart.
-func (s *subsystem) reportEvent(id amfctx.UeIdentity, event any) {
-	s.deliverIRI(s.matchingTasks(id), targetsOf(id), time.Now(), event)
+func (s *subsystem) reportEvent(id amfctx.UeIdentity, dir x2x3.PayloadDirection, event any) {
+	s.deliverIRI(s.matchingTasks(id), targetsOf(id), time.Now(), dir, event)
 }
 
 // anyTaskReceives reports whether some task matching id is to receive a record of event's
@@ -1183,7 +1187,13 @@ func (s *subsystem) reportNotProduced(id amfctx.UeIdentity, event any, why strin
 // subjectIDs are the identities this AMF holds for the record's subject, which the
 // header reports split into the ones each task matched and the rest; at is when the
 // event happened.
-func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.TargetIdentifier, at time.Time, event any) {
+//
+// dir is the Payload Direction. TS 33.128 table 5.3.2-1 sets it, for an xIRI reporting a
+// network procedure, from the procedure's initiator; in TS 103 221-2 table 5.2.6-1 terms a
+// procedure the target UE initiated is 3 (sent from the target) and one the network
+// initiated is 2 (sent to the target). The start-of-interception and identifier
+// association and deassociation records are 5 (not applicable), as their clauses say.
+func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.TargetIdentifier, at time.Time, dir x2x3.PayloadDirection, event any) {
 	if len(tasks) == 0 {
 		return
 	}
@@ -1271,7 +1281,7 @@ func (s *subsystem) deliverIRI(tasks []types.InterceptTask, subjectIDs []types.T
 			_ = client.Send(&x2x3.PDU{
 				Type:          x2x3.PDUTypeX2,
 				PayloadFormat: x2x3.PayloadFormat3GPP33128,
-				Direction:     x2x3.DirectionNotApplicable,
+				Direction:     dir,
 				XID:           xid,
 				Attributes:    attrs,
 				Payload:       payload,

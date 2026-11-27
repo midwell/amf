@@ -10,6 +10,7 @@ import (
 
 	amfctx "github.com/omec-project/amf/context"
 	"github.com/omec-project/util/li/iri"
+	"github.com/omec-project/util/li/x2x3"
 )
 
 // The UE policy delivery service message types this package reads, TS 24.501 table D.6.1.1.
@@ -272,7 +273,9 @@ func ReportUEPolicyComplete(ue *amfctx.AmfUe, container []byte) {
 			return
 		}
 		id := ue.IdentitySnapshot()
-		sub.reportEvent(id, amfUEPolicyTransfer(id, command))
+		// The procedure is the network-requested UE policy management procedure (TS 24.501
+		// clause D.2.1), so its initiator is the network although the trigger is the UE's answer.
+		sub.reportEvent(id, x2x3.DirectionToTarget, amfUEPolicyTransfer(id, command))
 	case uePolicyCommandReject:
 		sub.policies.drop(ue, container[0])
 	}
