@@ -589,12 +589,14 @@ func droppedXIRIs(n int) string {
 	}
 }
 
-// ReportRegistration emits a registration xIRI for ue if it matches an active
-// interception task. A mobility registration update — the UE informing the
-// network it has moved while staying registered — is reported as an
-// AMFLocationUpdate; every other registration type is an AMFRegistration. It is
-// a no-op when LI is inactive or ue is not a target, and never logs anything
-// that would reveal interception.
+// ReportRegistration emits an AMFRegistration xIRI for ue if it matches an active
+// interception task. Every registration type is an AMFRegistration, mobility registration
+// updating included: TS 33.128 clause 6.2.2.2.4 reports the location a mobility
+// registration yields in that registration's xIRI rather than in a separate
+// AMFLocationUpdate. A task scoped to IdentifierAssociation receives no AMFRegistration
+// (clause 6.2.2.2.1) but does receive AMFLocationUpdate, so for a mobility registration
+// such a task gets an AMFLocationUpdate instead. It is a no-op when LI is inactive or ue
+// is not a target, and never logs anything that would reveal interception.
 //
 // access is the access the registration completes on. It is part of the record's
 // registrationResult, alongside any other access the UE is already registered over.
@@ -604,18 +606,18 @@ func ReportRegistration(ue *amfctx.AmfUe, access models.AccessType) {
 		return
 	}
 	id := ue.IdentitySnapshot()
-	sub.reportEvent(id, x2x3.DirectionFromTarget, registrationEvent(id, registrationResultOf(ue, access)))
-}
-
-// registrationEvent picks the xIRI for a completed registration: a mobility
-// registration update is an AMFLocationUpdate (the UE reporting movement while
-// staying registered); any other type is an AMFRegistration with result as its
-// registrationResult.
-func registrationEvent(id amfctx.UeIdentity, result iri.AMFRegistrationResult) any {
-	if id.RegistrationType5GS == nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
-		return amfLocationUpdate(id)
+	tasks, ids, at := sub.matchingTasks(id), targetsOf(id), time.Now()
+	sub.deliverIRI(tasks, ids, at, x2x3.DirectionFromTarget, amfRegistration(id, registrationResultOf(ue, access)))
+	if id.RegistrationType5GS != nasMessage.RegistrationType5GSMobilityRegistrationUpdating {
+		return
 	}
-	return amfRegistration(id, result)
+	var locationOnly []types.InterceptTask
+	for _, t := range tasks {
+		if !t.WantsGeneralRecords() {
+			locationOnly = append(locationOnly, t)
+		}
+	}
+	sub.deliverIRI(locationOnly, ids, at, x2x3.DirectionFromTarget, amfLocationUpdate(id))
 }
 
 // registrationResultOf is the 5GS registration result of TS 24.501 clause 9.11.3.6 for a
@@ -1433,8 +1435,7 @@ func amfRegistration(id amfctx.UeIdentity, result iri.AMFRegistrationResult) iri
 	}
 }
 
-// amfLocationUpdate maps a UE identity snapshot to a TS 33.128 AMFLocationUpdate record,
-// emitted when a mobility registration update tells the AMF the UE has moved.
+// amfLocationUpdate maps a UE identity snapshot to a TS 33.128 AMFLocationUpdate record.
 // The Location subtree is minimal (see li/iri.Location): it says the location is current and
 // carries no cell or tracking area. The record has no member for the registration area.
 func amfLocationUpdate(id amfctx.UeIdentity) iri.AMFLocationUpdate {

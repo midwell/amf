@@ -155,32 +155,6 @@ func TestRegistrationType(t *testing.T) {
 	}
 }
 
-// TestRegistrationEventDispatch checks that a mobility registration update maps
-// to an AMFLocationUpdate and every other registration type to AMFRegistration.
-func TestRegistrationEventDispatch(t *testing.T) {
-	id := targetIdentity()
-
-	id.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
-	if _, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFLocationUpdate); !ok {
-		t.Errorf("mobility update → %T, want AMFLocationUpdate", registrationEvent(id, iri.RegResult3GPPAccess))
-	}
-
-	for _, rt := range []uint8{
-		nasMessage.RegistrationType5GSInitialRegistration,
-		nasMessage.RegistrationType5GSPeriodicRegistrationUpdating,
-	} {
-		id.RegistrationType5GS = rt
-		reg, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFRegistration)
-		if !ok {
-			t.Errorf("registration type %d → %T, want AMFRegistration", rt, registrationEvent(id, iri.RegResult3GPPAccess))
-			continue
-		}
-		if rt == nasMessage.RegistrationType5GSPeriodicRegistrationUpdating && reg.RegistrationType != iri.RegTypePeriodic {
-			t.Errorf("periodic registration → regType %d, want %d", reg.RegistrationType, iri.RegTypePeriodic)
-		}
-	}
-}
-
 func TestDeregistrationMapping(t *testing.T) {
 	id := targetIdentity()
 
@@ -420,28 +394,60 @@ func TestFiveGGUTITakesTheTMSIFromTheGUTI(t *testing.T) {
 	}
 }
 
-// TestMobilityUpdateIsReportedOnce: a mobility registration update is reported as
-// an AMFLocationUpdate from the mobility handler. It also reaches
-// HandleRegistrationComplete — BuildRegistrationAccept carries the 5G-GUTI IE
-// whenever the UE has one, and TS 24.501 clause 5.5.1.3.4 then requires the UE to
-// send Registration Complete — so reporting from both would give the agency two
-// location records for one movement. This pins the dispatch that makes the
-// duplicate visible if the guard in HandleRegistrationComplete is ever removed.
-func TestMobilityUpdateIsReportedOnce(t *testing.T) {
-	id := amfctx.UeIdentity{
-		Supi:                testSUPI,
-		RegistrationType5GS: nasMessage.RegistrationType5GSMobilityRegistrationUpdating,
+// TestMobilityRegistrationIsAnAMFRegistration: TS 33.128 clause 6.2.2.2.2 reports every
+// successful registration, mobility registration updating included, as an AMFRegistration,
+// and clause 6.2.2.2.4 needs no separate AMFLocationUpdate when the location is part of
+// another xIRI. A task scoped to IdentifierAssociation receives no AMFRegistration
+// (clause 6.2.2.2.1), so it is the one task that receives an AMFLocationUpdate for the
+// movement, and nothing for any other registration type.
+func TestMobilityRegistrationIsAnAMFRegistration(t *testing.T) {
+	const (
+		xidAll = "aaaaaaaa-0000-0000-0000-000000000001"
+		xidIA  = "bbbbbbbb-0000-0000-0000-000000000002"
+		addrIA = "10.0.60.123:42070"
+	)
+	target := types.TargetIdentifier{Type: types.TargetSUPI, Value: testTargetSUPI}
+	st := store.New()
+	st.Activate(types.InterceptTask{
+		XID: xidAll, Targets: []types.TargetIdentifier{target},
+		Products: []types.ProductType{types.ProductIRI}, Deliveries: x2To(testAgencyAddr),
+	})
+	st.Activate(types.InterceptTask{
+		XID: xidIA, Targets: []types.TargetIdentifier{target},
+		Products: []types.ProductType{types.ProductIRI}, Deliveries: x2To(addrIA),
+		RecordScope: types.RecordScopeIdentifierAssociation,
+	})
+	senders := map[string]*captureSender{testAgencyAddr: {}, addrIA: {}}
+	active.Store(&subsystem{
+		ids:   x2x3.NewIdentity(testNEID, amfInterceptionPoint),
+		store: st, senderFor: func(addr string) sender { return senders[addr] },
+	})
+	t.Cleanup(func() { active.Store(nil) })
+
+	ue := targetUE()
+	ue.RegistrationType5GS = nasMessage.RegistrationType5GSMobilityRegistrationUpdating
+	ReportRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS)
+
+	all := decodeRecords(t, senders[testAgencyAddr])
+	if len(all) != 1 || all[0].event != 1 {
+		t.Fatalf("the general task received %+v, want one AMFRegistration [1]", all)
 	}
-	if _, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFLocationUpdate); !ok {
-		t.Fatalf("mobility update produced %T, want iri.AMFLocationUpdate", registrationEvent(id, iri.RegResult3GPPAccess))
+	if got := integer(t, all[0].member(t, 1)); got != int64(iri.RegTypeMobility) {
+		t.Errorf("registrationType = %d, want mobility %d", got, iri.RegTypeMobility)
+	}
+	ia := decodeRecords(t, senders[addrIA])
+	if len(ia) != 1 || ia[0].event != 3 {
+		t.Fatalf("the IdentifierAssociation task received %+v, want one AMFLocationUpdate [3]", ia)
 	}
 
-	// Which is why HandleRegistrationComplete must not also report it: the two call
-	// sites would emit the same record twice for one procedure. An initial
-	// registration is the case that call site exists for.
-	id.RegistrationType5GS = nasMessage.RegistrationType5GSInitialRegistration
-	if _, ok := registrationEvent(id, iri.RegResult3GPPAccess).(iri.AMFRegistration); !ok {
-		t.Errorf("initial registration produced %T, want iri.AMFRegistration", registrationEvent(id, iri.RegResult3GPPAccess))
+	senders[testAgencyAddr].pdus, senders[addrIA].pdus = nil, nil
+	ue.RegistrationType5GS = nasMessage.RegistrationType5GSPeriodicRegistrationUpdating
+	ReportRegistration(ue, models.ACCESSTYPE__3_GPP_ACCESS)
+	if n := len(senders[addrIA].pdus); n != 0 {
+		t.Errorf("the IdentifierAssociation task received %d records for a periodic registration, want 0", n)
+	}
+	if n := len(senders[testAgencyAddr].pdus); n != 1 {
+		t.Errorf("the general task received %d records for a periodic registration, want 1", n)
 	}
 }
 
