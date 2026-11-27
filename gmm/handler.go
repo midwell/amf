@@ -1590,6 +1590,8 @@ func rejectAndTearDownForRegistration(ue *context.AmfUe, ranUe *context.RanUe, a
 	sendRegistrationRejectForRegistration(ranUe, cause, "")
 	ngap_message.SendUEContextReleaseCommand(ranUe, context.UeContextN2NormalRelease,
 		ngapType.CausePresentNas, ngapType.CauseNasPresentNormalRelease)
+	// Lawful Interception IRI-POI: the UE context goes, and every access with it.
+	reportAbortedRegistration(ue, anType, true)
 	ue.PublishUeCtxtInfoOnRemoval(anType)
 	ue.Remove()
 }

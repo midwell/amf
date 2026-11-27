@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/omec-project/amf/context"
+	"github.com/omec-project/nas/v2/nasMessage"
 	"github.com/omec-project/openapi/v2/models"
 	"github.com/omec-project/util/fsm"
 	"go.uber.org/zap"
@@ -111,6 +112,25 @@ func TestEveryFailedProcedureAccountsForTheRegistrationItEnds(t *testing.T) {
 		if ue.T3560 != nil {
 			ue.T3560.Stop()
 		}
+	}
+}
+
+// TestARejectThatRemovesTheUEAccountsForItsRegistrations: a registration rejected for
+// congestion or a missing subscription removes the UE context, and every access with it, so
+// the procedure is handed to lawfulintercept.ReportAbortedRegistration as a removal.
+func TestARejectThatRemovesTheUEAccountsForItsRegistrations(t *testing.T) {
+	disableKafkaForRelayTest(t)
+	calls := observeAbortedRegistrations(t)
+	originalReject := sendRegistrationRejectForRegistration
+	sendRegistrationRejectForRegistration = func(*context.RanUe, uint8, string) {}
+	t.Cleanup(func() { sendRegistrationRejectForRegistration = originalReject })
+
+	const access = models.ACCESSTYPE__3_GPP_ACCESS
+	ue := procedureUE(context.ContextSetup)
+	rejectAndTearDownForRegistration(ue, nil, access, nasMessage.Cause5GMMCongestion)
+
+	if want := (abortedCall{ue, access, true}); len(*calls) != 1 || (*calls)[0] != want {
+		t.Errorf("the reject reported %+v, want %+v", *calls, want)
 	}
 }
 

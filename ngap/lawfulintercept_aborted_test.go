@@ -48,3 +48,24 @@ func TestAnInitialContextSetupFailureAccountsForTheRegistrationItEnds(t *testing
 		t.Error("the failure left the registration it ends unaccounted for")
 	}
 }
+
+// A UE context release that finds no security context removes the UE, and every access with
+// it, so the procedure under way is handed to lawfulintercept.ReportAbortedRegistration as a
+// removal, which consumes the record of whether it began from Registered.
+func TestAReleaseThatRemovesTheUEAccountsForItsRegistrations(t *testing.T) {
+	const supi = "imsi-208930100009988"
+	ran, ranUe, amfUe := newReleasingUe(t, supi, context.UeContextReleaseUeContext, 988)
+	amfUe.SecurityContextAvailable = false
+	amfUe.State[models.ACCESSTYPE__3_GPP_ACCESS] = fsm.NewState(context.ContextSetup)
+	amfUe.SetRegisteredAtProcedureStart(models.ACCESSTYPE__3_GPP_ACCESS, true)
+	recordDatastoreWrites(t)
+
+	HandleUEContextReleaseComplete(ctxt.Background(), ran, releaseCompletePdu(ranUe))
+
+	if _, ok := context.AMF_Self().UePool.Load(supi); ok {
+		t.Fatal("the UE was kept; this test no longer drives the removal")
+	}
+	if amfUe.RegisteredAtProcedureStart(models.ACCESSTYPE__3_GPP_ACCESS) {
+		t.Error("the removal left the registration it ends unaccounted for")
+	}
+}

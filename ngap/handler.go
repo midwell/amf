@@ -1280,6 +1280,8 @@ func HandleUEContextReleaseComplete(ctx ctxt.Context, ran *context.AmfRan, messa
 		// Valid Security is not exist for this UE then only delete AMfUe Context
 		if !amfUe.SecurityContextAvailable {
 			ran.Log.Infof("Valid Security is not exist for the UE[%s], so deleting AmfUe Context", amfUe.GetSupi())
+			// Lawful Interception IRI-POI: the UE context goes, and every access with it.
+			lawfulintercept.ReportAbortedRegistration(amfUe, ran.AnType, true)
 			// Remove() tears down every access, so force Del regardless of the other access's state.
 			amfUe.PublishUeCtxtInfoOnRemoval(ran.AnType)
 			context.RemoveUeAndDeleteItsContext(amfUe)
